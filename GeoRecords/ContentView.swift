@@ -83,10 +83,5 @@ struct ContentView: View {
                 )
             }
         }
-        .onChange(of: recordManager.showPhotoPrompt) { _, newValue in
-            if newValue {
-                debugLog("📸 Photo prompt sheet triggered - pendingRecord: \(String(describing: recordManager.pendingRecordForPhoto?.type))")
-            }
-        }
     }
 }

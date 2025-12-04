@@ -54,13 +54,7 @@ class RecordManager: NSObject, ObservableObject {
     @Published var furthestFromHome: RecordDetail?
 
     // Photo prompt state
-    @Published var showPhotoPrompt = false {
-        didSet {
-            if showPhotoPrompt {
-                debugLog("📸 showPhotoPrompt set to TRUE - blockAllAlertsDuringImport: \(blockAllAlertsDuringImport)")
-            }
-        }
-    }
+    @Published var showPhotoPrompt = false
     @Published var pendingRecordForPhoto: (type: String, detail: RecordDetail)?
 
     // Reusable geocoder instance to prevent memory leaks
@@ -87,30 +81,25 @@ class RecordManager: NSObject, ObservableObject {
     /// Block all alerts during photo import
     func blockAlertsDuringImport(block: Bool) {
         blockAllAlertsDuringImport = block
-        debugLog("🚫 Blocking all alerts during import: \(block)")
     }
 
     /// Call this after importing photos to suppress notifications for a period
     func suppressNotificationsAfterImport(durationSeconds: TimeInterval = 60) {
         suppressNotificationsUntil = Date().addingTimeInterval(durationSeconds)
-        debugLog("🔕 Notifications suppressed for \(durationSeconds) seconds until \(suppressNotificationsUntil!)")
     }
 
     private var shouldSuppressNotifications: Bool {
         // Hard block during import takes precedence
         if blockAllAlertsDuringImport {
-            debugLog("🚫 Blocking notification - import in progress")
             return true
         }
 
         if let suppressUntil = suppressNotificationsUntil {
             if Date() < suppressUntil {
-                debugLog("🔕 Suppressing notification (suppressed until \(suppressUntil))")
                 return true
             } else {
                 // Clear the suppression flag once expired
                 suppressNotificationsUntil = nil
-                debugLog("🔔 Suppression expired, notifications re-enabled")
                 return false
             }
         }
@@ -190,13 +179,6 @@ class RecordManager: NSObject, ObservableObject {
     
     // MARK: - Update Records
     func updateRecords(with location: CLLocation, reverseGeocodedName: String? = nil) {
-        #if DEBUG
-        debugLog("📍 updateRecords called with location: \(location.coordinate.latitude), \(location.coordinate.longitude), altitude: \(location.altitude)m")
-        if let suppressUntil = suppressNotificationsUntil {
-            debugLog("🔕 Notification suppression active until \(suppressUntil)")
-        }
-        #endif
-
         // Serialize updates to prevent race conditions
         if isUpdatingRecords {
             pendingLocationUpdate = location
@@ -528,7 +510,6 @@ class RecordManager: NSObject, ObservableObject {
     private func promptForPhoto(recordType: String, detail: RecordDetail) {
         // Block during import
         if blockAllAlertsDuringImport {
-            debugLog("🚫 Blocking photo prompt - import in progress")
             return
         }
 

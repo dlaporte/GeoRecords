@@ -1,152 +1,277 @@
 import SwiftUI
+import MapKit
 
 struct RecordsView: View {
-    @ObservedObject var recordManager = RecordManager.shared
-    @ObservedObject var settings = SettingsManager.shared
-    
+    @EnvironmentObject var recordManager: RecordManager
+    @EnvironmentObject var settings: SettingsManager
+    @EnvironmentObject var deepLinkManager: DeepLinkManager
+
+    @State private var navigateToDetail = false
+    @State private var selectedRecord: RecordDetail?
+    @State private var currentRecordIndex = 0
+    @State private var mapPosition: MapCameraPosition = .automatic
+
+    // Computed property to get all non-nil records in order
+    private var allRecords: [RecordDetail] {
+        [
+            recordManager.furthestNorth,
+            recordManager.furthestSouth,
+            recordManager.furthestEast,
+            recordManager.furthestWest,
+            recordManager.furthestUp,
+            recordManager.furthestDown,
+            recordManager.furthestFromHome
+        ].compactMap { $0 }
+    }
+
     var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(spacing: 16) {
-                    RecordCard(
-                        title: "Furthest North",
-                        record: recordManager.furthestNorth,
-                        settings: settings,
-                        formatValue: { value in
-                            // Format as degrees with a degree symbol.
-                            return String(format: "%.2f°", value)
-                        }
-                    )
-                    RecordCard(
-                        title: "Furthest South",
-                        record: recordManager.furthestSouth,
-                        settings: settings,
-                        formatValue: { value in
-                            return String(format: "%.2f°", value)
-                        }
-                    )
-                    RecordCard(
-                        title: "Furthest East",
-                        record: recordManager.furthestEast,
-                        settings: settings,
-                        formatValue: { value in
-                            return String(format: "%.2f°", value)
-                        }
-                    )
-                    RecordCard(
-                        title: "Furthest West",
-                        record: recordManager.furthestWest,
-                        settings: settings,
-                        formatValue: { value in
-                            return String(format: "%.2f°", value)
-                        }
-                    )
-                    RecordCard(
-                        title: "Furthest Up",
-                        record: recordManager.furthestUp,
-                        settings: settings,
-                        formatValue: { value in
-                            let converted = (settings.unitSystem == .imperial) ? value * 3.28084 : value
-                            return "\(Int(round(converted))) \(settings.unitSystem == .imperial ? "ft" : "m")"
-                        }
-                    )
-                    RecordCard(
-                        title: "Furthest Down",
-                        record: recordManager.furthestDown,
-                        settings: settings,
-                        formatValue: { value in
-                            let converted = (settings.unitSystem == .imperial) ? value * 3.28084 : value
-                            return "\(Int(round(converted))) \(settings.unitSystem == .imperial ? "ft" : "m")"
-                        }
-                    )
-                    RecordCard(
-                        title: "Furthest from Home",
-                        record: recordManager.furthestFromHome,
-                        settings: settings,
-                        formatValue: { value in
-                            if settings.unitSystem == .imperial {
-                                let miles = value / 5280.0
-                                return String(format: "%.2f mi", miles)
-                            } else {
-                                // Convert value from feet to meters.
-                                let meters = value / 3.28084
-                                if meters >= 1000 {
-                                    let km = meters / 1000.0
-                                    return String(format: "%.2f km", km)
-                                } else {
-                                    return "\(Int(round(meters))) m"
-                                }
+        NavigationStack {
+            VStack(spacing: 0) {
+                if allRecords.isEmpty {
+                    // Empty state
+                    VStack(spacing: 20) {
+                        Image(systemName: "map")
+                            .font(.system(size: 60))
+                            .foregroundColor(.gray)
+                        Text("No Records Yet")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        Text("Start exploring to set your first geographical record!")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    // Map in upper half
+                    ZStack(alignment: .topTrailing) {
+                        Map(position: $mapPosition) {
+                            if let currentRecord = allRecords[safe: currentRecordIndex] {
+                                Marker(currentRecord.recordType, coordinate: currentRecord.coordinate)
+                                    .tint(colorForRecordType(currentRecord.recordType))
                             }
                         }
-                    )
+                        .frame(maxWidth: .infinity)
+                        .frame(height: UIScreen.main.bounds.height * 0.5)
+
+                        // Record counter
+                        HStack(spacing: 4) {
+                            ForEach(0..<allRecords.count, id: \.self) { index in
+                                Circle()
+                                    .fill(index == currentRecordIndex ? Color.blue : Color.gray.opacity(0.5))
+                                    .frame(width: 8, height: 8)
+                            }
+                        }
+                        .padding(12)
+                        .background(Color(UIColor.systemBackground).opacity(0.9))
+                        .cornerRadius(20)
+                        .padding()
+                    }
+
+                    // Swipeable cards in lower half
+                    TabView(selection: $currentRecordIndex) {
+                        ForEach(Array(allRecords.enumerated()), id: \.element.id) { index, record in
+                            RecordCardView(record: record)
+                                .tag(index)
+                                .onTapGesture {
+                                    selectedRecord = record
+                                    navigateToDetail = true
+                                }
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: UIScreen.main.bounds.height * 0.5 - 100)
+                    .onChange(of: currentRecordIndex) { _, newIndex in
+                        // Update map when swiping to new record
+                        if let record = allRecords[safe: newIndex] {
+                            withAnimation {
+                                mapPosition = .region(MKCoordinateRegion(
+                                    center: record.coordinate,
+                                    span: MKCoordinateSpan(latitudeDelta: 2.0, longitudeDelta: 2.0)
+                                ))
+                            }
+                        }
+                    }
                 }
-                .padding()
             }
             .navigationTitle("Records")
-        }
-    }
-}
-
-struct RecordCard: View {
-    let title: String
-    let record: RecordDetail?
-    let settings: SettingsManager
-    /// A closure that returns a formatted string for a given numeric value.
-    let formatValue: (Double) -> String
-    
-    var body: some View {
-        Group {
-            if let record = record {
-                NavigationLink(destination: RecordDetailView(record: record)) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(title)
-                            .font(.headline)
-                        
-                        Text(formatValue(record.value))
-                            .font(.body)
-                            .foregroundColor(.secondary)
-                        
-                        Text("\(record.timestamp, formatter: recordDateFormatter)")
-                            .font(.body)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(Color(UIColor.systemBackground))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                            )
-                    )
+            .navigationDestination(isPresented: $navigateToDetail) {
+                if let record = selectedRecord {
+                    RecordDetailView(record: record)
                 }
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(title)
-                        .font(.headline)
-                    Text("No record yet")
-                        .font(.body)
-                        .foregroundColor(.secondary)
+            }
+            .onAppear {
+                handleDeepLink()
+                // Initialize map to first record
+                if let firstRecord = allRecords.first {
+                    mapPosition = .region(MKCoordinateRegion(
+                        center: firstRecord.coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 2.0, longitudeDelta: 2.0)
+                    ))
                 }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color(UIColor.systemBackground))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10)
-                                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                        )
-                )
+            }
+            .onChange(of: deepLinkManager.recordType) { _, _ in
+                handleDeepLink()
             }
         }
     }
+
+    private func handleDeepLink() {
+        guard let recordType = deepLinkManager.recordType else { return }
+
+        if let record = recordForType(recordType) {
+            selectedRecord = record
+            navigateToDetail = true
+            deepLinkManager.recordType = nil
+        }
+    }
+
+    func recordForType(_ type: String) -> RecordDetail? {
+        switch type {
+        case "Furthest North": return recordManager.furthestNorth
+        case "Furthest South": return recordManager.furthestSouth
+        case "Furthest East": return recordManager.furthestEast
+        case "Furthest West": return recordManager.furthestWest
+        case "Furthest Up": return recordManager.furthestUp
+        case "Furthest Down": return recordManager.furthestDown
+        case "Furthest from Home": return recordManager.furthestFromHome
+        default: return nil
+        }
+    }
+
+    private func colorForRecordType(_ type: String) -> Color {
+        switch type {
+        case "Furthest North": return .blue
+        case "Furthest South": return .cyan
+        case "Furthest East": return .orange
+        case "Furthest West": return .purple
+        case "Furthest Up": return .green
+        case "Furthest Down": return .brown
+        case "Furthest from Home": return .red
+        default: return .gray
+        }
+    }
 }
 
-private let recordDateFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .medium
-    formatter.timeStyle = .short
-    return formatter
-}()
+// MARK: - Record Card View
+struct RecordCardView: View {
+    let record: RecordDetail
+    @EnvironmentObject var settings: SettingsManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Header with icon and title only
+            HStack(spacing: 12) {
+                // Icon (always shown)
+                Image(systemName: iconForRecordType(record.recordType))
+                    .font(.title)
+                    .foregroundColor(colorForRecordType(record.recordType))
+                    .frame(width: 44, height: 44)
+                    .background(colorForRecordType(record.recordType).opacity(0.1))
+                    .cornerRadius(12)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(record.recordType)
+                        .font(.headline)
+                    Text(formatDate(record.timestamp))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+            }
+
+            Divider()
+
+            // Main content with photo on the right
+            HStack(alignment: .top, spacing: 16) {
+                // Left side - record details
+                VStack(alignment: .leading, spacing: 12) {
+                    // Value
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Value")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(record.formattedValue(unitSystem: settings.unitSystem))
+                            .font(.system(size: 36, weight: .bold, design: .rounded))
+                            .foregroundColor(colorForRecordType(record.recordType))
+                    }
+
+                    // Location
+                    if let locationName = record.locationName {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Location")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(locationName)
+                                .font(.subheadline)
+                        }
+                    }
+
+                    // Coordinates
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Coordinates")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(String(format: "%.4f, %.4f", record.coordinate.latitude, record.coordinate.longitude))
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                // Right side - photo thumbnail if available
+                if let photoData = record.photoData,
+                   let uiImage = UIImage(data: photoData) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 140, height: 140)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+            }
+
+            Spacer()
+
+            // Tap to view detail hint
+            HStack {
+                Spacer()
+                Text("Tap for details")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color(UIColor.secondarySystemBackground))
+        )
+        .padding(.horizontal)
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        return formatter.string(from: date)
+    }
+
+    private func iconForRecordType(_ type: String) -> String {
+        return FormatUtils.iconForRecordType(type)
+    }
+
+    private func colorForRecordType(_ type: String) -> Color {
+        return FormatUtils.colorForRecordType(type)
+    }
+}
+
+// Safe array subscript
+extension Array {
+    subscript(safe index: Int) -> Element? {
+        return indices.contains(index) ? self[index] : nil
+    }
+}

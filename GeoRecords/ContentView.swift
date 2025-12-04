@@ -2,68 +2,91 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var deepLinkManager: DeepLinkManager
-    @ObservedObject var recordManager = RecordManager.shared
-    
-    // Controls navigation triggered by deep link.
-    @State private var navigateToDetail: Bool = false
-    @State private var selectedRecord: RecordDetail? = nil
-    
+    @EnvironmentObject var recordManager: RecordManager
+    @EnvironmentObject var recordHistoryManager: RecordHistoryManager
+    @EnvironmentObject var persistenceController: PersistenceController
+    @EnvironmentObject var settings: SettingsManager
+    @State private var showDatabaseError = false
+    @State private var showSetupWizard = false
+
     var body: some View {
-        NavigationView {
-            TabView {
-                RecordsView()
-                    .tabItem {
-                        Label("Records", systemImage: "doc.text")
-                    }
-                HistoryView()
-                    .tabItem {
-                        Label("History", systemImage: "clock")
-                    }
-                SettingsView()
-                    .tabItem {
-                        Label("Settings", systemImage: "gear")
-                    }
-            }
-            .onReceive(deepLinkManager.$recordType) { recordType in
-                if let type = recordType {
-                    // Look up the corresponding record from RecordManager.
-                    selectedRecord = recordForType(type)
-                    navigateToDetail = (selectedRecord != nil)
-                    // Reset deep link state after handling.
-                    deepLinkManager.recordType = nil
+        TabView {
+            RecordsView()
+                .tabItem {
+                    Label("Records", systemImage: "doc.text")
                 }
+            HistoryView()
+                .tabItem {
+                    Label("History", systemImage: "clock")
+                }
+            StatisticsView()
+                .tabItem {
+                    Label("Stats", systemImage: "chart.bar.fill")
+                }
+            SettingsView()
+                .tabItem {
+                    Label("Settings", systemImage: "gear")
+                }
+        }
+        .onAppear {
+            // Check if setup needs to be shown
+            if !settings.hasCompletedSetup {
+                showSetupWizard = true
             }
-            // Hidden NavigationLink triggered by the deep link.
-            .background(
-                NavigationLink(
-                    destination: destinationView(),
-                    isActive: $navigateToDetail,
-                    label: { EmptyView() }
-                )
+
+            // Check for database errors on app launch
+            if PersistenceController.shared.loadError != nil {
+                showDatabaseError = true
+            }
+        }
+        .fullScreenCover(isPresented: $showSetupWizard) {
+            SetupWizardView()
+                .environmentObject(settings)
+        }
+        .alert(isPresented: $showDatabaseError) {
+            Alert(
+                title: Text("Database Error"),
+                message: Text("The app encountered a problem with its database. Your data may have been reset."),
+                dismissButton: .default(Text("OK"))
             )
         }
-    }
-    
-    // Returns the record for a given record type.
-    func recordForType(_ type: String) -> RecordDetail? {
-        switch type {
-        case "Furthest North": return recordManager.furthestNorth
-        case "Furthest South": return recordManager.furthestSouth
-        case "Furthest East":  return recordManager.furthestEast
-        case "Furthest West":  return recordManager.furthestWest
-        case "Furthest Up":    return recordManager.furthestUp
-        case "Furthest Down":  return recordManager.furthestDown
-        case "Furthest from Home": return recordManager.furthestFromHome
-        default: return nil
+        .alert(isPresented: $recordHistoryManager.showError) {
+            Alert(
+                title: Text("Error"),
+                message: Text(recordHistoryManager.errorMessage ?? "An unknown error occurred"),
+                dismissButton: .default(Text("OK"))
+            )
         }
-    }
-    
-    @ViewBuilder
-    func destinationView() -> some View {
-        if let record = selectedRecord {
-            RecordDetailView(record: record)
-        } else {
-            EmptyView()
+        .alert(isPresented: $persistenceController.showDatabaseRecoveryAlert) {
+            Alert(
+                title: Text("Database Corrupted"),
+                message: Text("The app's database is corrupted and cannot be loaded. Would you like to reset it? This will delete all your records permanently."),
+                primaryButton: .destructive(Text("Reset Database")) {
+                    if let storeURL = persistenceController.container.persistentStoreDescriptions.first?.url {
+                        persistenceController.attemptDatabaseRecovery(storeURL: storeURL)
+                    }
+                },
+                secondaryButton: .cancel(Text("Cancel"))
+            )
+        }
+        .sheet(isPresented: $recordManager.showPhotoPrompt) {
+            if let pending = recordManager.pendingRecordForPhoto {
+                PhotoPicker(
+                    recordType: pending.type,
+                    onPhotoSelected: { photoData in
+                        recordManager.attachPhotoToRecord(recordType: pending.type, photoData: photoData)
+                    },
+                    onDismiss: {
+                        recordManager.showPhotoPrompt = false
+                        recordManager.pendingRecordForPhoto = nil
+                    }
+                )
+            }
+        }
+        .onChange(of: recordManager.showPhotoPrompt) { _, newValue in
+            if newValue {
+                debugLog("📸 Photo prompt sheet triggered - pendingRecord: \(String(describing: recordManager.pendingRecordForPhoto?.type))")
+            }
         }
     }
 }

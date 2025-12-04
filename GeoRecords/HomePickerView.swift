@@ -2,42 +2,70 @@ import SwiftUI
 import MapKit
 
 struct HomePickerView: View {
-    @Environment(\.presentationMode) var presentationMode
-    @ObservedObject var settings = SettingsManager.shared
-    @ObservedObject var locationManager = LocationManager.shared  // Assumes currentLocation is published
-    
-    @State private var region: MKCoordinateRegion
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var settings: SettingsManager
+    @EnvironmentObject var locationManager: LocationManager
+
+    @State private var position: MapCameraPosition
+    @State private var currentCoordinate: CLLocationCoordinate2D
     @State private var showAlert = false
-    
+
     init() {
-        let initialCoordinate = SettingsManager.shared.homeCoordinate
-            ?? CLLocationCoordinate2D(latitude: 38.897957, longitude: -77.036560)
-        _region = State(initialValue: MKCoordinateRegion(center: initialCoordinate,
-                                                         span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)))
+        let defaultCoord = CLLocationCoordinate2D(latitude: 38.897957, longitude: -77.036560)
+        // Initialize with default position (will be updated in onAppear)
+        _position = State(initialValue: .region(MKCoordinateRegion(
+            center: defaultCoord,
+            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+        )))
+        _currentCoordinate = State(initialValue: defaultCoord)
     }
-    
+
     var body: some View {
         VStack {
-            Map(coordinateRegion: $region, annotationItems: [AnnotationItem(coordinate: region.center)]) { item in
-                MapMarker(coordinate: item.coordinate, tint: .red)
+            MapReader { reader in
+                Map(position: $position) {
+                    Marker("", coordinate: currentCoordinate)
+                        .tint(.red)
+                }
+                .frame(height: 300)
+                .cornerRadius(10)
+                .padding()
+                .onTapGesture { position in
+                    if let coordinate = reader.convert(position, from: .local) {
+                        withAnimation {
+                            currentCoordinate = coordinate
+                        }
+                    }
+                }
             }
-            .frame(height: 300)
-            .cornerRadius(10)
-            .padding()
-            
+            .onAppear {
+                // Initialize position with home coordinate from environment object
+                if let homeCoord = settings.homeCoordinate {
+                    currentCoordinate = homeCoord
+                    position = .region(MKCoordinateRegion(
+                        center: homeCoord,
+                        span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                    ))
+                }
+            }
+
             Text("Selected Location:")
                 .font(.headline)
-            Text("Lat: \(region.center.latitude, specifier: "%.4f"), Lon: \(region.center.longitude, specifier: "%.4f")")
+            Text("Lat: \(currentCoordinate.latitude, specifier: "%.4f"), Lon: \(currentCoordinate.longitude, specifier: "%.4f")")
                 .padding(.bottom)
-            
+
             Button("Use Current Location") {
                 if let currentLocation = locationManager.currentLocation {
-                    print("Using current location: \(currentLocation.coordinate.latitude), \(currentLocation.coordinate.longitude)")
+                    debugLog("Using current location: \(currentLocation.coordinate.latitude), \(currentLocation.coordinate.longitude)")
                     withAnimation {
-                        region.center = currentLocation.coordinate
+                        currentCoordinate = currentLocation.coordinate
+                        position = .region(MKCoordinateRegion(
+                            center: currentLocation.coordinate,
+                            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                        ))
                     }
                 } else {
-                    print("No current location available!")
+                    debugLog("No current location available!")
                     showAlert = true
                 }
             }
@@ -52,8 +80,9 @@ struct HomePickerView: View {
             }
             
             Button("Set Home Location") {
-                settings.homeCoordinate = region.center
-                presentationMode.wrappedValue.dismiss()
+                settings.homeCoordinate = currentCoordinate
+                settings.saveSettings()
+                dismiss()
             }
             .padding()
             .frame(maxWidth: .infinity)
@@ -61,30 +90,27 @@ struct HomePickerView: View {
             .foregroundColor(.white)
             .cornerRadius(8)
             .padding(.horizontal)
-            
+
             Spacer()
         }
         .navigationTitle("Select Home Location")
         .onAppear {
-            print("HomePickerView appeared. Current region center: \(region.center.latitude), \(region.center.longitude)")
+            debugLog("HomePickerView appeared. Current position center: \(currentCoordinate.latitude), \(currentCoordinate.longitude)")
             if let current = locationManager.currentLocation {
-                print("LocationManager.currentLocation: \(current.coordinate.latitude), \(current.coordinate.longitude)")
+                debugLog("LocationManager.currentLocation: \(current.coordinate.latitude), \(current.coordinate.longitude)")
             } else {
-                print("LocationManager.currentLocation is nil.")
+                debugLog("LocationManager.currentLocation is nil.")
             }
         }
     }
 }
 
-struct AnnotationItem: Identifiable {
-    let id = UUID()
-    var coordinate: CLLocationCoordinate2D
-}
-
 struct HomePickerView_Previews: PreviewProvider {
     static var previews: some View {
-        NavigationView {
+        NavigationStack {
             HomePickerView()
+                .environmentObject(SettingsManager.shared)
+                .environmentObject(LocationManager.shared)
         }
     }
 }

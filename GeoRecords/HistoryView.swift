@@ -1,79 +1,102 @@
 import SwiftUI
 import CoreData
+import CoreLocation
 
 struct HistoryView: View {
+    @State private var pageSize = 50
+    @State private var isShowingAll = false
+
     // Fetch history entries sorted by timestamp (newest first)
     @FetchRequest(
         sortDescriptors: [NSSortDescriptor(keyPath: \RecordHistoryEntry.timestamp, ascending: false)],
         animation: .default
     )
     private var historyEntries: FetchedResults<RecordHistoryEntry>
-    
+
+    private var displayedEntries: [RecordHistoryEntry] {
+        if isShowingAll {
+            return Array(historyEntries)
+        } else {
+            return Array(historyEntries.prefix(pageSize))
+        }
+    }
+
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
                     if historyEntries.isEmpty {
                         Text("No history available")
                             .foregroundColor(.secondary)
+                            .padding(.top, 40)
                     } else {
-                        ForEach(historyEntries) { entry in
+                        ForEach(displayedEntries) { entry in
                             NavigationLink(destination: HistoryDetailView(entry: entry)) {
                                 HistoryCard(entry: entry)
+                            }
+                        }
+
+                        // Show "Load More" button if there are more entries
+                        if !isShowingAll && historyEntries.count > pageSize {
+                            Button(action: {
+                                pageSize += 50
+                                if pageSize >= historyEntries.count {
+                                    isShowingAll = true
+                                }
+                            }) {
+                                HStack {
+                                    Text("Load More")
+                                    Text("(\(historyEntries.count - pageSize) remaining)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding()
+                                .frame(maxWidth: .infinity)
+                                .background(Color(UIColor.secondarySystemBackground))
+                                .cornerRadius(10)
                             }
                         }
                     }
                 }
                 .padding()
             }
-            .navigationTitle("History")
+            .navigationTitle("History (\(historyEntries.count))")
         }
     }
 }
 
 struct HistoryCard: View {
     let entry: RecordHistoryEntry
-    
-    /// Formats the record's value based on its type.
-    private func formattedValue() -> String {
-        let type = entry.recordType ?? "Unknown"
-        
-        if type.contains("North") ||
-           type.contains("South") ||
-           type.contains("East") ||
-           type.contains("West") {
-            return String(format: "%.2f°", entry.value)
-        } else if type.contains("Up") || type.contains("Down") {
-            let converted = (SettingsManager.shared.unitSystem == .imperial) ? entry.value * 3.28084 : entry.value
-            return "\(Int(round(converted))) \(SettingsManager.shared.unitSystem == .imperial ? "ft" : "m")"
-        } else if type == "Furthest from Home" {
-            if SettingsManager.shared.unitSystem == .imperial {
-                let miles = entry.value / 5280.0
-                return String(format: "%.2f mi", miles)
-            } else {
-                let meters = entry.value / 3.28084
-                if meters >= 1000 {
-                    let km = meters / 1000.0
-                    return String(format: "%.2f km", km)
-                } else {
-                    return "\(Int(round(meters))) m"
-                }
-            }
-        } else {
-            return String(format: "%.6f", entry.value)
-        }
+
+    private func formattedValueForEntry() -> String {
+        // Convert Core Data entry to RecordDetail to reuse formatting logic
+        let detail = RecordDetail(
+            value: entry.value,
+            timestamp: entry.timestamp ?? Date(),
+            coordinate: CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude),
+            altitude: entry.altitude,
+            locationName: entry.locationName,
+            recordType: entry.recordType ?? "Unknown"
+        )
+        return detail.formattedValue(unitSystem: SettingsManager.shared.unitSystem)
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(entry.recordType ?? "Unknown")
                 .font(.headline)
-            Text(formattedValue())
+            Text(formattedValueForEntry())
                 .font(.body)
                 .foregroundColor(.secondary)
-            Text("\(entry.timestamp!, formatter: historyDateFormatter)")
-                .font(.body)
-                .foregroundColor(.secondary)
+            if let timestamp = entry.timestamp {
+                Text("\(timestamp, formatter: recordDateFormatter)")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+            } else {
+                Text("Unknown date")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+            }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -87,10 +110,3 @@ struct HistoryCard: View {
         )
     }
 }
-
-private let historyDateFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .medium
-    formatter.timeStyle = .short
-    return formatter
-}()

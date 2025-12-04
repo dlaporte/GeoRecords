@@ -10,5 +10,11 @@
 	<string>This app uses your location to track latitude crossings even in the background</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>This app uses your location to track latitude crossings</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Take photos to capture the moment when you break geographical records</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose photos from your library to attach to your geographical records, or scan your library to import historical records</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save photos of your geographical records to your library</string>
 </dict>
 </plist>

@@ -9,13 +9,19 @@ class DeepLinkManager: ObservableObject {
 
 // Notification delegate that handles incoming notifications.
 class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = NotificationDelegate()
+
+    private override init() {
+        super.init()
+    }
+
     // Present notifications in the foreground.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
     }
-    
+
     // When the user taps the notification.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
@@ -23,7 +29,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let userInfo = response.notification.request.content.userInfo
         if let recordType = userInfo["recordType"] as? String {
             DeepLinkManager.shared.recordType = recordType
-            print("DeepLink: recordType set to \(recordType)")
+            debugLog("DeepLink: recordType set to \(recordType)")
         }
         completionHandler()
     }
@@ -44,11 +50,10 @@ func requestNotificationPermissions() {
 struct GeoRecords: App {
     @StateObject var locationManager = LocationManager.shared
     let persistenceController = PersistenceController.shared
-    let notificationDelegate = NotificationDelegate()
-    
+
     init() {
-        UNUserNotificationCenter.current().delegate = notificationDelegate
-        requestNotificationPermissions()
+        UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        // Don't request notification permissions here - wait for user to approve in setup wizard
     }
     
     var body: some Scene {
@@ -56,6 +61,10 @@ struct GeoRecords: App {
             ContentView()
                 .environmentObject(locationManager)
                 .environmentObject(DeepLinkManager.shared)
+                .environmentObject(RecordManager.shared)
+                .environmentObject(SettingsManager.shared)
+                .environmentObject(RecordHistoryManager.shared)
+                .environmentObject(persistenceController)
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
         }
     }

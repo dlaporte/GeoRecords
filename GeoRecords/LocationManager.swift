@@ -1,80 +1,88 @@
 import SwiftUI
 import CoreLocation
-import Combine
 
 class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     static let shared = LocationManager()
-    
+
     private var locationManager = CLLocationManager()
-    private var timer: DispatchSourceTimer?
-    private var cancellables = Set<AnyCancellable>()
-    
-    /// NEW: Publishes the user’s current location so HomePickerView can use it.
+
+    /// Publishes the user's current location so HomePickerView can use it.
     @Published var currentLocation: CLLocation?
-    
+
     override init() {
         super.init()
-        print("LocationManager initialized")
-        
+        debugLog("LocationManager initialized")
+
         locationManager.delegate = self
-        locationManager.allowsBackgroundLocationUpdates = true
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        locationManager.requestAlwaysAuthorization()
-        
-        startTimer()
-        
-        // Observe changes to timer interval.
-        SettingsManager.shared.$timerInterval
-            .sink { [weak self] newInterval in
-                print("Timer interval changed to \(newInterval) seconds")
-                self?.startTimer()
-            }
-            .store(in: &cancellables)
+
+        // Only enable background updates if supported
+        if CLLocationManager.significantLocationChangeMonitoringAvailable() {
+            locationManager.allowsBackgroundLocationUpdates = true
+            debugLog("Background location updates enabled")
+        } else {
+            debugLog("⚠️ Significant location change monitoring not available")
+        }
+
+        // Don't request authorization automatically - wait for user to start wizard
+        // Start monitoring will begin after authorization is granted
     }
-    
-    func startTimer() {
-        // Cancel existing timer if any.
-        timer?.cancel()
-        timer = nil
-        
-        let interval = SettingsManager.shared.timerInterval
-        print("Starting DispatchSourceTimer with interval: \(interval) seconds")
-        
-        // Create a DispatchSourceTimer on the main queue.
-        timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        timer?.schedule(deadline: .now() + interval, repeating: interval)
-        timer?.setEventHandler { [weak self] in
-            print("DispatchSourceTimer fired, requesting location...")
-            self?.locationManager.requestLocation()
-        }
-        timer?.resume()
-        
-        // Uncomment this block to test with a simple Timer instead.
-        /*
-        Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
-            print("Simple Timer fired, requesting location...")
-            self.locationManager.requestLocation()
-        }
-        */
+
+    /// Request location authorization - should be called from setup wizard
+    func requestLocationAuthorization() {
+        debugLog("Requesting location authorization")
+        locationManager.requestAlwaysAuthorization()
+        startLocationMonitoring()
+    }
+
+    func startLocationMonitoring() {
+        debugLog("Starting significant location change monitoring (background-compatible)")
+        locationManager.startMonitoringSignificantLocationChanges()
+    }
+
+    func stopLocationMonitoring() {
+        debugLog("Stopping significant location change monitoring")
+        locationManager.stopMonitoringSignificantLocationChanges()
     }
     
     // MARK: - CLLocationManagerDelegate
     
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let currentLocation = locations.last else {
-            print("No location returned")
+            debugLog("No location returned")
             return
         }
-        print("Received location: \(currentLocation.coordinate.latitude), \(currentLocation.coordinate.longitude), altitude: \(currentLocation.altitude)")
-        
-        // NEW: Publish this location so HomePickerView can read it.
-        self.currentLocation = currentLocation
-        
-        // Forward location to RecordManager (if needed)
-        RecordManager.shared.updateRecords(with: currentLocation)
+        debugLog("Received location: \(currentLocation.coordinate.latitude), \(currentLocation.coordinate.longitude), altitude: \(currentLocation.altitude)")
+
+        // Ensure all @Published property updates and MainActor calls happen on main thread
+        Task { @MainActor in
+            self.currentLocation = currentLocation
+            RecordManager.shared.updateRecords(with: currentLocation)
+            // Smart Notifications retired - removed call to SmartNotificationManager
+        }
     }
     
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print("Location update failed: \(error.localizedDescription)")
+        debugLog("Location update failed: \(error.localizedDescription)")
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        switch manager.authorizationStatus {
+        case .authorizedAlways:
+            debugLog("✅ Always authorization granted - background tracking enabled")
+            startLocationMonitoring()
+        case .authorizedWhenInUse:
+            debugLog("⚠️ Only 'When In Use' authorization - background tracking will be limited")
+            startLocationMonitoring()
+        case .denied:
+            debugLog("❌ Location authorization denied - app cannot track records")
+        case .restricted:
+            debugLog("❌ Location authorization restricted - app cannot track records")
+        case .notDetermined:
+            debugLog("📍 Location authorization not yet determined")
+            // Will be called again after user responds to permission request
+        @unknown default:
+            debugLog("⚠️ Unknown authorization status")
+        }
     }
 }

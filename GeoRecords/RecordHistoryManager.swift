@@ -18,6 +18,7 @@ class RecordHistoryManager: ObservableObject {
         newEntry.id = detail.id
         newEntry.timestamp = detail.timestamp  // timestamp is non-optional Date
         newEntry.recordType = recordType
+        newEntry.timeFrame = detail.timeFrame.rawValue
         newEntry.value = detail.value
         newEntry.latitude = detail.coordinate.latitude
         newEntry.longitude = detail.coordinate.longitude
@@ -27,7 +28,7 @@ class RecordHistoryManager: ObservableObject {
 
         do {
             try context.save()
-            debugLog("Record saved: \(recordType) with value: \(detail.value)")
+            debugLog("Record saved: \(recordType) (\(detail.timeFrame.rawValue)) with value: \(detail.value)")
         } catch {
             let message = "Failed to save record: \(error.localizedDescription)"
             debugLog(message)

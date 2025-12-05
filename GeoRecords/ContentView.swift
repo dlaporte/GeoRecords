@@ -8,25 +8,30 @@ struct ContentView: View {
     @EnvironmentObject var settings: SettingsManager
     @State private var showDatabaseError = false
     @State private var showSetupWizard = false
+    @State private var selectedTab = 0
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             RecordsView()
                 .tabItem {
                     Label("Records", systemImage: "doc.text")
                 }
+                .tag(0)
             HistoryView()
                 .tabItem {
                     Label("History", systemImage: "clock")
                 }
+                .tag(1)
             StatisticsView()
                 .tabItem {
                     Label("Stats", systemImage: "chart.bar.fill")
                 }
+                .tag(2)
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")
                 }
+                .tag(3)
         }
         .onAppear {
             // Check if setup needs to be shown
@@ -37,6 +42,12 @@ struct ContentView: View {
             // Check for database errors on app launch
             if PersistenceController.shared.loadError != nil {
                 showDatabaseError = true
+            }
+        }
+        .onChange(of: deepLinkManager.navigateToStats) { _, shouldNavigate in
+            if shouldNavigate {
+                selectedTab = 2  // Navigate to Stats tab
+                deepLinkManager.navigateToStats = false  // Reset flag
             }
         }
         .fullScreenCover(isPresented: $showSetupWizard) {

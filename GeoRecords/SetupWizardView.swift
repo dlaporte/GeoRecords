@@ -4,6 +4,31 @@ import MapKit
 import UserNotifications
 import CoreLocation
 
+// MARK: - Geocoding Cache for Setup Wizard
+private actor SetupWizardGeocodingCache {
+    private var cache: [String: String] = [:]
+
+    func getCachedLocation(latitude: Double, longitude: Double) -> String? {
+        let key = cacheKey(latitude: latitude, longitude: longitude)
+        return cache[key]
+    }
+
+    func setCachedLocation(latitude: Double, longitude: Double, name: String) {
+        let key = cacheKey(latitude: latitude, longitude: longitude)
+        cache[key] = name
+    }
+
+    private func cacheKey(latitude: Double, longitude: Double) -> String {
+        // Round to 4 decimal places (~11 meters precision)
+        let roundedLat = round(latitude * 10000) / 10000
+        let roundedLon = round(longitude * 10000) / 10000
+        return "\(roundedLat),\(roundedLon)"
+    }
+}
+
+// Global cache instance for setup wizard
+private let setupWizardGeocodingCache = SetupWizardGeocodingCache()
+
 struct SetupWizardView: View {
     @EnvironmentObject var settings: SettingsManager
     @EnvironmentObject var locationManager: LocationManager
@@ -14,12 +39,13 @@ struct SetupWizardView: View {
     @State private var selectedUnitSystem: UnitSystem = .imperial
     @State private var homeCoordinate: CLLocationCoordinate2D?
     @State private var notificationsEnabled = true
+    @State private var summaryNotificationsEnabled = true
     @State private var photoPromptsEnabled = true
-    @State private var wantPhotoImport = false
+    @State private var wantPhotoImport = true
     @State private var showPermissionAlert = false
     @State private var showImportPreview = false
 
-    let totalSteps = 5
+    let totalSteps = 6
 
     // Check if Next button should be enabled
     private var isNextButtonEnabled: Bool {
@@ -70,20 +96,31 @@ struct SetupWizardView: View {
                     HomeLocationStepView(homeCoordinate: $homeCoordinate)
                         .tag(2)
 
-                    // Step 3: Notifications
+                    // Step 3: Record Notifications
                     NotificationsStepView(
-                        notificationsEnabled: $notificationsEnabled,
-                        photoPromptsEnabled: $photoPromptsEnabled
+                        notificationsEnabled: $notificationsEnabled
                     )
                     .tag(3)
 
-                    // Step 4: Photo Import
+                    // Step 4: Summary Notifications
+                    SummaryNotificationsStepView(
+                        summaryNotificationsEnabled: $summaryNotificationsEnabled
+                    )
+                    .tag(4)
+
+                    // Step 5: Photo Prompts
+                    PhotoPromptsStepView(
+                        photoPromptsEnabled: $photoPromptsEnabled
+                    )
+                    .tag(5)
+
+                    // Step 6: Photo Import
                     PhotoImportStepView(
                         wantPhotoImport: $wantPhotoImport,
                         photoScanner: photoScanner,
                         showPermissionAlert: $showPermissionAlert
                     )
-                    .tag(4)
+                    .tag(6)
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .animation(.easeInOut, value: currentStep)
@@ -176,7 +213,8 @@ struct SetupWizardView: View {
         // Save settings
         settings.unitSystem = selectedUnitSystem
         // homeCoordinate already saved directly to settings during selection
-        settings.notifyOnNewRecord = notificationsEnabled
+        settings.notifyOnAllTimeRecords = notificationsEnabled
+        settings.summaryNotificationsEnabled = summaryNotificationsEnabled
         settings.photoPromptsEnabled = photoPromptsEnabled
         settings.hasCompletedSetup = true
         settings.saveSettings()
@@ -378,6 +416,7 @@ struct HomeLocationStepView: View {
     @State private var mapPosition: MapCameraPosition = .automatic
     @State private var addressSearch: String = ""
     @State private var isSearching = false
+    @State private var homeLocationName: String?
 
     var body: some View {
         VStack(spacing: 20) {
@@ -390,7 +429,7 @@ struct HomeLocationStepView: View {
                 Text("Set Your Home")
                     .font(.system(size: 24, weight: .bold))
 
-                Text("Tap the map or search for an address")
+                Text("Tap the map or search to change location")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
@@ -412,10 +451,37 @@ struct HomeLocationStepView: View {
                             homeCoordinate = coordinate
                             settings.homeCoordinate = coordinate
                         }
+                        geocodeCoordinate(coordinate)
                     }
                 }
             }
             .padding(.horizontal)
+            .onAppear {
+                // Automatically zoom to current location when the view appears
+                if let currentLocation = locationManager.currentLocation {
+                    homeCoordinate = currentLocation.coordinate
+                    settings.homeCoordinate = currentLocation.coordinate
+                    mapPosition = .region(MKCoordinateRegion(
+                        center: currentLocation.coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                    ))
+                    geocodeCoordinate(currentLocation.coordinate)
+                }
+            }
+            .onChange(of: locationManager.currentLocation) { _, newLocation in
+                // Update when location becomes available (if not already set)
+                if homeCoordinate == nil, let newLocation = newLocation {
+                    withAnimation {
+                        homeCoordinate = newLocation.coordinate
+                        settings.homeCoordinate = newLocation.coordinate
+                        mapPosition = .region(MKCoordinateRegion(
+                            center: newLocation.coordinate,
+                            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                        ))
+                    }
+                    geocodeCoordinate(newLocation.coordinate)
+                }
+            }
 
             // Address search
             HStack {
@@ -441,40 +507,24 @@ struct HomeLocationStepView: View {
             .cornerRadius(10)
             .padding(.horizontal)
 
-            // Current location button
-            Button(action: {
-                if let currentLocation = locationManager.currentLocation {
-                    homeCoordinate = currentLocation.coordinate
-                    settings.homeCoordinate = currentLocation.coordinate
-                    mapPosition = .region(MKCoordinateRegion(
-                        center: currentLocation.coordinate,
-                        span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
-                    ))
-                }
-            }) {
-                HStack {
-                    Image(systemName: "location.fill")
-                    Text("Use Current Location")
-                }
-                .frame(maxWidth: .infinity)
-                .padding(12)
-                .background(Color.blue)
-                .foregroundColor(.white)
-                .cornerRadius(10)
-            }
-            .padding(.horizontal)
-
             // Selected coordinates display
             if let coord = homeCoordinate {
                 VStack(spacing: 4) {
                     Text("Home Location Set")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                    if let locationName = homeLocationName {
+                        Text(locationName)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .multilineTextAlignment(.center)
+                    }
                     Text(String(format: "%.4f, %.4f", coord.latitude, coord.longitude))
-                        .font(.caption)
-                        .fontWeight(.medium)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
                 .padding(.top, 4)
+                .padding(.horizontal)
             }
 
             Spacer()
@@ -500,6 +550,63 @@ struct HomeLocationStepView: View {
                             span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
                         ))
                     }
+                    geocodeCoordinate(location.coordinate)
+                }
+            }
+        }
+    }
+
+    private func geocodeCoordinate(_ coordinate: CLLocationCoordinate2D) {
+        let lat = coordinate.latitude
+        let lon = coordinate.longitude
+
+        // Check cache first
+        Task {
+            if let cachedName = await setupWizardGeocodingCache.getCachedLocation(latitude: lat, longitude: lon) {
+                debugLog("📍 Using cached location for (\(lat), \(lon)): \(cachedName)")
+                await MainActor.run {
+                    self.homeLocationName = cachedName
+                    self.settings.homeLocationName = cachedName
+                }
+                return
+            }
+
+            // Not in cache, perform geocoding
+            debugLog("🌐 Geocoding location (\(lat), \(lon))")
+            let location = CLLocation(latitude: lat, longitude: lon)
+            let geocoder = CLGeocoder()
+
+            geocoder.reverseGeocodeLocation(location) { placemarks, error in
+                if let error = error {
+                    debugLog("Geocoding error: \(error.localizedDescription)")
+                    return
+                }
+
+                if let placemark = placemarks?.first {
+                    var components: [String] = []
+
+                    if let locality = placemark.locality {
+                        components.append(locality)
+                    }
+                    if let administrativeArea = placemark.administrativeArea {
+                        components.append(administrativeArea)
+                    }
+                    if let country = placemark.country {
+                        components.append(country)
+                    }
+
+                    let name = components.joined(separator: ", ")
+
+                    // Store in cache
+                    Task {
+                        await setupWizardGeocodingCache.setCachedLocation(latitude: lat, longitude: lon, name: name)
+                        debugLog("💾 Cached location for (\(lat), \(lon)): \(name)")
+                    }
+
+                    Task { @MainActor in
+                        self.homeLocationName = name
+                        self.settings.homeLocationName = name
+                    }
                 }
             }
         }
@@ -509,7 +616,6 @@ struct HomeLocationStepView: View {
 // MARK: - Notifications Step
 struct NotificationsStepView: View {
     @Binding var notificationsEnabled: Bool
-    @Binding var photoPromptsEnabled: Bool
 
     var body: some View {
         VStack(spacing: 30) {
@@ -520,10 +626,10 @@ struct NotificationsStepView: View {
                 .foregroundColor(.blue)
 
             VStack(spacing: 12) {
-                Text("Stay Informed")
+                Text("Record Notifications")
                     .font(.system(size: 28, weight: .bold))
 
-                Text("Choose which notifications you'd like to receive")
+                Text("Get notified when you break all-time records")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -531,15 +637,84 @@ struct NotificationsStepView: View {
 
             VStack(spacing: 16) {
                 NotificationToggleCard(
-                    title: "Record Notifications",
-                    subtitle: "Get notified when you break a record",
+                    title: "Enable Notifications",
+                    subtitle: "Receive alerts when you set new all-time records",
                     icon: "bell.fill",
                     isEnabled: $notificationsEnabled
                 )
+            }
+            .padding(.top, 20)
 
+            Spacer()
+        }
+        .padding(.horizontal, 40)
+    }
+}
+
+// MARK: - Summary Notifications Step
+struct SummaryNotificationsStepView: View {
+    @Binding var summaryNotificationsEnabled: Bool
+
+    var body: some View {
+        VStack(spacing: 30) {
+            Spacer()
+
+            Image(systemName: "calendar.badge.clock")
+                .font(.system(size: 60))
+                .foregroundColor(.orange)
+
+            VStack(spacing: 12) {
+                Text("Summary Notifications")
+                    .font(.system(size: 28, weight: .bold))
+
+                Text("Get monthly and yearly summaries of your achievements")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(spacing: 16) {
                 NotificationToggleCard(
-                    title: "Photo Prompts",
-                    subtitle: "Get prompted to attach photos to new records",
+                    title: "Enable Summaries",
+                    subtitle: "Receive summaries at the end of each month and year",
+                    icon: "calendar.badge.clock",
+                    isEnabled: $summaryNotificationsEnabled
+                )
+            }
+            .padding(.top, 20)
+
+            Spacer()
+        }
+        .padding(.horizontal, 40)
+    }
+}
+
+// MARK: - Photo Prompts Step
+struct PhotoPromptsStepView: View {
+    @Binding var photoPromptsEnabled: Bool
+
+    var body: some View {
+        VStack(spacing: 30) {
+            Spacer()
+
+            Image(systemName: "camera.fill")
+                .font(.system(size: 60))
+                .foregroundColor(.green)
+
+            VStack(spacing: 12) {
+                Text("Photo Prompts")
+                    .font(.system(size: 28, weight: .bold))
+
+                Text("Capture memories when you break records")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(spacing: 16) {
+                NotificationToggleCard(
+                    title: "Enable Photo Prompts",
+                    subtitle: "Get prompted to attach photos to all-time records",
                     icon: "camera.fill",
                     isEnabled: $photoPromptsEnabled
                 )

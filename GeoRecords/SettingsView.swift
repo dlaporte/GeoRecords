@@ -51,21 +51,31 @@ struct SettingsView: View {
             Form {
                 // MARK: - Notifications Section
                 Section(header: Text("Notifications")) {
-                    Toggle("Notify on New Record", isOn: $settings.notifyOnNewRecord)
-                        .onChange(of: settings.notifyOnNewRecord) { _, _ in
+                    Toggle("Monthly Records", isOn: $settings.notifyOnMonthlyRecords)
+                        .onChange(of: settings.notifyOnMonthlyRecords) { _, _ in
                             settings.saveSettings()
+                        }
+
+                    Toggle("Yearly Records", isOn: $settings.notifyOnYearlyRecords)
+                        .onChange(of: settings.notifyOnYearlyRecords) { _, _ in
+                            settings.saveSettings()
+                        }
+
+                    Toggle("All-Time Records", isOn: $settings.notifyOnAllTimeRecords)
+                        .onChange(of: settings.notifyOnAllTimeRecords) { _, _ in
+                            settings.saveSettings()
+                        }
+
+                    Toggle("Summary Notifications", isOn: $settings.summaryNotificationsEnabled)
+                        .onChange(of: settings.summaryNotificationsEnabled) { _, _ in
+                            settings.saveSettings()
+                            SummaryNotificationManager.shared.scheduleSummaryNotifications()
                         }
 
                     Toggle("Photo Prompts", isOn: $settings.photoPromptsEnabled)
                         .onChange(of: settings.photoPromptsEnabled) { _, _ in
                             settings.saveSettings()
                         }
-
-                    if settings.photoPromptsEnabled {
-                        Text("Get prompted to attach photos when breaking records")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
                 }
                 
                 // MARK: - Units Section
@@ -162,12 +172,20 @@ struct SettingsView: View {
                         HStack {
                             Text("Home")
                             Spacer()
-                            if let coord = settings.homeCoordinate {
-                                Text("(\(coord.latitude, specifier: "%.4f"), \(coord.longitude, specifier: "%.4f"))")
-                                    .foregroundColor(.secondary)
-                            } else {
-                                Text("Not set")
-                                    .foregroundColor(.secondary)
+                            VStack(alignment: .trailing, spacing: 2) {
+                                if let locationName = settings.homeLocationName {
+                                    Text(locationName)
+                                        .foregroundColor(.primary)
+                                        .multilineTextAlignment(.trailing)
+                                }
+                                if let coord = settings.homeCoordinate {
+                                    Text("(\(coord.latitude, specifier: "%.4f"), \(coord.longitude, specifier: "%.4f"))")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                } else {
+                                    Text("Not set")
+                                        .foregroundColor(.secondary)
+                                }
                             }
                         }
                     }

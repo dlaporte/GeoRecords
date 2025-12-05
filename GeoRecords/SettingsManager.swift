@@ -14,12 +14,16 @@ class SettingsManager: ObservableObject {
 
     // MARK: - Published Properties
     @Published var hasCompletedSetup: Bool
-    @Published var notifyOnNewRecord: Bool
+    @Published var notifyOnMonthlyRecords: Bool
+    @Published var notifyOnYearlyRecords: Bool
+    @Published var notifyOnAllTimeRecords: Bool
+    @Published var summaryNotificationsEnabled: Bool
     @Published var photoPromptsEnabled: Bool
     @Published var minLatitudeDelta: Double
     @Published var minLongitudeDelta: Double
     @Published var homeAddress: String
     @Published var homeCoordinate: CLLocationCoordinate2D?
+    @Published var homeLocationName: String?
     @Published var unitSystem: UnitSystem
 
     // Separate settings for Imperial and Metric
@@ -53,7 +57,10 @@ class SettingsManager: ObservableObject {
 
     // MARK: - Default Values
     private static let defaultHasCompletedSetup = false
-    private static let defaultNotifyOnNewRecord = true
+    private static let defaultNotifyOnMonthlyRecords = false
+    private static let defaultNotifyOnYearlyRecords = false
+    private static let defaultNotifyOnAllTimeRecords = false  // Set by user in wizard
+    private static let defaultSummaryNotificationsEnabled = true  // Set by user in wizard
     private static let defaultPhotoPromptsEnabled = true
     private static let defaultMinLatitudeDelta = 0.1  // ~7 miles / 11 km
     private static let defaultMinLongitudeDelta = 0.1  // ~7 miles / 11 km
@@ -85,8 +92,32 @@ class SettingsManager: ObservableObject {
 
         // Initialize common properties
         self.hasCompletedSetup = defaults.object(forKey: "hasCompletedSetup") as? Bool ?? Self.defaultHasCompletedSetup
-        self.notifyOnNewRecord = defaults.object(forKey: "notifyOnNewRecord") as? Bool ?? Self.defaultNotifyOnNewRecord
+
+        // Load notification settings (migrate old setting if needed)
+        if let oldNotifySetting = defaults.object(forKey: "notifyOnNewRecord") as? Bool {
+            // Migrate from old single setting to new timeframe-based settings
+            self.notifyOnMonthlyRecords = false
+            self.notifyOnYearlyRecords = false
+            self.notifyOnAllTimeRecords = oldNotifySetting
+            defaults.removeObject(forKey: "notifyOnNewRecord")
+        } else {
+            self.notifyOnMonthlyRecords = defaults.object(forKey: "notifyOnMonthlyRecords") as? Bool ?? Self.defaultNotifyOnMonthlyRecords
+            self.notifyOnYearlyRecords = defaults.object(forKey: "notifyOnYearlyRecords") as? Bool ?? Self.defaultNotifyOnYearlyRecords
+            self.notifyOnAllTimeRecords = defaults.object(forKey: "notifyOnAllTimeRecords") as? Bool ?? Self.defaultNotifyOnAllTimeRecords
+        }
+
         self.photoPromptsEnabled = defaults.object(forKey: "photoPromptsEnabled") as? Bool ?? Self.defaultPhotoPromptsEnabled
+
+        // Load summary notifications setting (migrate from old separate settings if needed)
+        if let oldMonthlySetting = defaults.object(forKey: "monthlySummaryEnabled") as? Bool,
+           let oldYearlySetting = defaults.object(forKey: "yearlySummaryEnabled") as? Bool {
+            // Migrate: enable if either was enabled
+            self.summaryNotificationsEnabled = oldMonthlySetting || oldYearlySetting
+            defaults.removeObject(forKey: "monthlySummaryEnabled")
+            defaults.removeObject(forKey: "yearlySummaryEnabled")
+        } else {
+            self.summaryNotificationsEnabled = defaults.object(forKey: "summaryNotificationsEnabled") as? Bool ?? Self.defaultSummaryNotificationsEnabled
+        }
         self.minLatitudeDelta = defaults.object(forKey: "minLatitudeDelta") as? Double ?? Self.defaultMinLatitudeDelta
         self.minLongitudeDelta = defaults.object(forKey: "minLongitudeDelta") as? Double ?? Self.defaultMinLongitudeDelta
         self.unitSystem = loadedUnitSystem
@@ -120,6 +151,7 @@ class SettingsManager: ObservableObject {
         }
 
         self.homeAddress = defaults.string(forKey: "homeAddress") ?? Self.defaultHomeAddress
+        self.homeLocationName = defaults.string(forKey: "homeLocationName")
         if let lat = defaults.object(forKey: "homeLatitude") as? Double,
            let lon = defaults.object(forKey: "homeLongitude") as? Double {
             let coord = CLLocationCoordinate2D(latitude: lat, longitude: lon)
@@ -145,7 +177,10 @@ class SettingsManager: ObservableObject {
         let defaults = UserDefaults.standard
 
         defaults.set(hasCompletedSetup, forKey: "hasCompletedSetup")
-        defaults.set(notifyOnNewRecord, forKey: "notifyOnNewRecord")
+        defaults.set(notifyOnMonthlyRecords, forKey: "notifyOnMonthlyRecords")
+        defaults.set(notifyOnYearlyRecords, forKey: "notifyOnYearlyRecords")
+        defaults.set(notifyOnAllTimeRecords, forKey: "notifyOnAllTimeRecords")
+        defaults.set(summaryNotificationsEnabled, forKey: "summaryNotificationsEnabled")
         defaults.set(photoPromptsEnabled, forKey: "photoPromptsEnabled")
         defaults.set(minLatitudeDelta, forKey: "minLatitudeDelta")
         defaults.set(minLongitudeDelta, forKey: "minLongitudeDelta")
@@ -157,6 +192,9 @@ class SettingsManager: ObservableObject {
         defaults.set(minDistanceDeltaMetersMetric, forKey: "minDistanceDeltaMetersMetric")
 
         defaults.set(homeAddress, forKey: "homeAddress")
+        if let homeLocationName = homeLocationName {
+            defaults.set(homeLocationName, forKey: "homeLocationName")
+        }
         if let homeCoord = homeCoordinate {
             defaults.set(homeCoord.latitude, forKey: "homeLatitude")
             defaults.set(homeCoord.longitude, forKey: "homeLongitude")
@@ -166,7 +204,10 @@ class SettingsManager: ObservableObject {
     }
     
     func resetToDefaults() {
-        notifyOnNewRecord = Self.defaultNotifyOnNewRecord
+        notifyOnMonthlyRecords = Self.defaultNotifyOnMonthlyRecords
+        notifyOnYearlyRecords = Self.defaultNotifyOnYearlyRecords
+        notifyOnAllTimeRecords = Self.defaultNotifyOnAllTimeRecords
+        summaryNotificationsEnabled = Self.defaultSummaryNotificationsEnabled
         minLatitudeDelta = Self.defaultMinLatitudeDelta
         minLongitudeDelta = Self.defaultMinLongitudeDelta
 

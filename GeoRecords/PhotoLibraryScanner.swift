@@ -13,6 +13,8 @@ struct DiscoveredRecord: Identifiable {
     let timestamp: Date
     let photoAsset: PHAsset
     var selected: Bool = true
+    var beatsTimeFrames: [TimeFrame]  // Which timeframes this record beats
+    var locationName: String?  // Reverse geocoded location name
 }
 
 @MainActor
@@ -22,16 +24,21 @@ class PhotoLibraryScanner: ObservableObject {
     @Published var totalPhotos = 0
     @Published var scannedPhotos = 0
     @Published var photosWithLocation = 0
-    @Published var discoveredRecords: [DiscoveredRecord] = []
+    @Published var discoveredRecords: [DiscoveredRecord] = []  // Currently displayed record(s)
     @Published var errorMessage: String?
 
-    // Current record being confirmed
-    @Published var currentConfirmationIndex = 0
+    // Three-phase confirmation flow
+    @Published var currentTimeFrame: TimeFrame? = nil  // Current phase: month, year, or allTime
+    @Published var currentRecordTypeIndex = 0  // Index into recordTypes array
     @Published var isConfirming = false
 
-    // Track all candidates for each record type (sorted by extremeness)
-    private var allCandidates: [String: [DiscoveredRecord]] = [:]
-    private var currentCandidateIndex: [String: Int] = [:]
+    private let recordTypes = ["Furthest North", "Furthest South", "Furthest East", "Furthest West",
+                               "Furthest Up", "Furthest Down", "Furthest from Home"]
+
+    // Candidates organized by timeframe, then record type (sorted by extremeness)
+    private var candidatesByTimeFrame: [TimeFrame: [String: [DiscoveredRecord]]] = [:]
+    private var currentCandidateIndices: [String: Int] = [:]  // Key format: "timeFrame_recordType"
+    var confirmedRecords: [DiscoveredRecord] = []  // All confirmed records for import
 
     func requestPhotoLibraryAccess(completion: @escaping (Bool) -> Void) {
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
@@ -50,8 +57,12 @@ class PhotoLibraryScanner: ObservableObject {
         photosWithLocation = 0
         discoveredRecords = []
         errorMessage = nil
-        currentConfirmationIndex = 0
+        currentTimeFrame = nil
+        currentRecordTypeIndex = 0
         isConfirming = false
+        candidatesByTimeFrame = [:]
+        currentCandidateIndices = [:]
+        confirmedRecords = []
 
         // Fetch all photos (can't filter by location in predicate)
         let fetchOptions = PHFetchOptions()
@@ -123,123 +134,246 @@ class PhotoLibraryScanner: ObservableObject {
             try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
         }
 
-        // Sort candidates by extremeness
-        northCandidates.sort { $0.value > $1.value } // Highest latitude first
-        southCandidates.sort { $0.value < $1.value } // Lowest latitude first
-        eastCandidates.sort { $0.value > $1.value } // Highest longitude first
-        westCandidates.sort { $0.value < $1.value } // Lowest longitude first
-        upCandidates.sort { $0.value > $1.value } // Highest altitude first
-        downCandidates.sort { $0.value < $1.value } // Lowest altitude first
-        fromHomeCandidates.sort { $0.value > $1.value } // Furthest distance first
+        // Get current month and year boundaries
+        let calendar = Calendar.current
+        let now = Date()
+        let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
 
-        // Convert all candidates to DiscoveredRecords and store them
-        func convertCandidates(_ candidates: [(value: Double, asset: PHAsset, location: CLLocation)],
-                              recordType: String,
-                              valueTransform: ((Double) -> Double)? = nil) -> [DiscoveredRecord] {
-            return candidates.map { candidate in
+        // Sort candidates by extremeness
+        northCandidates.sort { $0.value > $1.value }  // Highest latitude first
+        southCandidates.sort { $0.value < $1.value }  // Lowest latitude first
+        eastCandidates.sort { $0.value > $1.value }  // Highest longitude first
+        westCandidates.sort { $0.value < $1.value }  // Lowest longitude first
+        upCandidates.sort { $0.value > $1.value }  // Highest altitude first
+        downCandidates.sort { $0.value < $1.value }  // Lowest altitude first
+        fromHomeCandidates.sort { $0.value > $1.value }  // Furthest distance first
+
+        // Convert and filter candidates by timeframe
+        func buildCandidatesForTimeframe(
+            _ candidates: [(value: Double, asset: PHAsset, location: CLLocation)],
+            recordType: String,
+            timeFrame: TimeFrame,
+            valueTransform: ((Double) -> Double)? = nil
+        ) -> [DiscoveredRecord] {
+            return candidates.compactMap { candidate in
+                guard let timestamp = candidate.asset.creationDate else { return nil }
+
+                // Filter by timeframe
+                let qualifies: Bool
+                switch timeFrame {
+                case .month:
+                    qualifies = timestamp >= startOfMonth
+                case .year:
+                    qualifies = timestamp >= startOfYear
+                case .allTime:
+                    qualifies = true
+                }
+
+                guard qualifies else { return nil }
+
                 let finalValue = valueTransform?(candidate.value) ?? candidate.value
                 return DiscoveredRecord(
                     recordType: recordType,
                     value: finalValue,
                     coordinate: candidate.location.coordinate,
                     altitude: candidate.location.altitude,
-                    timestamp: candidate.asset.creationDate ?? Date(),
+                    timestamp: timestamp,
                     photoAsset: candidate.asset,
-                    selected: true
+                    selected: true,
+                    beatsTimeFrames: [timeFrame],
+                    locationName: nil
                 )
             }
         }
 
-        allCandidates = [
-            "Furthest North": convertCandidates(northCandidates, recordType: "Furthest North"),
-            "Furthest South": convertCandidates(southCandidates, recordType: "Furthest South"),
-            "Furthest East": convertCandidates(eastCandidates, recordType: "Furthest East"),
-            "Furthest West": convertCandidates(westCandidates, recordType: "Furthest West"),
-            "Furthest Up": convertCandidates(upCandidates, recordType: "Furthest Up"),
-            "Furthest Down": convertCandidates(downCandidates, recordType: "Furthest Down"),
-            "Furthest from Home": convertCandidates(fromHomeCandidates, recordType: "Furthest from Home") { $0 * 3.28084 }
+        // Organize candidates by timeframe and record type
+        let candidateSets: [(name: String, candidates: [(value: Double, asset: PHAsset, location: CLLocation)], transform: ((Double) -> Double)?)] = [
+            ("Furthest North", northCandidates, nil),
+            ("Furthest South", southCandidates, nil),
+            ("Furthest East", eastCandidates, nil),
+            ("Furthest West", westCandidates, nil),
+            ("Furthest Up", upCandidates, nil),
+            ("Furthest Down", downCandidates, nil),
+            ("Furthest from Home", fromHomeCandidates, { $0 * 3.28084 })
         ]
 
-        // Initialize indices
-        currentCandidateIndex = [:]
-        for type in allCandidates.keys {
-            currentCandidateIndex[type] = 0
-        }
+        candidatesByTimeFrame = [
+            .month: [:],
+            .year: [:],
+            .allTime: [:]
+        ]
 
-        // Build initial discovered records (first candidate of each type)
-        var records: [DiscoveredRecord] = []
-        for type in ["Furthest North", "Furthest South", "Furthest East", "Furthest West",
-                     "Furthest Up", "Furthest Down", "Furthest from Home"] {
-            if let candidates = allCandidates[type], !candidates.isEmpty {
-                records.append(candidates[0])
+        for (recordType, candidates, transform) in candidateSets {
+            for timeFrame in TimeFrame.allCases {
+                let filteredCandidates = buildCandidatesForTimeframe(
+                    candidates,
+                    recordType: recordType,
+                    timeFrame: timeFrame,
+                    valueTransform: transform
+                )
+                candidatesByTimeFrame[timeFrame]?[recordType] = filteredCandidates
+
+                // Initialize candidate index for this combination
+                let key = "\(timeFrame.rawValue)_\(recordType)"
+                currentCandidateIndices[key] = 0
             }
         }
 
-        discoveredRecords = records
         isScanning = false
 
-        // Check if we found any records
-        if records.isEmpty {
+        // Check if we have any candidates across all timeframes
+        var totalCandidates = 0
+        for timeFrame in TimeFrame.allCases {
+            for recordType in recordTypes {
+                if let candidates = candidatesByTimeFrame[timeFrame]?[recordType], !candidates.isEmpty {
+                    totalCandidates += 1
+                }
+            }
+        }
+
+        if totalCandidates == 0 {
             if photosWithLocation == 0 {
                 errorMessage = "No photos with location data found in your library"
             } else {
                 errorMessage = "No records found that would beat your current records"
             }
         } else {
-            // Start confirmation flow
+            // Start confirmation flow with monthly records first
+            currentTimeFrame = .month
+            currentRecordTypeIndex = 0
             isConfirming = true
+            updateCurrentRecord()
         }
+    }
+
+    // Update discoveredRecords with the current record being shown
+    private func updateCurrentRecord() {
+        guard let timeFrame = currentTimeFrame else {
+            isConfirming = false
+            return
+        }
+
+        // Find next record type with candidates for this timeframe
+        while currentRecordTypeIndex < recordTypes.count {
+            let recordType = recordTypes[currentRecordTypeIndex]
+            let key = "\(timeFrame.rawValue)_\(recordType)"
+            let candidateIndex = currentCandidateIndices[key] ?? 0
+
+            if let candidates = candidatesByTimeFrame[timeFrame]?[recordType],
+               candidateIndex < candidates.count {
+                // Found a candidate to show
+                discoveredRecords = [candidates[candidateIndex]]
+                return
+            }
+
+            // No more candidates for this record type, move to next
+            currentRecordTypeIndex += 1
+        }
+
+        // No more record types in this timeframe, move to next timeframe
+        advanceToNextTimeFrame()
+    }
+
+    private func advanceToNextTimeFrame() {
+        guard let currentTF = currentTimeFrame else {
+            isConfirming = false
+            return
+        }
+
+        switch currentTF {
+        case .month:
+            currentTimeFrame = .year
+        case .year:
+            currentTimeFrame = .allTime
+        case .allTime:
+            // Done with all timeframes
+            isConfirming = false
+            return
+        }
+
+        currentRecordTypeIndex = 0
+        updateCurrentRecord()
     }
 
     func confirmCurrentRecord() {
-        if currentConfirmationIndex < discoveredRecords.count {
-            discoveredRecords[currentConfirmationIndex].selected = true
-            moveToNextConfirmation()
-        }
+        guard !discoveredRecords.isEmpty else { return }
+
+        // Add to confirmed records for import
+        confirmedRecords.append(discoveredRecords[0])
+
+        // Move to next record
+        advanceToNextRecord()
     }
 
     func rejectCurrentRecord() {
-        if currentConfirmationIndex < discoveredRecords.count {
-            let currentRecord = discoveredRecords[currentConfirmationIndex]
-            let recordType = currentRecord.recordType
-
-            // Mark current as not selected
-            discoveredRecords[currentConfirmationIndex].selected = false
-
-            // Try to get next candidate for this record type
-            if let candidates = allCandidates[recordType],
-               let currentIndex = currentCandidateIndex[recordType] {
-                let nextIndex = currentIndex + 1
-                if nextIndex < candidates.count {
-                    // Replace with next candidate
-                    currentCandidateIndex[recordType] = nextIndex
-                    discoveredRecords[currentConfirmationIndex] = candidates[nextIndex]
-                    // Stay on same confirmation index to show next candidate
-                    return
-                }
-            }
-
-            // No more candidates for this type, move to next record type
-            moveToNextConfirmation()
+        guard let timeFrame = currentTimeFrame,
+              currentRecordTypeIndex < recordTypes.count else {
+            return
         }
+
+        let recordType = recordTypes[currentRecordTypeIndex]
+        let key = "\(timeFrame.rawValue)_\(recordType)"
+
+        // Try next candidate for this type/timeframe
+        if var candidateIndex = currentCandidateIndices[key] {
+            candidateIndex += 1
+            currentCandidateIndices[key] = candidateIndex
+
+            if let candidates = candidatesByTimeFrame[timeFrame]?[recordType],
+               candidateIndex < candidates.count {
+                // Show next candidate
+                discoveredRecords = [candidates[candidateIndex]]
+                return
+            }
+        }
+
+        // No more candidates for this type, mark as skipped and move to next
+        advanceToNextRecord()
     }
 
-    private func moveToNextConfirmation() {
-        currentConfirmationIndex += 1
-        if currentConfirmationIndex >= discoveredRecords.count {
-            isConfirming = false
-        }
+    private func advanceToNextRecord() {
+        currentRecordTypeIndex += 1
+        updateCurrentRecord()
     }
 
     var currentRecord: DiscoveredRecord? {
-        guard isConfirming && currentConfirmationIndex < discoveredRecords.count else {
+        guard isConfirming, !discoveredRecords.isEmpty else {
             return nil
         }
-        return discoveredRecords[currentConfirmationIndex]
+        return discoveredRecords[0]
+    }
+
+    var currentTimeFrameName: String {
+        guard let timeFrame = currentTimeFrame else { return "" }
+        return timeFrame.rawValue
+    }
+
+    var currentProgress: (current: Int, total: Int) {
+        guard let timeFrame = currentTimeFrame else { return (0, 0) }
+
+        // Calculate overall progress across all timeframes
+        let allTimeframes = TimeFrame.allCases
+        guard let currentTimeFrameIndex = allTimeframes.firstIndex(of: timeFrame) else {
+            return (0, recordTypes.count * allTimeframes.count)
+        }
+
+        let completedTimeframes = currentTimeFrameIndex * recordTypes.count
+        let currentInTimeframe = currentRecordTypeIndex
+        let total = recordTypes.count * allTimeframes.count
+
+        return (completedTimeframes + currentInTimeframe + 1, total)
+    }
+
+    /// Update the location name for a specific record
+    func updateLocationName(for recordId: UUID, locationName: String) {
+        if let index = discoveredRecords.firstIndex(where: { $0.id == recordId }) {
+            discoveredRecords[index].locationName = locationName
+        }
     }
 
     func importSelectedRecords(completion: @escaping (Int) -> Void) async {
-        let selectedRecords = discoveredRecords.filter { $0.selected }
+        let selectedRecords = confirmedRecords
 
         // Block ALL alerts during import - this is foolproof
         await MainActor.run {
@@ -250,24 +384,32 @@ class PhotoLibraryScanner: ObservableObject {
             // Get photo data from asset
             let photoData = await getPhotoData(from: record.photoAsset)
 
-            // Create RecordDetail with photo
-            let detail = RecordDetail(
-                value: record.value,
-                timestamp: record.timestamp,
-                coordinate: record.coordinate,
-                altitude: record.altitude,
-                locationName: nil, // Could geocode if needed
-                recordType: record.recordType,
-                photoData: photoData
-            )
+            // Use the timeframes that were determined during scanning
+            // (These are the specific timeframes this photo was selected for)
+            let timeFrames = record.beatsTimeFrames
+            debugLog("📅 Importing \(record.recordType) for timeframes: \(timeFrames.map { $0.rawValue }.joined(separator: ", "))")
 
-            // Add to record manager and history
-            await MainActor.run {
-                // Update in-memory record
-                updateRecordManager(recordType: record.recordType, detail: detail)
+            // Create records for each applicable timeframe
+            for timeFrame in timeFrames {
+                let detail = RecordDetail(
+                    value: record.value,
+                    timestamp: record.timestamp,
+                    coordinate: record.coordinate,
+                    altitude: record.altitude,
+                    locationName: record.locationName,  // Use geocoded name from confirmation
+                    recordType: record.recordType,
+                    timeFrame: timeFrame,
+                    photoData: photoData
+                )
 
-                // Save to Core Data
-                RecordHistoryManager.shared.addRecord(recordType: record.recordType, detail: detail)
+                // Add to record manager and history
+                await MainActor.run {
+                    // Update in-memory record
+                    updateRecordManager(recordType: record.recordType, detail: detail, timeFrame: timeFrame)
+
+                    // Save to Core Data
+                    RecordHistoryManager.shared.addRecord(recordType: record.recordType, detail: detail)
+                }
             }
         }
 
@@ -284,68 +426,31 @@ class PhotoLibraryScanner: ObservableObject {
         }
     }
 
-    private func updateRecordManager(recordType: String, detail: RecordDetail) {
+    private func updateRecordManager(recordType: String, detail: RecordDetail, timeFrame: TimeFrame) {
         let recordManager = RecordManager.shared
+        let existing = recordManager.getRecord(type: recordType, timeFrame: timeFrame)
 
-        switch recordType {
-        case "Furthest North":
-            if let existing = recordManager.furthestNorth {
-                if detail.value > existing.value {
-                    recordManager.furthestNorth = detail
-                }
-            } else {
-                recordManager.furthestNorth = detail
+        // Determine if this record should replace the existing one
+        let shouldUpdate: Bool
+        if let existing = existing {
+            switch recordType {
+            case "Furthest North", "Furthest East", "Furthest Up", "Furthest from Home":
+                shouldUpdate = detail.value > existing.value  // Higher is better
+                debugLog("🔄 \(recordType) (\(timeFrame.rawValue)): new=\(detail.value) vs existing=\(existing.value), updating=\(shouldUpdate)")
+            case "Furthest South", "Furthest West", "Furthest Down":
+                shouldUpdate = detail.value < existing.value  // Lower is better
+                debugLog("🔄 \(recordType) (\(timeFrame.rawValue)): new=\(detail.value) vs existing=\(existing.value), updating=\(shouldUpdate)")
+            default:
+                shouldUpdate = false
             }
-        case "Furthest South":
-            if let existing = recordManager.furthestSouth {
-                if detail.value < existing.value {
-                    recordManager.furthestSouth = detail
-                }
-            } else {
-                recordManager.furthestSouth = detail
-            }
-        case "Furthest East":
-            if let existing = recordManager.furthestEast {
-                if detail.value > existing.value {
-                    recordManager.furthestEast = detail
-                }
-            } else {
-                recordManager.furthestEast = detail
-            }
-        case "Furthest West":
-            if let existing = recordManager.furthestWest {
-                if detail.value < existing.value {
-                    recordManager.furthestWest = detail
-                }
-            } else {
-                recordManager.furthestWest = detail
-            }
-        case "Furthest Up":
-            if let existing = recordManager.furthestUp {
-                if detail.value > existing.value {
-                    recordManager.furthestUp = detail
-                }
-            } else {
-                recordManager.furthestUp = detail
-            }
-        case "Furthest Down":
-            if let existing = recordManager.furthestDown {
-                if detail.value < existing.value {
-                    recordManager.furthestDown = detail
-                }
-            } else {
-                recordManager.furthestDown = detail
-            }
-        case "Furthest from Home":
-            if let existing = recordManager.furthestFromHome {
-                if detail.value > existing.value {
-                    recordManager.furthestFromHome = detail
-                }
-            } else {
-                recordManager.furthestFromHome = detail
-            }
-        default:
-            break
+        } else {
+            shouldUpdate = true  // No existing record, so set it
+            debugLog("🆕 \(recordType) (\(timeFrame.rawValue)): No existing record, setting new one with value=\(detail.value)")
+        }
+
+        if shouldUpdate {
+            recordManager.setRecord(type: recordType, timeFrame: timeFrame, record: detail)
+            debugLog("✅ Updated \(recordType) (\(timeFrame.rawValue)) to \(detail.value)")
         }
     }
 

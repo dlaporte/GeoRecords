@@ -31,15 +31,17 @@ The app uses several singleton managers that serve as the source of truth:
 
 2. **RecordManager** (`RecordManager.swift`)
    - Singleton: `RecordManager.shared`
-   - Maintains in-memory `@Published` properties for all current records:
-     - `furthestNorth`, `furthestSouth`, `furthestEast`, `furthestWest`
-     - `furthestUp`, `furthestDown`, `furthestFromHome`
-   - Each record is a `RecordDetail` struct (value, timestamp, coordinate, altitude, locationName, recordType)
+   - Maintains in-memory `@Published` properties for all current records across 3 timeframes (Monthly, Yearly, All-Time):
+     - Monthly: `furthestNorthMonth`, `furthestSouthMonth`, etc.
+     - Yearly: `furthestNorthYear`, `furthestSouthYear`, etc.
+     - All-Time: `furthestNorthAllTime`, `furthestSouthAllTime`, etc.
+   - Each record is a `RecordDetail` struct (value, timestamp, coordinate, altitude, locationName, recordType, timeFrame)
+   - Helper methods: `getRecord(type:timeFrame:)` and `setRecord(type:timeFrame:record:)` for accessing records
    - `updateRecords(with:reverseGeocodedName:)` is the main entry point
      - Automatically performs reverse geocoding if locationName not provided
      - Compares new location against current records using threshold deltas from SettingsManager
      - Creates new records and saves to Core Data via RecordHistoryManager
-     - Sends notifications if `SettingsManager.shared.notifyOnNewRecord == true`
+     - Sends notifications based on timeframe-specific settings (monthly, yearly, all-time)
    - `loadRecordsFromHistory()` - Called on init to restore records from Core Data
    - **Important:** Altitude records store raw meters in Core Data but display conversions based on unit system
 
@@ -47,7 +49,9 @@ The app uses several singleton managers that serve as the source of truth:
    - Singleton: `SettingsManager.shared`
    - Persists to `UserDefaults`
    - Key settings:
-     - `notifyOnNewRecord: Bool` - Whether to send push notifications
+     - `notifyOnMonthlyRecords: Bool` - Whether to send notifications for monthly records (default: false)
+     - `notifyOnYearlyRecords: Bool` - Whether to send notifications for yearly records (default: false)
+     - `notifyOnAllTimeRecords: Bool` - Whether to send notifications for all-time records (default: true)
      - `minLatitudeDelta`, `minLongitudeDelta` - Threshold in degrees for directional records
      - `minAltitudeDeltaFeet` - Threshold for altitude records (stored as feet, converted to meters)
      - `homeCoordinate: CLLocationCoordinate2D?` - For "Furthest from Home" calculations
@@ -150,7 +154,13 @@ RecordManager.shared.updateRecords(with: testLocation, reverseGeocodedName: "Tes
 ### Accessing Current Records
 
 ```swift
-if let record = RecordManager.shared.furthestNorth {
+// Access a specific timeframe record
+if let record = RecordManager.shared.furthestNorthAllTime {
+    print("Furthest north: \(record.value)° at \(record.locationName ?? "Unknown")")
+}
+
+// Or use the helper method
+if let record = RecordManager.shared.getRecord(type: "Furthest North", timeFrame: .allTime) {
     print("Furthest north: \(record.value)° at \(record.locationName ?? "Unknown")")
 }
 ```

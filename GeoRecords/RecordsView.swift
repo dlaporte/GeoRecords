@@ -10,17 +10,18 @@ struct RecordsView: View {
     @State private var selectedRecord: RecordDetail?
     @State private var currentRecordIndex = 0
     @State private var mapPosition: MapCameraPosition = .automatic
+    @State private var selectedTimeFrame: TimeFrame = .allTime
 
-    // Computed property to get all non-nil records in order
+    // Computed property to get all non-nil records in order for the selected timeframe
     private var allRecords: [RecordDetail] {
         [
-            recordManager.furthestNorth,
-            recordManager.furthestSouth,
-            recordManager.furthestEast,
-            recordManager.furthestWest,
-            recordManager.furthestUp,
-            recordManager.furthestDown,
-            recordManager.furthestFromHome
+            recordManager.getRecord(type: "Furthest North", timeFrame: selectedTimeFrame),
+            recordManager.getRecord(type: "Furthest South", timeFrame: selectedTimeFrame),
+            recordManager.getRecord(type: "Furthest East", timeFrame: selectedTimeFrame),
+            recordManager.getRecord(type: "Furthest West", timeFrame: selectedTimeFrame),
+            recordManager.getRecord(type: "Furthest Up", timeFrame: selectedTimeFrame),
+            recordManager.getRecord(type: "Furthest Down", timeFrame: selectedTimeFrame),
+            recordManager.getRecord(type: "Furthest from Home", timeFrame: selectedTimeFrame)
         ].compactMap { $0 }
     }
 
@@ -45,29 +46,14 @@ struct RecordsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     // Map in upper half
-                    ZStack(alignment: .topTrailing) {
-                        Map(position: $mapPosition) {
-                            if let currentRecord = allRecords[safe: currentRecordIndex] {
-                                Marker(currentRecord.recordType, coordinate: currentRecord.coordinate)
-                                    .tint(colorForRecordType(currentRecord.recordType))
-                            }
+                    Map(position: $mapPosition) {
+                        if let currentRecord = allRecords[safe: currentRecordIndex] {
+                            Marker(currentRecord.recordType, coordinate: currentRecord.coordinate)
+                                .tint(colorForRecordType(currentRecord.recordType))
                         }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: UIScreen.main.bounds.height * 0.5)
-
-                        // Record counter
-                        HStack(spacing: 4) {
-                            ForEach(0..<allRecords.count, id: \.self) { index in
-                                Circle()
-                                    .fill(index == currentRecordIndex ? Color.blue : Color.gray.opacity(0.5))
-                                    .frame(width: 8, height: 8)
-                            }
-                        }
-                        .padding(12)
-                        .background(Color(UIColor.systemBackground).opacity(0.9))
-                        .cornerRadius(20)
-                        .padding()
                     }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: UIScreen.main.bounds.height * 0.5)
 
                     // Swipeable cards in lower half
                     TabView(selection: $currentRecordIndex) {
@@ -97,6 +83,28 @@ struct RecordsView: View {
                 }
             }
             .navigationTitle("Records")
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Picker("Time Frame", selection: $selectedTimeFrame) {
+                        ForEach(TimeFrame.allCases, id: \.self) { timeFrame in
+                            Text(timeFrame.rawValue).tag(timeFrame)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 280)
+                }
+            }
+            .onChange(of: selectedTimeFrame) { _, _ in
+                // Update map when timeframe changes
+                if let record = allRecords[safe: currentRecordIndex] {
+                    withAnimation {
+                        mapPosition = .region(MKCoordinateRegion(
+                            center: record.coordinate,
+                            span: MKCoordinateSpan(latitudeDelta: 2.0, longitudeDelta: 2.0)
+                        ))
+                    }
+                }
+            }
             .navigationDestination(isPresented: $navigateToDetail) {
                 if let record = selectedRecord {
                     RecordDetailView(record: record)
@@ -129,16 +137,8 @@ struct RecordsView: View {
     }
 
     func recordForType(_ type: String) -> RecordDetail? {
-        switch type {
-        case "Furthest North": return recordManager.furthestNorth
-        case "Furthest South": return recordManager.furthestSouth
-        case "Furthest East": return recordManager.furthestEast
-        case "Furthest West": return recordManager.furthestWest
-        case "Furthest Up": return recordManager.furthestUp
-        case "Furthest Down": return recordManager.furthestDown
-        case "Furthest from Home": return recordManager.furthestFromHome
-        default: return nil
-        }
+        // Deep links from notifications always go to all-time records
+        return recordManager.getRecord(type: type, timeFrame: .allTime)
     }
 
     private func colorForRecordType(_ type: String) -> Color {

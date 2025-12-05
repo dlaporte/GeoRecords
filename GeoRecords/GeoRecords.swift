@@ -5,6 +5,7 @@ import UserNotifications
 class DeepLinkManager: ObservableObject {
     static let shared = DeepLinkManager()
     @Published var recordType: String? = nil
+    @Published var navigateToStats = false
 }
 
 // Notification delegate that handles incoming notifications.
@@ -27,10 +28,21 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let userInfo = response.notification.request.content.userInfo
+
+        // Handle record deep link
         if let recordType = userInfo["recordType"] as? String {
             DeepLinkManager.shared.recordType = recordType
             debugLog("DeepLink: recordType set to \(recordType)")
         }
+
+        // Handle stats page deep link
+        if let deepLink = userInfo["deepLink"] as? String, deepLink == "stats" {
+            Task { @MainActor in
+                DeepLinkManager.shared.navigateToStats = true
+                debugLog("DeepLink: navigating to stats")
+            }
+        }
+
         completionHandler()
     }
 }
@@ -54,6 +66,9 @@ struct GeoRecords: App {
     init() {
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
         // Don't request notification permissions here - wait for user to approve in setup wizard
+
+        // Schedule summary notifications
+        SummaryNotificationManager.shared.scheduleSummaryNotifications()
     }
     
     var body: some Scene {

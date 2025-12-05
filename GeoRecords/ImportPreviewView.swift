@@ -1,5 +1,6 @@
 import SwiftUI
 import Photos
+import CoreLocation
 
 struct ImportPreviewView: View {
     @EnvironmentObject var scanner: PhotoLibraryScanner
@@ -72,13 +73,16 @@ struct ImportPreviewView: View {
                     }
                     .padding()
                 } else if scanner.isConfirming {
-                    // Confirmation flow - show one record at a time
+                    // Confirmation flow - show one record at a time per timeframe
                     if let currentRecord = scanner.currentRecord {
+                        let progress = scanner.currentProgress
                         RecordConfirmationView(
                             record: currentRecord,
-                            recordNumber: scanner.currentConfirmationIndex + 1,
-                            totalRecords: scanner.discoveredRecords.count,
+                            timeFrameName: scanner.currentTimeFrameName,
+                            recordNumber: progress.current,
+                            totalRecords: progress.total,
                             unitSystem: settings.unitSystem,
+                            scanner: scanner,
                             onConfirm: {
                                 scanner.confirmCurrentRecord()
                             },
@@ -88,23 +92,26 @@ struct ImportPreviewView: View {
                         )
                     }
                 } else {
-                    // Records found - show preview
-                    List {
-                        Section {
-                            Text("Found \(scanner.discoveredRecords.count) potential records from your photo library!")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
+                    // Confirmation complete - show summary and import button
+                    VStack(spacing: 20) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 60))
+                            .foregroundColor(.green)
+                            .padding(.top, 40)
 
-                        Section(header: Text("Discovered Records")) {
-                            ForEach($scanner.discoveredRecords) { $record in
-                                DiscoveredRecordRow(record: $record, unitSystem: settings.unitSystem)
-                            }
-                        }
-                    }
+                        Text("Confirmation Complete!")
+                            .font(.title2)
+                            .fontWeight(.bold)
 
-                    // Import button
-                    VStack {
+                        Text("You've selected \(scanner.confirmedRecords.count) record(s) to import")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+
+                        Spacer()
+
+                        // Import button
                         Button(action: {
                             importRecords()
                         }) {
@@ -113,7 +120,7 @@ struct ImportPreviewView: View {
                                     ProgressView()
                                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
                                 } else {
-                                    Text("Import Selected Records (\(scanner.discoveredRecords.filter { $0.selected }.count))")
+                                    Text("Import \(scanner.confirmedRecords.count) Record(s)")
                                         .fontWeight(.semibold)
                                 }
                             }
@@ -123,7 +130,7 @@ struct ImportPreviewView: View {
                             .foregroundColor(.white)
                             .cornerRadius(10)
                         }
-                        .disabled(isImporting || scanner.discoveredRecords.filter { $0.selected }.isEmpty)
+                        .disabled(isImporting || scanner.confirmedRecords.isEmpty)
                         .padding()
                     }
                 }
@@ -263,23 +270,56 @@ struct DiscoveredRecordRow: View {
     }
 }
 
+// MARK: - Geocoding Cache
+private actor GeocodingCache {
+    private var cache: [String: String] = [:]
+
+    func getCachedLocation(latitude: Double, longitude: Double) -> String? {
+        let key = cacheKey(latitude: latitude, longitude: longitude)
+        return cache[key]
+    }
+
+    func setCachedLocation(latitude: Double, longitude: Double, name: String) {
+        let key = cacheKey(latitude: latitude, longitude: longitude)
+        cache[key] = name
+    }
+
+    private func cacheKey(latitude: Double, longitude: Double) -> String {
+        // Round to 4 decimal places (~11 meters precision)
+        let roundedLat = round(latitude * 10000) / 10000
+        let roundedLon = round(longitude * 10000) / 10000
+        return "\(roundedLat),\(roundedLon)"
+    }
+}
+
+// Global cache instance
+private let geocodingCache = GeocodingCache()
+
 // MARK: - Record Confirmation View
 struct RecordConfirmationView: View {
     let record: DiscoveredRecord
+    let timeFrameName: String
     let recordNumber: Int
     let totalRecords: Int
     let unitSystem: UnitSystem
+    let scanner: PhotoLibraryScanner
     let onConfirm: () -> Void
     let onReject: () -> Void
 
     @State private var fullSizeImage: UIImage?
     @State private var isLoadingImage = true
+    @State private var locationName: String?
+    @State private var currentRecordId: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
-            // Progress indicator
+            // Progress indicator with timeframe
             VStack(spacing: 8) {
-                Text("Confirm Record \(recordNumber) of \(totalRecords)")
+                Text("Setting \(timeFrameName) Records")
+                    .font(.headline)
+                    .foregroundColor(.primary)
+
+                Text("Confirming \(recordNumber) of \(totalRecords)")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
@@ -321,6 +361,15 @@ struct RecordConfirmationView: View {
                             Text(record.recordType)
                                 .font(.title3)
                                 .fontWeight(.bold)
+                            Spacer()
+                            Text(timeFrameName)
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Color.blue.opacity(0.15))
+                                .foregroundColor(.blue)
+                                .cornerRadius(8)
                         }
 
                         Divider()
@@ -337,14 +386,23 @@ struct RecordConfirmationView: View {
                         }
 
                         // Location
-                        HStack {
-                            Text("Location:")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                            Spacer()
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Location:")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            if let locationName = locationName {
+                                Text(locationName)
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .multilineTextAlignment(.trailing)
+                            }
                             Text(formatCoordinate())
-                                .font(.caption)
-                                .fontWeight(.semibold)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.trailing)
                         }
 
                         // Date
@@ -378,11 +436,11 @@ struct RecordConfirmationView: View {
                     )
 
                     // Question
-                    Text("Is this your photo?")
+                    Text("Does this location look accurate?")
                         .font(.headline)
                         .padding(.top)
 
-                    Text("Only confirm if this is a photo you took or a location you actually visited.")
+                    Text("Confirm only if the GPS data appears correct.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -422,12 +480,16 @@ struct RecordConfirmationView: View {
         }
         .onAppear {
             loadFullSizeImage()
+            geocodeLocation()
         }
-        .onChange(of: record.id) { _, _ in
+        .onChange(of: record.id) { _, newId in
             // Reset and reload when record changes
             isLoadingImage = true
             fullSizeImage = nil
+            locationName = nil
+            currentRecordId = newId
             loadFullSizeImage()
+            geocodeLocation()
         }
         .id(record.id) // Force view refresh when record changes
     }
@@ -492,6 +554,81 @@ struct RecordConfirmationView: View {
         formatter.dateStyle = .long
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+
+    private func geocodeLocation() {
+        let lat = record.coordinate.latitude
+        let lon = record.coordinate.longitude
+
+        // Capture the record ID at the time of the request
+        let requestRecordId = record.id
+        currentRecordId = requestRecordId
+
+        // Check cache first
+        Task {
+            if let cachedName = await geocodingCache.getCachedLocation(latitude: lat, longitude: lon) {
+                debugLog("📍 Using cached location for (\(lat), \(lon)): \(cachedName)")
+
+                // Only update if this result is still relevant
+                if self.currentRecordId == requestRecordId {
+                    await MainActor.run {
+                        self.locationName = cachedName
+                    }
+
+                    // Update the record in the scanner
+                    await MainActor.run {
+                        self.scanner.updateLocationName(for: requestRecordId, locationName: cachedName)
+                    }
+                }
+                return
+            }
+
+            // Not in cache, perform geocoding
+            debugLog("🌐 Geocoding location (\(lat), \(lon))")
+            let location = CLLocation(latitude: lat, longitude: lon)
+            let geocoder = CLGeocoder()
+
+            geocoder.reverseGeocodeLocation(location) { placemarks, error in
+                if let error = error {
+                    debugLog("Geocoding error: \(error.localizedDescription)")
+                    return
+                }
+
+                if let placemark = placemarks?.first {
+                    var components: [String] = []
+
+                    if let locality = placemark.locality {
+                        components.append(locality)
+                    }
+                    if let administrativeArea = placemark.administrativeArea {
+                        components.append(administrativeArea)
+                    }
+                    if let country = placemark.country {
+                        components.append(country)
+                    }
+
+                    let name = components.joined(separator: ", ")
+
+                    // Store in cache
+                    Task {
+                        await geocodingCache.setCachedLocation(latitude: lat, longitude: lon, name: name)
+                        debugLog("💾 Cached location for (\(lat), \(lon)): \(name)")
+                    }
+
+                    // Only update if this result is still relevant (user hasn't moved to another record)
+                    if self.currentRecordId == requestRecordId {
+                        self.locationName = name
+
+                        // Update the record in the scanner
+                        Task { @MainActor in
+                            self.scanner.updateLocationName(for: requestRecordId, locationName: name)
+                        }
+                    } else {
+                        debugLog("Discarding stale geocoding result for record \(requestRecordId)")
+                    }
+                }
+            }
+        }
     }
 
     private func iconForRecordType(_ type: String) -> String {

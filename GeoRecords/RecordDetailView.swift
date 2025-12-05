@@ -119,25 +119,8 @@ struct RecordDetailView: View {
         // Delete from Core Data history
         RecordHistoryManager.shared.deleteRecord(recordId: record.id)
 
-        // Clear from RecordManager in-memory
-        switch record.recordType {
-        case "Furthest North":
-            recordManager.furthestNorth = nil
-        case "Furthest South":
-            recordManager.furthestSouth = nil
-        case "Furthest East":
-            recordManager.furthestEast = nil
-        case "Furthest West":
-            recordManager.furthestWest = nil
-        case "Furthest Up":
-            recordManager.furthestUp = nil
-        case "Furthest Down":
-            recordManager.furthestDown = nil
-        case "Furthest from Home":
-            recordManager.furthestFromHome = nil
-        default:
-            break
-        }
+        // Clear from RecordManager in-memory using the helper method
+        recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: nil)
 
         // Reload records from history to get the next best record
         recordManager.loadRecordsFromHistory()

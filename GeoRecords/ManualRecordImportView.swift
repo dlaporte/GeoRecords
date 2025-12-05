@@ -203,71 +203,66 @@ struct ManualRecordImportView: View {
             return
         }
 
-        let detail = RecordDetail(
-            value: value,
-            timestamp: selectedDate,
-            coordinate: location,
-            altitude: altitude,
-            locationName: nil,
-            recordType: selectedRecordType,
-            photoData: nil
-        )
+        // Get current month and year boundaries
+        let calendar = Calendar.current
+        let now = Date()
+        let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
 
-        // Update record manager
-        updateRecordManager(recordType: selectedRecordType, detail: detail)
+        // Determine which timeframes this record belongs to based on its timestamp
+        let timeFrames: [TimeFrame]
+        if selectedDate >= startOfMonth {
+            timeFrames = [.month, .year, .allTime]  // This month = also this year and all-time
+        } else if selectedDate >= startOfYear {
+            timeFrames = [.year, .allTime]  // This year but not this month
+        } else {
+            timeFrames = [.allTime]  // Only all-time
+        }
 
-        // Save to Core Data
-        RecordHistoryManager.shared.addRecord(recordType: selectedRecordType, detail: detail)
+        // Create records for each applicable timeframe
+        for timeFrame in timeFrames {
+            let detail = RecordDetail(
+                value: value,
+                timestamp: selectedDate,
+                coordinate: location,
+                altitude: altitude,
+                locationName: nil,
+                recordType: selectedRecordType,
+                timeFrame: timeFrame,
+                photoData: nil
+            )
+
+            // Update record manager
+            updateRecordManager(recordType: selectedRecordType, detail: detail, timeFrame: timeFrame)
+
+            // Save to Core Data
+            RecordHistoryManager.shared.addRecord(recordType: selectedRecordType, detail: detail)
+        }
 
         dismiss()
     }
 
-    private func updateRecordManager(recordType: String, detail: RecordDetail) {
+    private func updateRecordManager(recordType: String, detail: RecordDetail, timeFrame: TimeFrame) {
         let recordManager = RecordManager.shared
+        let existing = recordManager.getRecord(type: recordType, timeFrame: timeFrame)
 
-        switch recordType {
-        case "Furthest North":
-            if let existing = recordManager.furthestNorth {
-                if detail.value > existing.value {
-                    recordManager.furthestNorth = detail
-                }
-            } else {
-                recordManager.furthestNorth = detail
+        // Determine if this record should replace the existing one
+        let shouldUpdate: Bool
+        if let existing = existing {
+            switch recordType {
+            case "Furthest North", "Furthest East", "Furthest Up", "Furthest from Home":
+                shouldUpdate = detail.value > existing.value  // Higher is better
+            case "Furthest South", "Furthest West", "Furthest Down":
+                shouldUpdate = detail.value < existing.value  // Lower is better
+            default:
+                shouldUpdate = false
             }
-        case "Furthest South":
-            if let existing = recordManager.furthestSouth {
-                if detail.value < existing.value {
-                    recordManager.furthestSouth = detail
-                }
-            } else {
-                recordManager.furthestSouth = detail
-            }
-        case "Furthest East":
-            if let existing = recordManager.furthestEast {
-                if detail.value > existing.value {
-                    recordManager.furthestEast = detail
-                }
-            } else {
-                recordManager.furthestEast = detail
-            }
-        case "Furthest West":
-            if let existing = recordManager.furthestWest {
-                if detail.value < existing.value {
-                    recordManager.furthestWest = detail
-                }
-            } else {
-                recordManager.furthestWest = detail
-            }
-        case "Furthest from Home":
-            if let existing = recordManager.furthestFromHome {
-                if detail.value > existing.value {
-                    recordManager.furthestFromHome = detail
-                }
-            } else {
-                recordManager.furthestFromHome = detail
-            }
-        default:
-            break
+        } else {
+            shouldUpdate = true  // No existing record, so set it
+        }
+
+        if shouldUpdate {
+            recordManager.setRecord(type: recordType, timeFrame: timeFrame, record: detail)
         }
     }
 }

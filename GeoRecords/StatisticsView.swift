@@ -14,63 +14,16 @@ struct StatisticsView: View {
                     if let stats = stats {
                         // Overview Card
                         StatCard(title: "Overview") {
-                            if let daysSinceFirst = stats.daysSinceFirstRecord {
-                                StatRow(label: "Days Tracking", value: "\(daysSinceFirst)")
-                            }
-                            StatRow(label: "Total Records", value: "\(stats.totalRecords)")
-                            StatRow(label: "Records Broken", value: "\(stats.recordsCount)")
                             if let firstDate = stats.firstRecordDate {
                                 StatRow(label: "Tracking Since", value: formatDate(firstDate))
                             }
+                            StatRow(label: "New records this month", value: "\(stats.recordsThisMonth)")
+                            StatRow(label: "New records this year", value: "\(stats.recordsThisYear)")
                         }
 
-                        // Distance & Altitude Card
+                        // Extremes Table Card
                         StatCard(title: "Extremes") {
-                            if let latRange = stats.latitudeRange {
-                                StatRow(label: "Latitude Range", value: String(format: "%.2f°", latRange))
-                            }
-                            if let lonRange = stats.longitudeRange {
-                                StatRow(label: "Longitude Range", value: String(format: "%.2f°", lonRange))
-                            }
-                            if let altRange = stats.altitudeRange {
-                                if settings.unitSystem == .imperial {
-                                    let feet = altRange * 3.28084
-                                    StatRow(label: "Altitude Range", value: String(format: "%.0f ft", feet))
-                                } else {
-                                    StatRow(label: "Altitude Range", value: String(format: "%.0f m", altRange))
-                                }
-                            }
-                        }
-
-                        // From Home Card
-                        if let maxDistance = stats.maxDistanceFromHome, settings.homeCoordinate != nil {
-                            StatCard(title: "From Home") {
-                                if settings.unitSystem == .imperial {
-                                    let miles = maxDistance / 1609.344
-                                    StatRow(label: "Furthest Distance", value: String(format: "%.2f mi", miles))
-                                } else {
-                                    let km = maxDistance / 1000.0
-                                    StatRow(label: "Furthest Distance", value: String(format: "%.2f km", km))
-                                }
-                            }
-                        }
-
-                        // Record Breakdown Card
-                        StatCard(title: "Records by Type") {
-                            let orderedTypes = [
-                                "Furthest North",
-                                "Furthest South",
-                                "Furthest East",
-                                "Furthest West",
-                                "Furthest Up",
-                                "Furthest Down",
-                                "Furthest from Home"
-                            ]
-                            ForEach(orderedTypes, id: \.self) { type in
-                                if let count = stats.recordsByType[type] {
-                                    StatRow(label: shortName(for: type), value: "\(count)")
-                                }
-                            }
+                            ExtremesTable(recordManager: recordManager, settings: settings)
                         }
                     } else {
                         ProgressView("Loading statistics...")
@@ -105,8 +58,151 @@ struct StatisticsView: View {
         formatter.dateStyle = .medium
         return formatter.string(from: date)
     }
+}
 
-    private func shortName(for type: String) -> String {
+// MARK: - Statistics Model
+struct TravelStatistics {
+    let firstRecordDate: Date?
+    let recordsThisMonth: Int
+    let recordsThisYear: Int
+
+    init(from entries: [RecordHistoryEntry], homeCoordinate: CLLocationCoordinate2D?) {
+        self.firstRecordDate = entries.first?.timestamp
+
+        // Get current month and year boundaries
+        let calendar = Calendar.current
+        let now = Date()
+        let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
+
+        // Count records this month
+        self.recordsThisMonth = entries.filter { entry in
+            guard let timestamp = entry.timestamp else { return false }
+            return timestamp >= startOfMonth
+        }.count
+
+        // Count records this year
+        self.recordsThisYear = entries.filter { entry in
+            guard let timestamp = entry.timestamp else { return false }
+            return timestamp >= startOfYear
+        }.count
+    }
+}
+
+// MARK: - Extremes Table
+struct ExtremesTable: View {
+    let recordManager: RecordManager
+    let settings: SettingsManager
+
+    private let recordTypes = [
+        "Furthest North",
+        "Furthest South",
+        "Furthest East",
+        "Furthest West",
+        "Furthest Up",
+        "Furthest Down",
+        "Furthest from Home"
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header row
+            HStack(spacing: 0) {
+                Text("")
+                    .frame(width: 100, alignment: .leading)
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .padding(.vertical, 8)
+
+                Text("Month")
+                    .frame(maxWidth: .infinity)
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .padding(.vertical, 8)
+
+                Text("Year")
+                    .frame(maxWidth: .infinity)
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .padding(.vertical, 8)
+
+                Text("All Time")
+                    .frame(maxWidth: .infinity)
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .padding(.vertical, 8)
+            }
+            .background(Color(UIColor.tertiarySystemBackground))
+
+            Divider()
+
+            // Data rows
+            ForEach(recordTypes, id: \.self) { type in
+                ExtremesRow(
+                    type: type,
+                    monthValue: formatValue(recordManager.getRecord(type: type, timeFrame: .month)),
+                    yearValue: formatValue(recordManager.getRecord(type: type, timeFrame: .year)),
+                    allTimeValue: formatValue(recordManager.getRecord(type: type, timeFrame: .allTime))
+                )
+            }
+        }
+        .background(Color(UIColor.systemBackground))
+        .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+        )
+    }
+
+    private func formatValue(_ record: RecordDetail?) -> String {
+        guard let record = record else { return "—" }
+        return record.formattedValue(unitSystem: settings.unitSystem)
+    }
+}
+
+struct ExtremesRow: View {
+    let type: String
+    let monthValue: String
+    let yearValue: String
+    let allTimeValue: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                Text(iconForType(type))
+                    .frame(width: 100, alignment: .leading)
+                    .font(.caption)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 4)
+
+                Text(monthValue)
+                    .frame(maxWidth: .infinity)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 4)
+
+                Text(yearValue)
+                    .frame(maxWidth: .infinity)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 4)
+
+                Text(allTimeValue)
+                    .frame(maxWidth: .infinity)
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 4)
+            }
+            .background(Color(UIColor.systemBackground))
+
+            Divider()
+        }
+    }
+
+    private func iconForType(_ type: String) -> String {
         let shortName = FormatUtils.shortName(for: type)
         switch type {
         case "Furthest North": return "⬆️ \(shortName)"
@@ -117,86 +213,6 @@ struct StatisticsView: View {
         case "Furthest Down": return "🏖 \(shortName)"
         case "Furthest from Home": return "🏠 \(shortName)"
         default: return type
-        }
-    }
-}
-
-// MARK: - Statistics Model
-struct TravelStatistics {
-    let totalRecords: Int
-    let recordsCount: Int
-    let firstRecordDate: Date?
-    let latitudeRange: Double?
-    let longitudeRange: Double?
-    let altitudeRange: Double?
-    let maxDistanceFromHome: Double?
-    let recordsByType: [String: Int]
-    let daysSinceFirstRecord: Int?
-    let averageRecordsPerMonth: Double?
-
-    init(from entries: [RecordHistoryEntry], homeCoordinate: CLLocationCoordinate2D?) {
-        self.totalRecords = entries.count
-        self.firstRecordDate = entries.first?.timestamp
-
-        // Count records by type
-        var typeCount: [String: Int] = [:]
-        for entry in entries {
-            if let type = entry.recordType {
-                typeCount[type, default: 0] += 1
-            }
-        }
-        self.recordsByType = typeCount
-        self.recordsCount = typeCount.count
-
-        // Calculate latitude range
-        let latitudes = entries.map { $0.latitude }
-        if let minLat = latitudes.min(), let maxLat = latitudes.max() {
-            self.latitudeRange = maxLat - minLat
-        } else {
-            self.latitudeRange = nil
-        }
-
-        // Calculate longitude range
-        let longitudes = entries.map { $0.longitude }
-        if let minLon = longitudes.min(), let maxLon = longitudes.max() {
-            self.longitudeRange = maxLon - minLon
-        } else {
-            self.longitudeRange = nil
-        }
-
-        // Calculate altitude range
-        let altitudes = entries.map { $0.altitude }
-        if let minAlt = altitudes.min(), let maxAlt = altitudes.max() {
-            self.altitudeRange = maxAlt - minAlt
-        } else {
-            self.altitudeRange = nil
-        }
-
-        // Calculate max distance from home
-        if let homeCoord = homeCoordinate {
-            let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
-            let distances = entries.map { entry in
-                let recordLocation = CLLocation(latitude: entry.latitude, longitude: entry.longitude)
-                return recordLocation.distance(from: homeLocation)
-            }
-            self.maxDistanceFromHome = distances.max()
-        } else {
-            self.maxDistanceFromHome = nil
-        }
-
-        // Calculate days since first record
-        if let firstDate = firstRecordDate {
-            self.daysSinceFirstRecord = Calendar.current.dateComponents([.day], from: firstDate, to: Date()).day
-        } else {
-            self.daysSinceFirstRecord = nil
-        }
-
-        // Calculate average records per month
-        if let days = daysSinceFirstRecord, days > 0 {
-            let months = Double(days) / 30.0
-            self.averageRecordsPerMonth = Double(entries.count) / max(months, 1.0)
-        } else {
-            self.averageRecordsPerMonth = nil
         }
     }
 }

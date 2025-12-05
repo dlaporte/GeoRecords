@@ -3,7 +3,39 @@ import CoreLocation
 import UserNotifications
 import CoreData
 
+// MARK: - Geocoding Cache for Record Manager
+private actor RecordManagerGeocodingCache {
+    private var cache: [String: String] = [:]
+
+    func getCachedLocation(latitude: Double, longitude: Double) -> String? {
+        let key = cacheKey(latitude: latitude, longitude: longitude)
+        return cache[key]
+    }
+
+    func setCachedLocation(latitude: Double, longitude: Double, name: String) {
+        let key = cacheKey(latitude: latitude, longitude: longitude)
+        cache[key] = name
+    }
+
+    private func cacheKey(latitude: Double, longitude: Double) -> String {
+        // Round to 4 decimal places (~11 meters precision)
+        let roundedLat = round(latitude * 10000) / 10000
+        let roundedLon = round(longitude * 10000) / 10000
+        return "\(roundedLat),\(roundedLon)"
+    }
+}
+
+// Global cache instance for record manager
+private let recordManagerGeocodingCache = RecordManagerGeocodingCache()
+
 // MARK: - Models
+
+/// Time frame for records
+enum TimeFrame: String, CaseIterable {
+    case month = "Monthly"
+    case year = "Yearly"
+    case allTime = "All Time"
+}
 
 /// In-memory model for a record event.
 struct RecordDetail: Identifiable {
@@ -14,16 +46,18 @@ struct RecordDetail: Identifiable {
     var altitude: Double
     var locationName: String?
     var recordType: String
+    var timeFrame: TimeFrame    // Monthly, Yearly, or All Time
     var photoData: Data?        // JPEG photo data captured when record was set
 
     /// Initialize with coordinate validation
-    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, photoData: Data? = nil) {
+    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil) {
         self.id = id
         self.value = value
         self.timestamp = timestamp
         self.altitude = altitude
         self.locationName = locationName
         self.recordType = recordType
+        self.timeFrame = timeFrame
         self.photoData = photoData
 
         // Validate coordinate or use a safe default
@@ -45,13 +79,32 @@ struct RecordDetail: Identifiable {
 class RecordManager: NSObject, ObservableObject {
     static let shared = RecordManager()
 
-    @Published var furthestNorth: RecordDetail?
-    @Published var furthestSouth: RecordDetail?
-    @Published var furthestEast: RecordDetail?
-    @Published var furthestWest: RecordDetail?
-    @Published var furthestUp: RecordDetail?
-    @Published var furthestDown: RecordDetail?
-    @Published var furthestFromHome: RecordDetail?
+    // Monthly records
+    @Published var furthestNorthMonth: RecordDetail?
+    @Published var furthestSouthMonth: RecordDetail?
+    @Published var furthestEastMonth: RecordDetail?
+    @Published var furthestWestMonth: RecordDetail?
+    @Published var furthestUpMonth: RecordDetail?
+    @Published var furthestDownMonth: RecordDetail?
+    @Published var furthestFromHomeMonth: RecordDetail?
+
+    // Yearly records
+    @Published var furthestNorthYear: RecordDetail?
+    @Published var furthestSouthYear: RecordDetail?
+    @Published var furthestEastYear: RecordDetail?
+    @Published var furthestWestYear: RecordDetail?
+    @Published var furthestUpYear: RecordDetail?
+    @Published var furthestDownYear: RecordDetail?
+    @Published var furthestFromHomeYear: RecordDetail?
+
+    // All-time records
+    @Published var furthestNorthAllTime: RecordDetail?
+    @Published var furthestSouthAllTime: RecordDetail?
+    @Published var furthestEastAllTime: RecordDetail?
+    @Published var furthestWestAllTime: RecordDetail?
+    @Published var furthestUpAllTime: RecordDetail?
+    @Published var furthestDownAllTime: RecordDetail?
+    @Published var furthestFromHomeAllTime: RecordDetail?
 
     // Photo prompt state
     @Published var showPhotoPrompt = false
@@ -76,6 +129,64 @@ class RecordManager: NSObject, ObservableObject {
     override init() {
         super.init()
         loadRecordsFromHistory()
+    }
+
+    // MARK: - Helper Methods for Record Access
+
+    /// Get a record by type and timeframe
+    func getRecord(type: String, timeFrame: TimeFrame) -> RecordDetail? {
+        switch (type, timeFrame) {
+        case ("Furthest North", .month): return furthestNorthMonth
+        case ("Furthest North", .year): return furthestNorthYear
+        case ("Furthest North", .allTime): return furthestNorthAllTime
+        case ("Furthest South", .month): return furthestSouthMonth
+        case ("Furthest South", .year): return furthestSouthYear
+        case ("Furthest South", .allTime): return furthestSouthAllTime
+        case ("Furthest East", .month): return furthestEastMonth
+        case ("Furthest East", .year): return furthestEastYear
+        case ("Furthest East", .allTime): return furthestEastAllTime
+        case ("Furthest West", .month): return furthestWestMonth
+        case ("Furthest West", .year): return furthestWestYear
+        case ("Furthest West", .allTime): return furthestWestAllTime
+        case ("Furthest Up", .month): return furthestUpMonth
+        case ("Furthest Up", .year): return furthestUpYear
+        case ("Furthest Up", .allTime): return furthestUpAllTime
+        case ("Furthest Down", .month): return furthestDownMonth
+        case ("Furthest Down", .year): return furthestDownYear
+        case ("Furthest Down", .allTime): return furthestDownAllTime
+        case ("Furthest from Home", .month): return furthestFromHomeMonth
+        case ("Furthest from Home", .year): return furthestFromHomeYear
+        case ("Furthest from Home", .allTime): return furthestFromHomeAllTime
+        default: return nil
+        }
+    }
+
+    /// Set a record by type and timeframe
+    func setRecord(type: String, timeFrame: TimeFrame, record: RecordDetail?) {
+        switch (type, timeFrame) {
+        case ("Furthest North", .month): furthestNorthMonth = record
+        case ("Furthest North", .year): furthestNorthYear = record
+        case ("Furthest North", .allTime): furthestNorthAllTime = record
+        case ("Furthest South", .month): furthestSouthMonth = record
+        case ("Furthest South", .year): furthestSouthYear = record
+        case ("Furthest South", .allTime): furthestSouthAllTime = record
+        case ("Furthest East", .month): furthestEastMonth = record
+        case ("Furthest East", .year): furthestEastYear = record
+        case ("Furthest East", .allTime): furthestEastAllTime = record
+        case ("Furthest West", .month): furthestWestMonth = record
+        case ("Furthest West", .year): furthestWestYear = record
+        case ("Furthest West", .allTime): furthestWestAllTime = record
+        case ("Furthest Up", .month): furthestUpMonth = record
+        case ("Furthest Up", .year): furthestUpYear = record
+        case ("Furthest Up", .allTime): furthestUpAllTime = record
+        case ("Furthest Down", .month): furthestDownMonth = record
+        case ("Furthest Down", .year): furthestDownYear = record
+        case ("Furthest Down", .allTime): furthestDownAllTime = record
+        case ("Furthest from Home", .month): furthestFromHomeMonth = record
+        case ("Furthest from Home", .year): furthestFromHomeYear = record
+        case ("Furthest from Home", .allTime): furthestFromHomeAllTime = record
+        default: break
+        }
     }
 
     /// Block all alerts during photo import
@@ -114,12 +225,23 @@ class RecordManager: NSObject, ObservableObject {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
         do {
-            // Fetch all entries grouped by recordType
+            // Fetch all entries
             let allEntries = try context.fetch(request)
 
-            // Group entries by recordType
-            let grouped = Dictionary(grouping: allEntries) { entry -> String in
-                entry.recordType ?? "Unknown"
+            // Get current month and year boundaries
+            let calendar = Calendar.current
+            let now = Date()
+            let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
+            let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
+
+            // Filter entries by timeframe
+            let monthEntries = allEntries.filter { entry in
+                guard let timestamp = entry.timestamp else { return false }
+                return timestamp >= startOfMonth
+            }
+            let yearEntries = allEntries.filter { entry in
+                guard let timestamp = entry.timestamp else { return false }
+                return timestamp >= startOfYear
             }
 
             // Helper to find extreme record from group
@@ -127,36 +249,39 @@ class RecordManager: NSObject, ObservableObject {
                 return entries.sorted { ascending ? $0.value < $1.value : $0.value > $1.value }.first
             }
 
-            // Process each record type
-            if let northEntries = grouped["Furthest North"], let entry = findExtreme(in: northEntries, ascending: false) {
-                self.furthestNorth = makeRecordDetail(from: entry)
+            // Helper to process records for a timeframe
+            func loadRecordsForTimeFrame(entries: [RecordHistoryEntry], timeFrame: TimeFrame) {
+                let grouped = Dictionary(grouping: entries) { entry -> String in
+                    entry.recordType ?? "Unknown"
+                }
+
+                // Process each record type
+                let recordTypes = [
+                    ("Furthest North", false),
+                    ("Furthest South", true),
+                    ("Furthest East", false),
+                    ("Furthest West", true),
+                    ("Furthest Up", false),
+                    ("Furthest Down", true),
+                    ("Furthest from Home", false)
+                ]
+
+                for (type, ascending) in recordTypes {
+                    if let typeEntries = grouped[type], let entry = findExtreme(in: typeEntries, ascending: ascending) {
+                        if var record = makeRecordDetail(from: entry) {
+                            record.timeFrame = timeFrame
+                            setRecord(type: type, timeFrame: timeFrame, record: record)
+                        }
+                    }
+                }
             }
 
-            if let southEntries = grouped["Furthest South"], let entry = findExtreme(in: southEntries, ascending: true) {
-                self.furthestSouth = makeRecordDetail(from: entry)
-            }
+            // Load records for all three timeframes
+            loadRecordsForTimeFrame(entries: monthEntries, timeFrame: .month)
+            loadRecordsForTimeFrame(entries: yearEntries, timeFrame: .year)
+            loadRecordsForTimeFrame(entries: allEntries, timeFrame: .allTime)
 
-            if let eastEntries = grouped["Furthest East"], let entry = findExtreme(in: eastEntries, ascending: false) {
-                self.furthestEast = makeRecordDetail(from: entry)
-            }
-
-            if let westEntries = grouped["Furthest West"], let entry = findExtreme(in: westEntries, ascending: true) {
-                self.furthestWest = makeRecordDetail(from: entry)
-            }
-
-            if let upEntries = grouped["Furthest Up"], let entry = findExtreme(in: upEntries, ascending: false) {
-                self.furthestUp = makeRecordDetail(from: entry)
-            }
-
-            if let downEntries = grouped["Furthest Down"], let entry = findExtreme(in: downEntries, ascending: true) {
-                self.furthestDown = makeRecordDetail(from: entry)
-            }
-
-            if let homeEntries = grouped["Furthest from Home"], let entry = findExtreme(in: homeEntries, ascending: false) {
-                self.furthestFromHome = makeRecordDetail(from: entry)
-            }
-
-            debugLog("Loaded all records from history in single batch fetch")
+            debugLog("Loaded all records from history for all timeframes")
         } catch {
             debugLog("Failed to load records: \(error.localizedDescription)")
         }
@@ -178,6 +303,82 @@ class RecordManager: NSObject, ObservableObject {
     }
     
     // MARK: - Update Records
+
+    /// Helper to check and update a record for a specific timeframe
+    private func checkAndUpdateRecord(
+        type: String,
+        newValue: Double,
+        threshold: Double,
+        compareAscending: Bool,  // true means lower is better (south, west, down)
+        location: CLLocation,
+        reverseGeocodedName: String?,
+        timeFrame: TimeFrame
+    ) {
+        let currentRecord = getRecord(type: type, timeFrame: timeFrame)
+        let now = Date()
+        let settings = SettingsManager.shared
+
+        if let current = currentRecord {
+            // Calculate delta based on comparison direction
+            let delta = compareAscending ? (current.value - newValue) : (newValue - current.value)
+
+            #if DEBUG
+            debugLog("\(type) (\(timeFrame.rawValue)): new=\(newValue), current=\(current.value), delta=\(delta)")
+            #endif
+
+            if delta > threshold {
+                let newRecord = RecordDetail(
+                    value: newValue,
+                    timestamp: now,
+                    coordinate: location.coordinate,
+                    altitude: location.altitude,
+                    locationName: reverseGeocodedName,
+                    recordType: type,
+                    timeFrame: timeFrame
+                )
+                setRecord(type: type, timeFrame: timeFrame, record: newRecord)
+                RecordHistoryManager.shared.addRecord(recordType: type, detail: newRecord)
+
+                // Photo prompts only for all-time records
+                if timeFrame == .allTime {
+                    promptForPhoto(recordType: type, detail: newRecord)
+                }
+
+                // Check notification settings based on timeframe
+                let shouldNotify: Bool
+                switch timeFrame {
+                case .month:
+                    shouldNotify = settings.notifyOnMonthlyRecords
+                case .year:
+                    shouldNotify = settings.notifyOnYearlyRecords
+                case .allTime:
+                    shouldNotify = settings.notifyOnAllTimeRecords
+                }
+
+                if shouldNotify && !shouldSuppressNotifications {
+                    sendRecordNotification(recordType: type, detail: newRecord)
+                }
+
+                debugLog("NEW RECORD: \(type) (\(timeFrame.rawValue)) updated to \(newValue)")
+            }
+        } else {
+            // Set initial record for this timeframe
+            debugLog("Setting initial \(type) (\(timeFrame.rawValue)) to \(newValue)")
+            let newRecord = RecordDetail(
+                value: newValue,
+                timestamp: now,
+                coordinate: location.coordinate,
+                altitude: location.altitude,
+                locationName: reverseGeocodedName,
+                recordType: type,
+                timeFrame: timeFrame
+            )
+            setRecord(type: type, timeFrame: timeFrame, record: newRecord)
+            RecordHistoryManager.shared.addRecord(recordType: type, detail: newRecord)
+            // Don't prompt for photos or send notifications for initial records
+        }
+    }
+
     func updateRecords(with location: CLLocation, reverseGeocodedName: String? = nil) {
         // Serialize updates to prevent race conditions
         if isUpdatingRecords {
@@ -196,53 +397,92 @@ class RecordManager: NSObject, ObservableObject {
         }
 
         if reverseGeocodedName == nil {
-            // Check if geocoding is already in progress
-            if isGeocodingInProgress {
-                debugLog("Geocoding already in progress, skipping request")
-                self.updateRecords(with: location, reverseGeocodedName: "")
-                return
-            }
+            let lat = location.coordinate.latitude
+            let lon = location.coordinate.longitude
 
-            // Throttle geocoding to avoid rate limits and resource exhaustion
-            let now = Date()
-            if let lastTime = lastGeocodingTime, now.timeIntervalSince(lastTime) < geocodingThrottleInterval {
-                // Skip geocoding, proceed with empty location name
-                self.updateRecords(with: location, reverseGeocodedName: "")
-                return
-            }
+            // Check cache first
+            Task {
+                if let cachedName = await recordManagerGeocodingCache.getCachedLocation(latitude: lat, longitude: lon) {
+                    debugLog("📍 Using cached location for (\(lat), \(lon)): \(cachedName)")
+                    await MainActor.run {
+                        self.updateRecords(with: location, reverseGeocodedName: cachedName)
+                    }
+                    return
+                }
 
-            // Cancel any pending geocoding requests
-            if geocoder.isGeocoding {
-                geocoder.cancelGeocode()
-            }
+                // Not in cache, check if geocoding is already in progress
+                if await MainActor.run(body: { self.isGeocodingInProgress }) {
+                    debugLog("Geocoding already in progress, skipping request")
+                    await MainActor.run {
+                        self.updateRecords(with: location, reverseGeocodedName: "")
+                    }
+                    return
+                }
 
-            lastGeocodingTime = now
-            isGeocodingInProgress = true
+                // Throttle geocoding to avoid rate limits and resource exhaustion
+                let now = Date()
+                let shouldThrottle = await MainActor.run {
+                    if let lastTime = self.lastGeocodingTime, now.timeIntervalSince(lastTime) < self.geocodingThrottleInterval {
+                        return true
+                    }
+                    return false
+                }
 
-            geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, error in
-                guard let self = self else { return }
+                if shouldThrottle {
+                    // Skip geocoding, proceed with empty location name
+                    debugLog("Throttling geocoding request")
+                    await MainActor.run {
+                        self.updateRecords(with: location, reverseGeocodedName: "")
+                    }
+                    return
+                }
 
-                defer {
+                // Cancel any pending geocoding requests
+                await MainActor.run {
+                    if self.geocoder.isGeocoding {
+                        self.geocoder.cancelGeocode()
+                    }
+                    self.lastGeocodingTime = now
+                    self.isGeocodingInProgress = true
+                }
+
+                // Perform geocoding
+                debugLog("🌐 Geocoding location (\(lat), \(lon))")
+                let geocoder = await MainActor.run { self.geocoder }
+
+                geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, error in
+                    guard let self = self else { return }
+
+                    defer {
+                        Task { @MainActor in
+                            self.isGeocodingInProgress = false
+                        }
+                    }
+
+                    var name: String? = nil
+
+                    if let error = error {
+                        debugLog("Geocoding error: \(error.localizedDescription)")
+                        // Continue with nil name rather than failing
+                    } else if let placemark = placemarks?.first {
+                        if let city = placemark.locality, let country = placemark.country {
+                            name = "\(city), \(country)"
+                        } else if let placemarkName = placemark.name {
+                            name = placemarkName
+                        }
+
+                        // Store in cache if successful
+                        if let name = name {
+                            Task {
+                                await recordManagerGeocodingCache.setCachedLocation(latitude: lat, longitude: lon, name: name)
+                                debugLog("💾 Cached location for (\(lat), \(lon)): \(name)")
+                            }
+                        }
+                    }
+
                     Task { @MainActor in
-                        self.isGeocodingInProgress = false
+                        self.updateRecords(with: location, reverseGeocodedName: name)
                     }
-                }
-
-                var name: String? = nil
-
-                if let error = error {
-                    debugLog("Geocoding error: \(error.localizedDescription)")
-                    // Continue with nil name rather than failing
-                } else if let placemark = placemarks?.first {
-                    if let city = placemark.locality, let country = placemark.country {
-                        name = "\(city), \(country)"
-                    } else if let placemarkName = placemark.name {
-                        name = placemarkName
-                    }
-                }
-
-                Task { @MainActor in
-                    self.updateRecords(with: location, reverseGeocodedName: name)
                 }
             }
             return
@@ -251,171 +491,100 @@ class RecordManager: NSObject, ObservableObject {
         let lat = location.coordinate.latitude
         let lon = location.coordinate.longitude
         let alt = location.altitude
-        let now = Date()
         let settings = SettingsManager.shared
-        
+
         let latDelta = settings.minLatitudeDelta
         let lonDelta = settings.minLongitudeDelta
         let altDeltaMeters = settings.minAltitudeDeltaMeters
-        
-        let distanceMeters = distanceFromHome(location: location, settings: settings)
-        
-        #if DEBUG
-        debugLog(">> updateRecords called at \(now)")
-        debugLog("Location: lat=\(lat), lon=\(lon), alt=\(alt)")
-        debugLog("Thresholds: latDelta=\(latDelta), lonDelta=\(lonDelta), altDelta=\(altDeltaMeters) m")
-        #endif
-        
-        // ---------- Furthest North ----------
-        if let current = furthestNorth {
-            let delta = lat - current.value
-            debugLog("Furthest North: new lat=\(lat), current=\(current.value), delta=\(delta)")
-            if delta > latDelta {
-                let newRecord = RecordDetail(value: lat, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest North")
-                furthestNorth = newRecord
-                RecordHistoryManager.shared.addRecord(recordType: "Furthest North", detail: newRecord)
-                promptForPhoto(recordType: "Furthest North", detail: newRecord)
-                if settings.notifyOnNewRecord && !shouldSuppressNotifications { sendRecordNotification(recordType: "Furthest North", detail: newRecord) }
-            }
-        } else {
-            debugLog("Setting initial Furthest North to \(lat)")
-            let newRecord = RecordDetail(value: lat, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest North")
-            furthestNorth = newRecord
-            RecordHistoryManager.shared.addRecord(recordType: "Furthest North", detail: newRecord)
-            // Don't prompt for photos or send notifications for initial records, only for records that beat existing ones
-        }
-        
-        // ---------- Furthest South ----------
-        if let current = furthestSouth {
-            let delta = current.value - lat
-            debugLog("Furthest South: new lat=\(lat), current=\(current.value), delta=\(delta)")
-            if delta > latDelta {
-                let newRecord = RecordDetail(value: lat, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest South")
-                furthestSouth = newRecord
-                RecordHistoryManager.shared.addRecord(recordType: "Furthest South", detail: newRecord)
-                promptForPhoto(recordType: "Furthest South", detail: newRecord)
-                if settings.notifyOnNewRecord && !shouldSuppressNotifications { sendRecordNotification(recordType: "Furthest South", detail: newRecord) }
-            }
-        } else {
-            debugLog("Setting initial Furthest South to \(lat)")
-            let newRecord = RecordDetail(value: lat, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest South")
-            furthestSouth = newRecord
-            RecordHistoryManager.shared.addRecord(recordType: "Furthest South", detail: newRecord)
-            // Don't prompt for photos or send notifications for initial records, only for records that beat existing ones
-        }
-        
-        // ---------- Furthest East ----------
-        if let current = furthestEast {
-            let delta = lon - current.value
-            debugLog("Furthest East: new lon=\(lon), current=\(current.value), delta=\(delta)")
-            if delta > lonDelta {
-                let newRecord = RecordDetail(value: lon, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest East")
-                furthestEast = newRecord
-                RecordHistoryManager.shared.addRecord(recordType: "Furthest East", detail: newRecord)
-                promptForPhoto(recordType: "Furthest East", detail: newRecord)
-                if settings.notifyOnNewRecord && !shouldSuppressNotifications { sendRecordNotification(recordType: "Furthest East", detail: newRecord) }
-            }
-        } else {
-            debugLog("Setting initial Furthest East to \(lon)")
-            let newRecord = RecordDetail(value: lon, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest East")
-            furthestEast = newRecord
-            RecordHistoryManager.shared.addRecord(recordType: "Furthest East", detail: newRecord)
-            // Don't prompt for photos or send notifications for initial records, only for records that beat existing ones
-        }
-        
-        // ---------- Furthest West ----------
-        if let current = furthestWest {
-            let delta = current.value - lon
-            debugLog("Furthest West: new lon=\(lon), current=\(current.value), delta=\(delta)")
-            if delta > lonDelta {
-                let newRecord = RecordDetail(value: lon, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest West")
-                furthestWest = newRecord
-                RecordHistoryManager.shared.addRecord(recordType: "Furthest West", detail: newRecord)
-                promptForPhoto(recordType: "Furthest West", detail: newRecord)
-                if settings.notifyOnNewRecord && !shouldSuppressNotifications { sendRecordNotification(recordType: "Furthest West", detail: newRecord) }
-            }
-        } else {
-            debugLog("Setting initial Furthest West to \(lon)")
-            let newRecord = RecordDetail(value: lon, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest West")
-            furthestWest = newRecord
-            RecordHistoryManager.shared.addRecord(recordType: "Furthest West", detail: newRecord)
-            // Don't prompt for photos or send notifications for initial records, only for records that beat existing ones
-        }
-        
-        // ---------- Furthest Up (Altitude High) ----------
-        // Always store altitude in meters (canonical), compare in meters
-        if let current = furthestUp {
-            let delta = alt - current.value  // Both in meters
-            debugLog("Furthest Up: new alt=\(alt)m, current=\(current.value)m, delta=\(delta)m")
-            if delta > altDeltaMeters {
-                let newRecord = RecordDetail(value: alt, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest Up")
-                furthestUp = newRecord
-                RecordHistoryManager.shared.addRecord(recordType: "Furthest Up", detail: newRecord)
-                promptForPhoto(recordType: "Furthest Up", detail: newRecord)
-                debugLog("NEW RECORD: Furthest Up updated to \(alt)m")
-                if settings.notifyOnNewRecord && !shouldSuppressNotifications { sendRecordNotification(recordType: "Furthest Up", detail: newRecord) }
-            }
-        } else {
-            debugLog("Setting initial Furthest Up to \(alt)m")
-            let newRecord = RecordDetail(value: alt, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest Up")
-            furthestUp = newRecord
-            RecordHistoryManager.shared.addRecord(recordType: "Furthest Up", detail: newRecord)
-            // Don't prompt for photos or send notifications for initial records, only for records that beat existing ones
-        }
+        let distanceDeltaMeters = settings.minDistanceDeltaMeters
 
-        // ---------- Furthest Down (Altitude Low) ----------
-        // Always store altitude in meters (canonical), compare in meters
-        if let current = furthestDown {
-            let delta = current.value - alt  // Both in meters
-            debugLog("Furthest Down: new alt=\(alt)m, current=\(current.value)m, delta=\(delta)m")
-            if delta > altDeltaMeters {
-                let newRecord = RecordDetail(value: alt, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest Down")
-                furthestDown = newRecord
-                RecordHistoryManager.shared.addRecord(recordType: "Furthest Down", detail: newRecord)
-                promptForPhoto(recordType: "Furthest Down", detail: newRecord)
-                debugLog("NEW RECORD: Furthest Down updated to \(alt)m")
-                if settings.notifyOnNewRecord && !shouldSuppressNotifications { sendRecordNotification(recordType: "Furthest Down", detail: newRecord) }
-            }
-        } else {
-            debugLog("Setting initial Furthest Down to \(alt)m")
-            let newRecord = RecordDetail(value: alt, timestamp: now, coordinate: location.coordinate, altitude: alt, locationName: reverseGeocodedName, recordType: "Furthest Down")
-            furthestDown = newRecord
-            RecordHistoryManager.shared.addRecord(recordType: "Furthest Down", detail: newRecord)
-            // Don't prompt for photos or send notifications for initial records, only for records that beat existing ones
-        }
-        
-        // ---------- Furthest from Home ----------
-        if let distance = distanceMeters {
-            let distFeet = distance * 3.28084  // Canonical value stored in feet.
-            let distanceDeltaMeters = settings.minDistanceDeltaMeters
-            if let current = furthestFromHome {
-                let currentDistanceMeters = current.value / 3.28084
-                let delta = distance - currentDistanceMeters  // Compare in meters
-                debugLog("Furthest from Home: new distance=\(distance)m, current=\(currentDistanceMeters)m, delta=\(delta)m")
-                if delta > distanceDeltaMeters {
-                    let newRecord = RecordDetail(value: distFeet,
-                                                 timestamp: now,
-                                                 coordinate: location.coordinate,
-                                                 altitude: alt,
-                                                 locationName: reverseGeocodedName,
-                                                 recordType: "Furthest from Home")
-                    furthestFromHome = newRecord
-                    RecordHistoryManager.shared.addRecord(recordType: "Furthest from Home", detail: newRecord)
-                    promptForPhoto(recordType: "Furthest from Home", detail: newRecord)
-                    debugLog("NEW RECORD: Furthest from Home updated to \(distance)m (\(distFeet) ft)")
-                    if settings.notifyOnNewRecord && !shouldSuppressNotifications { sendRecordNotification(recordType: "Furthest from Home", detail: newRecord) }
-                }
-            } else {
-                debugLog("Setting initial Furthest from Home to \(distFeet) ft")
-                let newRecord = RecordDetail(value: distFeet,
-                                             timestamp: now,
-                                             coordinate: location.coordinate,
-                                             altitude: alt,
-                                             locationName: reverseGeocodedName,
-                                             recordType: "Furthest from Home")
-                furthestFromHome = newRecord
-                RecordHistoryManager.shared.addRecord(recordType: "Furthest from Home", detail: newRecord)
-                // Don't prompt for photos or send notifications for initial records, only for records that beat existing ones
+        let distanceMeters = distanceFromHome(location: location, settings: settings)
+
+        #if DEBUG
+        debugLog(">> updateRecords called")
+        debugLog("Location: lat=\(lat), lon=\(lon), alt=\(alt)")
+        #endif
+
+        // Check all timeframes for each record type
+        for timeFrame in TimeFrame.allCases {
+            // Furthest North (higher latitude is better)
+            checkAndUpdateRecord(
+                type: "Furthest North",
+                newValue: lat,
+                threshold: latDelta,
+                compareAscending: false,
+                location: location,
+                reverseGeocodedName: reverseGeocodedName,
+                timeFrame: timeFrame
+            )
+
+            // Furthest South (lower latitude is better)
+            checkAndUpdateRecord(
+                type: "Furthest South",
+                newValue: lat,
+                threshold: latDelta,
+                compareAscending: true,
+                location: location,
+                reverseGeocodedName: reverseGeocodedName,
+                timeFrame: timeFrame
+            )
+
+            // Furthest East (higher longitude is better)
+            checkAndUpdateRecord(
+                type: "Furthest East",
+                newValue: lon,
+                threshold: lonDelta,
+                compareAscending: false,
+                location: location,
+                reverseGeocodedName: reverseGeocodedName,
+                timeFrame: timeFrame
+            )
+
+            // Furthest West (lower longitude is better)
+            checkAndUpdateRecord(
+                type: "Furthest West",
+                newValue: lon,
+                threshold: lonDelta,
+                compareAscending: true,
+                location: location,
+                reverseGeocodedName: reverseGeocodedName,
+                timeFrame: timeFrame
+            )
+
+            // Furthest Up (higher altitude is better)
+            checkAndUpdateRecord(
+                type: "Furthest Up",
+                newValue: alt,
+                threshold: altDeltaMeters,
+                compareAscending: false,
+                location: location,
+                reverseGeocodedName: reverseGeocodedName,
+                timeFrame: timeFrame
+            )
+
+            // Furthest Down (lower altitude is better)
+            checkAndUpdateRecord(
+                type: "Furthest Down",
+                newValue: alt,
+                threshold: altDeltaMeters,
+                compareAscending: true,
+                location: location,
+                reverseGeocodedName: reverseGeocodedName,
+                timeFrame: timeFrame
+            )
+
+            // Furthest from Home (greater distance is better)
+            if let distance = distanceMeters {
+                let distFeet = distance * 3.28084  // Store in feet for consistency
+                checkAndUpdateRecord(
+                    type: "Furthest from Home",
+                    newValue: distFeet,
+                    threshold: distanceDeltaMeters * 3.28084,  // Convert to feet
+                    compareAscending: false,
+                    location: location,
+                    reverseGeocodedName: reverseGeocodedName,
+                    timeFrame: timeFrame
+                )
             }
         }
     }
@@ -450,50 +619,51 @@ class RecordManager: NSObject, ObservableObject {
     
     // MARK: - Photo Attachment
     func attachPhotoToRecord(recordType: String, photoData: Data?) {
-        // Find the matching record and update it with photo data
+        // Only all-time records can have photos (since we only prompt for all-time records)
+        // Find the matching all-time record and update it with photo data
         var updatedRecord: RecordDetail?
 
         switch recordType {
         case "Furthest North":
-            if var record = furthestNorth {
+            if var record = furthestNorthAllTime {
                 record.photoData = photoData
-                furthestNorth = record
+                furthestNorthAllTime = record
                 updatedRecord = record
             }
         case "Furthest South":
-            if var record = furthestSouth {
+            if var record = furthestSouthAllTime {
                 record.photoData = photoData
-                furthestSouth = record
+                furthestSouthAllTime = record
                 updatedRecord = record
             }
         case "Furthest East":
-            if var record = furthestEast {
+            if var record = furthestEastAllTime {
                 record.photoData = photoData
-                furthestEast = record
+                furthestEastAllTime = record
                 updatedRecord = record
             }
         case "Furthest West":
-            if var record = furthestWest {
+            if var record = furthestWestAllTime {
                 record.photoData = photoData
-                furthestWest = record
+                furthestWestAllTime = record
                 updatedRecord = record
             }
         case "Furthest Up":
-            if var record = furthestUp {
+            if var record = furthestUpAllTime {
                 record.photoData = photoData
-                furthestUp = record
+                furthestUpAllTime = record
                 updatedRecord = record
             }
         case "Furthest Down":
-            if var record = furthestDown {
+            if var record = furthestDownAllTime {
                 record.photoData = photoData
-                furthestDown = record
+                furthestDownAllTime = record
                 updatedRecord = record
             }
         case "Furthest from Home":
-            if var record = furthestFromHome {
+            if var record = furthestFromHomeAllTime {
                 record.photoData = photoData
-                furthestFromHome = record
+                furthestFromHomeAllTime = record
                 updatedRecord = record
             }
         default:
@@ -522,12 +692,31 @@ class RecordManager: NSObject, ObservableObject {
 
     // MARK: - Reset In-Memory Records
     func resetRecords() {
-        furthestNorth = nil
-        furthestSouth = nil
-        furthestEast = nil
-        furthestWest = nil
-        furthestUp = nil
-        furthestDown = nil
-        furthestFromHome = nil
+        // Reset monthly records
+        furthestNorthMonth = nil
+        furthestSouthMonth = nil
+        furthestEastMonth = nil
+        furthestWestMonth = nil
+        furthestUpMonth = nil
+        furthestDownMonth = nil
+        furthestFromHomeMonth = nil
+
+        // Reset yearly records
+        furthestNorthYear = nil
+        furthestSouthYear = nil
+        furthestEastYear = nil
+        furthestWestYear = nil
+        furthestUpYear = nil
+        furthestDownYear = nil
+        furthestFromHomeYear = nil
+
+        // Reset all-time records
+        furthestNorthAllTime = nil
+        furthestSouthAllTime = nil
+        furthestEastAllTime = nil
+        furthestWestAllTime = nil
+        furthestUpAllTime = nil
+        furthestDownAllTime = nil
+        furthestFromHomeAllTime = nil
     }
 }

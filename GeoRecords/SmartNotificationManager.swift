@@ -55,8 +55,8 @@ class SmartNotificationManager: ObservableObject {
         let settings = SettingsManager.shared
         let recordManager = RecordManager.shared
 
-        // Check if close to breaking any directional record
-        if let furthestNorth = recordManager.furthestNorth {
+        // Check if close to breaking any directional all-time record
+        if let furthestNorth = recordManager.furthestNorthAllTime {
             let delta = furthestNorth.value - lat
             if delta > 0 && delta <= settings.minLatitudeDelta * 2 {
                 let distance = calculateDistance(delta)
@@ -67,7 +67,7 @@ class SmartNotificationManager: ObservableObject {
             }
         }
 
-        if let furthestSouth = recordManager.furthestSouth {
+        if let furthestSouth = recordManager.furthestSouthAllTime {
             let delta = lat - furthestSouth.value
             if delta > 0 && delta <= settings.minLatitudeDelta * 2 {
                 let distance = calculateDistance(delta)
@@ -78,7 +78,7 @@ class SmartNotificationManager: ObservableObject {
             }
         }
 
-        if let furthestEast = recordManager.furthestEast {
+        if let furthestEast = recordManager.furthestEastAllTime {
             let delta = furthestEast.value - lon
             if delta > 0 && delta <= settings.minLongitudeDelta * 2 {
                 let distance = calculateDistance(delta)
@@ -89,7 +89,7 @@ class SmartNotificationManager: ObservableObject {
             }
         }
 
-        if let furthestWest = recordManager.furthestWest {
+        if let furthestWest = recordManager.furthestWestAllTime {
             let delta = lon - furthestWest.value
             if delta > 0 && delta <= settings.minLongitudeDelta * 2 {
                 let distance = calculateDistance(delta)
@@ -101,7 +101,7 @@ class SmartNotificationManager: ObservableObject {
         }
 
         // Check altitude records
-        if let furthestUp = recordManager.furthestUp {
+        if let furthestUp = recordManager.furthestUpAllTime {
             let delta = furthestUp.value - alt
             if delta > 0 && delta <= settings.minAltitudeDeltaMeters * 2 {
                 if settings.unitSystem == .imperial {
@@ -119,7 +119,7 @@ class SmartNotificationManager: ObservableObject {
             }
         }
 
-        if let furthestDown = recordManager.furthestDown {
+        if let furthestDown = recordManager.furthestDownAllTime {
             let delta = alt - furthestDown.value
             if delta > 0 && delta <= settings.minAltitudeDeltaMeters * 2 {
                 if settings.unitSystem == .imperial {
@@ -139,7 +139,7 @@ class SmartNotificationManager: ObservableObject {
 
         // Check distance from home
         if let homeCoord = settings.homeCoordinate,
-           let furthestFromHome = recordManager.furthestFromHome {
+           let furthestFromHome = recordManager.furthestFromHomeAllTime {
             let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
             let currentDistance = location.distance(from: homeLocation)
             let recordDistance = furthestFromHome.value / 3.28084 // Convert from feet to meters

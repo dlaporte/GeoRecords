@@ -160,64 +160,107 @@ struct RecordCardView: View {
     let record: RecordDetail
     @EnvironmentObject var settings: SettingsManager
 
+    // Responsive sizing based on screen height
+    private var screenHeight: CGFloat {
+        UIScreen.main.bounds.height
+    }
+
+    private var isCompactScreen: Bool {
+        screenHeight < 850 // iPhone 14/15 and smaller
+    }
+
+    private var cardSpacing: CGFloat {
+        isCompactScreen ? 8 : 16
+    }
+
+    private var iconSize: CGFloat {
+        isCompactScreen ? 32 : 44
+    }
+
+    private var valueFontSize: CGFloat {
+        isCompactScreen ? 24 : 36
+    }
+
+    private var photoSize: CGFloat {
+        isCompactScreen ? 80 : 140
+    }
+
+    private var cardPadding: CGFloat {
+        isCompactScreen ? 12 : 20
+    }
+
+    private var horizontalPadding: CGFloat {
+        isCompactScreen ? 10 : 16
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: cardSpacing) {
             // Header with icon and title only
-            HStack(spacing: 12) {
+            HStack(spacing: isCompactScreen ? 8 : 12) {
                 // Icon (always shown)
                 Image(systemName: iconForRecordType(record.recordType))
-                    .font(.title)
+                    .font(isCompactScreen ? .title3 : .title)
                     .foregroundColor(colorForRecordType(record.recordType))
-                    .frame(width: 44, height: 44)
+                    .frame(width: iconSize, height: iconSize)
                     .background(colorForRecordType(record.recordType).opacity(0.1))
-                    .cornerRadius(12)
+                    .cornerRadius(8)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(record.recordType)
-                        .font(.headline)
+                        .font(isCompactScreen ? .caption : .headline)
+                        .fontWeight(.semibold)
                     Text(formatDate(record.timestamp))
-                        .font(.caption)
+                        .font(isCompactScreen ? .caption2 : .caption)
                         .foregroundColor(.secondary)
                 }
 
                 Spacer()
             }
 
-            Divider()
+            if !isCompactScreen {
+                Divider()
+            }
 
             // Main content with photo on the right
-            HStack(alignment: .top, spacing: 16) {
+            HStack(alignment: .top, spacing: isCompactScreen ? 8 : 16) {
                 // Left side - record details
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: isCompactScreen ? 6 : 12) {
                     // Value
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Value")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: isCompactScreen ? 2 : 4) {
+                        if !isCompactScreen {
+                            Text("Value")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                         Text(record.formattedValue(unitSystem: settings.unitSystem))
-                            .font(.system(size: 36, weight: .bold, design: .rounded))
+                            .font(.system(size: valueFontSize, weight: .bold, design: .rounded))
                             .foregroundColor(colorForRecordType(record.recordType))
+                            .minimumScaleFactor(0.7)
+                            .lineLimit(1)
                     }
 
                     // Location
                     if let locationName = record.locationName {
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 1) {
                             Text("Location")
-                                .font(.caption)
+                                .font(isCompactScreen ? .caption2 : .caption)
                                 .foregroundColor(.secondary)
                             Text(locationName)
-                                .font(.subheadline)
+                                .font(isCompactScreen ? .caption2 : .subheadline)
+                                .lineLimit(isCompactScreen ? 1 : 2)
                         }
                     }
 
-                    // Coordinates
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Coordinates")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text(String(format: "%.4f, %.4f", record.coordinate.latitude, record.coordinate.longitude))
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.secondary)
+                    // Coordinates (smaller on compact)
+                    if !isCompactScreen {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Coordinates")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(String(format: "%.4f, %.4f", record.coordinate.latitude, record.coordinate.longitude))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
 
@@ -227,31 +270,33 @@ struct RecordCardView: View {
                     Image(uiImage: uiImage)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                        .frame(width: 140, height: 140)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .frame(width: photoSize, height: photoSize)
+                        .clipShape(RoundedRectangle(cornerRadius: isCompactScreen ? 8 : 12))
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 0)
 
             // Tap to view detail hint
-            HStack {
-                Spacer()
-                Text("Tap for details")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            if !isCompactScreen {
+                HStack {
+                    Spacer()
+                    Text("Tap for details")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
         }
-        .padding(20)
+        .padding(cardPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 20)
+            RoundedRectangle(cornerRadius: isCompactScreen ? 16 : 20)
                 .fill(Color(UIColor.secondarySystemBackground))
         )
-        .padding(.horizontal)
+        .padding(.horizontal, horizontalPadding)
     }
 
     private func formatDate(_ date: Date) -> String {

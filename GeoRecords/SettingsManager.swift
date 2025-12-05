@@ -151,14 +151,38 @@ class SettingsManager: ObservableObject {
         }
 
         self.homeAddress = defaults.string(forKey: "homeAddress") ?? Self.defaultHomeAddress
-        self.homeLocationName = defaults.string(forKey: "homeLocationName")
-        if let lat = defaults.object(forKey: "homeLatitude") as? Double,
-           let lon = defaults.object(forKey: "homeLongitude") as? Double {
+
+        // Try loading home location from iCloud first, then fall back to UserDefaults
+        let ubiquitousStore = NSUbiquitousKeyValueStore.default
+
+        // Load home location name
+        if let iCloudName = ubiquitousStore.string(forKey: "homeLocationName") {
+            self.homeLocationName = iCloudName
+            debugLog("☁️ Loaded home location name from iCloud: \(iCloudName)")
+        } else {
+            self.homeLocationName = defaults.string(forKey: "homeLocationName")
+        }
+
+        // Load home coordinates
+        let lat: Double?
+        let lon: Double?
+
+        if let iCloudLat = ubiquitousStore.object(forKey: "homeLatitude") as? Double,
+           let iCloudLon = ubiquitousStore.object(forKey: "homeLongitude") as? Double {
+            lat = iCloudLat
+            lon = iCloudLon
+            debugLog("☁️ Loaded home coordinates from iCloud: (\(iCloudLat), \(iCloudLon))")
+        } else {
+            lat = defaults.object(forKey: "homeLatitude") as? Double
+            lon = defaults.object(forKey: "homeLongitude") as? Double
+        }
+
+        if let lat = lat, let lon = lon {
             let coord = CLLocationCoordinate2D(latitude: lat, longitude: lon)
             if CLLocationCoordinate2DIsValid(coord) {
                 self.homeCoordinate = coord
             } else {
-                debugLog("⚠️ Invalid home coordinate loaded from UserDefaults: lat=\(lat), lon=\(lon)")
+                debugLog("⚠️ Invalid home coordinate loaded: lat=\(lat), lon=\(lon)")
                 self.homeCoordinate = Self.defaultHomeCoordinate
             }
         } else {
@@ -175,6 +199,7 @@ class SettingsManager: ObservableObject {
     // MARK: - Persistence
     func saveSettings() {
         let defaults = UserDefaults.standard
+        let ubiquitousStore = NSUbiquitousKeyValueStore.default
 
         defaults.set(hasCompletedSetup, forKey: "hasCompletedSetup")
         defaults.set(notifyOnMonthlyRecords, forKey: "notifyOnMonthlyRecords")
@@ -194,13 +219,21 @@ class SettingsManager: ObservableObject {
         defaults.set(homeAddress, forKey: "homeAddress")
         if let homeLocationName = homeLocationName {
             defaults.set(homeLocationName, forKey: "homeLocationName")
+            // Also save to iCloud
+            ubiquitousStore.set(homeLocationName, forKey: "homeLocationName")
         }
         if let homeCoord = homeCoordinate {
             defaults.set(homeCoord.latitude, forKey: "homeLatitude")
             defaults.set(homeCoord.longitude, forKey: "homeLongitude")
+            // Also save to iCloud
+            ubiquitousStore.set(homeCoord.latitude, forKey: "homeLatitude")
+            ubiquitousStore.set(homeCoord.longitude, forKey: "homeLongitude")
         }
 
         defaults.set(unitSystem.rawValue, forKey: "unitSystem")
+
+        // Sync iCloud Key-Value Store
+        ubiquitousStore.synchronize()
     }
     
     func resetToDefaults() {

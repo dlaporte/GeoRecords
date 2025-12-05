@@ -56,6 +56,22 @@ struct SetupWizardView: View {
         return true
     }
 
+    // Calculate visible steps for progress indicator
+    private var visibleSteps: [Int] {
+        if notificationsEnabled {
+            // All steps visible: 0, 1, 2, 3, 4, 5, 6
+            return Array(0...6)
+        } else {
+            // Skip steps 4 and 5: 0, 1, 2, 3, 6
+            return [0, 1, 2, 3, 6]
+        }
+    }
+
+    // Map current step to progress index
+    private var progressIndex: Int {
+        visibleSteps.firstIndex(of: currentStep) ?? 0
+    }
+
     var body: some View {
         ZStack {
             // Background gradient
@@ -70,9 +86,9 @@ struct SetupWizardView: View {
                 // Progress indicator (hide when showing import preview)
                 if !showImportPreview {
                     HStack(spacing: 8) {
-                    ForEach(0..<totalSteps, id: \.self) { step in
+                    ForEach(0..<visibleSteps.count, id: \.self) { index in
                         Capsule()
-                            .fill(step <= currentStep ? Color.blue : Color.gray.opacity(0.3))
+                            .fill(index <= progressIndex ? Color.blue : Color.gray.opacity(0.3))
                             .frame(height: 4)
                         }
                     }
@@ -132,7 +148,7 @@ struct SetupWizardView: View {
                     if currentStep > 0 {
                         Button(action: {
                             withAnimation {
-                                currentStep -= 1
+                                currentStep = getPreviousStep()
                             }
                         }) {
                             HStack {
@@ -154,13 +170,19 @@ struct SetupWizardView: View {
                                 locationManager.requestLocationAuthorization()
                             }
 
-                            // If leaving notifications step, request notification permissions
-                            if currentStep == 3 && notificationsEnabled {
-                                requestNotificationPermissions()
+                            // If leaving record notifications step
+                            if currentStep == 3 {
+                                if notificationsEnabled {
+                                    requestNotificationPermissions()
+                                } else {
+                                    // Disable sub-notification types if main notifications are off
+                                    summaryNotificationsEnabled = false
+                                    photoPromptsEnabled = false
+                                }
                             }
 
                             withAnimation {
-                                currentStep += 1
+                                currentStep = getNextStep()
                             }
                         } else {
                             completeSetup()
@@ -207,6 +229,30 @@ struct SetupWizardView: View {
                 .environmentObject(photoScanner)
                 .environmentObject(settings)
         }
+    }
+
+    // Helper to get next step, skipping notification detail steps if notifications are disabled
+    private func getNextStep() -> Int {
+        // Step 3 is record notifications
+        // Steps 4-5 are summary notifications and photo prompts (skip if notifications disabled)
+        // Step 6 is photo import
+
+        if currentStep == 3 && !notificationsEnabled {
+            // Skip steps 4 and 5, go directly to 6
+            return 6
+        }
+
+        return currentStep + 1
+    }
+
+    // Helper to get previous step, skipping notification detail steps if they were skipped
+    private func getPreviousStep() -> Int {
+        // If coming back from photo import (step 6) and notifications are off, skip back to step 3
+        if currentStep == 6 && !notificationsEnabled {
+            return 3
+        }
+
+        return currentStep - 1
     }
 
     private func completeSetup() {

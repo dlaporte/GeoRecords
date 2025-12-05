@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var settings: SettingsManager
     @StateObject private var photoScanner = PhotoLibraryScanner()
+    @ObservedObject private var persistenceController = PersistenceController.shared
 
     // State for Clear History confirmation.
     @State private var showClearHistoryAlert = false
@@ -77,7 +78,52 @@ struct SettingsView: View {
                             settings.saveSettings()
                         }
                 }
-                
+
+                // MARK: - iCloud Sync Section
+                Section(header: Text("iCloud Sync")) {
+                    HStack {
+                        Image(systemName: "icloud")
+                            .foregroundColor(.blue)
+                        Text("Status")
+                        Spacer()
+                        if persistenceController.isSyncing {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Syncing...")
+                                    .foregroundColor(.secondary)
+                                    .font(.subheadline)
+                            }
+                        } else if persistenceController.lastSyncError != nil {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("Error")
+                                    .foregroundColor(.secondary)
+                                    .font(.subheadline)
+                            }
+                        } else {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                Text("Up to date")
+                                    .foregroundColor(.secondary)
+                                    .font(.subheadline)
+                            }
+                        }
+                    }
+
+                    if let error = persistenceController.lastSyncError {
+                        Text(error.localizedDescription)
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+
+                    Text("Your records automatically sync across all devices signed into the same iCloud account")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 // MARK: - Units Section
                 Section(header: Text("Units")) {
                     Picker("Units", selection: $settings.unitSystem) {

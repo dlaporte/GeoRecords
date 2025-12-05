@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+import PhotosUI
 
 struct ManualRecordImportView: View {
     @EnvironmentObject var settings: SettingsManager
@@ -11,6 +12,9 @@ struct ManualRecordImportView: View {
     @State private var selectedDate = Date()
     @State private var mapPosition: MapCameraPosition = .automatic
     @State private var showConfirmation = false
+    @State private var showPhotoPicker = false
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var showNoLocationAlert = false
 
     let recordTypes = [
         "Furthest North",
@@ -79,19 +83,18 @@ struct ManualRecordImportView: View {
                                 Text(String(format: "%.6f°", location.longitude))
                                     .foregroundColor(.secondary)
                             }
-
-                            Button("Change Location") {
-                                // Show coordinate picker
-                            }
                         } else {
-                            Button("Select Location on Map") {
-                                // Instruction to tap map
-                            }
-                            .foregroundColor(.blue)
+                            Text("Tap the map above to select a location")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+
+                        Button("Import Location from Photo") {
+                            showPhotoPicker = true
                         }
 
                         NavigationLink(destination: CoordinatePickerView(coordinate: $selectedLocation, mapPosition: $mapPosition)) {
-                            Text("Enter Coordinates Manually")
+                            Text("Enter Location Manually")
                         }
                     }
 
@@ -140,6 +143,17 @@ struct ManualRecordImportView: View {
             } message: {
                 if let location = selectedLocation {
                     Text("Add \(selectedRecordType) record at \(formatValue(for: selectedRecordType, location: location))?")
+                }
+            }
+            .alert("No Location Data", isPresented: $showNoLocationAlert) {
+                Button("OK") {}
+            } message: {
+                Text("The selected photo does not contain GPS location information.")
+            }
+            .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItem, matching: .images)
+            .onChange(of: selectedPhotoItem) { oldValue, newValue in
+                Task {
+                    await loadPhotoLocation()
                 }
             }
         }
@@ -265,6 +279,78 @@ struct ManualRecordImportView: View {
             recordManager.setRecord(type: recordType, timeFrame: timeFrame, record: detail)
         }
     }
+
+    private func loadPhotoLocation() async {
+        guard let item = selectedPhotoItem else { return }
+
+        do {
+            // Load the image data
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                await MainActor.run {
+                    showNoLocationAlert = true
+                }
+                return
+            }
+
+            // Create image source from data
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+                await MainActor.run {
+                    showNoLocationAlert = true
+                }
+                return
+            }
+
+            // Get metadata from first image
+            guard let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] else {
+                await MainActor.run {
+                    showNoLocationAlert = true
+                }
+                return
+            }
+
+            // Extract GPS data
+            guard let gpsData = metadata[kCGImagePropertyGPSDictionary as String] as? [String: Any],
+                  let latitude = gpsData[kCGImagePropertyGPSLatitude as String] as? Double,
+                  let longitude = gpsData[kCGImagePropertyGPSLongitude as String] as? Double,
+                  let latRef = gpsData[kCGImagePropertyGPSLatitudeRef as String] as? String,
+                  let lonRef = gpsData[kCGImagePropertyGPSLongitudeRef as String] as? String else {
+                await MainActor.run {
+                    showNoLocationAlert = true
+                }
+                return
+            }
+
+            // Adjust coordinates based on hemisphere
+            let finalLatitude = latRef == "S" ? -latitude : latitude
+            let finalLongitude = lonRef == "W" ? -longitude : longitude
+            let coordinate = CLLocationCoordinate2D(latitude: finalLatitude, longitude: finalLongitude)
+
+            // Extract timestamp if available
+            var photoDate = Date()
+            if let exifData = metadata[kCGImagePropertyExifDictionary as String] as? [String: Any],
+               let dateString = exifData[kCGImagePropertyExifDateTimeOriginal as String] as? String {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+                if let date = formatter.date(from: dateString) {
+                    photoDate = date
+                }
+            }
+
+            // Update UI on main thread
+            await MainActor.run {
+                selectedLocation = coordinate
+                selectedDate = photoDate
+                mapPosition = .region(MKCoordinateRegion(
+                    center: coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                ))
+            }
+        } catch {
+            await MainActor.run {
+                showNoLocationAlert = true
+            }
+        }
+    }
 }
 
 // MARK: - Coordinate Picker View
@@ -273,50 +359,187 @@ struct CoordinatePickerView: View {
     @Binding var mapPosition: MapCameraPosition
     @Environment(\.dismiss) var dismiss
 
+    @State private var inputMode: InputMode = .search
+    @State private var locationSearchText = ""
     @State private var latitudeText = ""
     @State private var longitudeText = ""
     @State private var showError = false
     @State private var errorMessage = ""
+    @State private var isSearching = false
+    @State private var searchResults: [CLPlacemark] = []
+
+    enum InputMode: String, CaseIterable {
+        case search = "Search"
+        case coordinates = "Coordinates"
+    }
 
     var body: some View {
         Form {
-            Section(header: Text("Enter Coordinates")) {
-                HStack {
-                    Text("Latitude:")
-                    TextField("40.7128", text: $latitudeText)
-                        .keyboardType(.numbersAndPunctuation)
-                        .multilineTextAlignment(.trailing)
+            Section {
+                Picker("Input Method", selection: $inputMode) {
+                    ForEach(InputMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
                 }
-
-                HStack {
-                    Text("Longitude:")
-                    TextField("-74.0060", text: $longitudeText)
-                        .keyboardType(.numbersAndPunctuation)
-                        .multilineTextAlignment(.trailing)
-                }
-
-                Text("Latitude range: -90 to 90")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                Text("Longitude range: -180 to 180")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .pickerStyle(.segmented)
             }
 
-            Section {
-                Button("Set Location") {
-                    validateAndSet()
+            if inputMode == .search {
+                Section(header: Text("Search for Location")) {
+                    TextField("Enter city, address, or place name", text: $locationSearchText)
+                        .autocapitalization(.words)
+                        .onChange(of: locationSearchText) { oldValue, newValue in
+                            // Clear results when user types
+                            searchResults = []
+                        }
+
+                    Text("Example: \"Paris, France\" or \"Eiffel Tower\"")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section {
+                    Button(action: {
+                        searchLocation()
+                    }) {
+                        if isSearching {
+                            HStack {
+                                Spacer()
+                                ProgressView()
+                                Text("Searching...")
+                                    .padding(.leading, 8)
+                                Spacer()
+                            }
+                        } else {
+                            Text("Search")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .disabled(locationSearchText.isEmpty || isSearching)
+                }
+
+                if !searchResults.isEmpty {
+                    Section(header: Text("Search Results")) {
+                        ForEach(searchResults.indices, id: \.self) { index in
+                            Button(action: {
+                                selectLocation(searchResults[index])
+                            }) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(formatPlacemarkName(searchResults[index]))
+                                        .foregroundColor(.primary)
+                                    if let subtitle = formatPlacemarkSubtitle(searchResults[index]) {
+                                        Text(subtitle)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Section(header: Text("Enter Coordinates")) {
+                    HStack {
+                        Text("Latitude:")
+                        TextField("40.7128", text: $latitudeText)
+                            .keyboardType(.numbersAndPunctuation)
+                            .multilineTextAlignment(.trailing)
+                    }
+
+                    HStack {
+                        Text("Longitude:")
+                        TextField("-74.0060", text: $longitudeText)
+                            .keyboardType(.numbersAndPunctuation)
+                            .multilineTextAlignment(.trailing)
+                    }
+
+                    Text("Latitude range: -90 to 90")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Text("Longitude range: -180 to 180")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section {
+                    Button("Set Location") {
+                        validateAndSet()
+                    }
+                    .disabled(latitudeText.isEmpty || longitudeText.isEmpty)
                 }
             }
         }
-        .navigationTitle("Enter Coordinates")
+        .navigationTitle("Enter Location")
         .navigationBarTitleDisplayMode(.inline)
-        .alert("Invalid Coordinates", isPresented: $showError) {
+        .alert("Error", isPresented: $showError) {
             Button("OK") {}
         } message: {
             Text(errorMessage)
         }
+    }
+
+    private func searchLocation() {
+        isSearching = true
+        searchResults = []
+        let geocoder = CLGeocoder()
+
+        geocoder.geocodeAddressString(locationSearchText) { placemarks, error in
+            isSearching = false
+
+            if let error = error {
+                errorMessage = "Could not find location: \(error.localizedDescription)"
+                showError = true
+                return
+            }
+
+            guard let placemarks = placemarks, !placemarks.isEmpty else {
+                errorMessage = "No results found for '\(locationSearchText)'"
+                showError = true
+                return
+            }
+
+            searchResults = placemarks
+        }
+    }
+
+    private func selectLocation(_ placemark: CLPlacemark) {
+        guard let location = placemark.location else { return }
+
+        let newCoordinate = location.coordinate
+        coordinate = newCoordinate
+        mapPosition = .region(MKCoordinateRegion(
+            center: newCoordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+        ))
+
+        dismiss()
+    }
+
+    private func formatPlacemarkName(_ placemark: CLPlacemark) -> String {
+        if let name = placemark.name {
+            return name
+        }
+        if let locality = placemark.locality {
+            return locality
+        }
+        return "Unknown Location"
+    }
+
+    private func formatPlacemarkSubtitle(_ placemark: CLPlacemark) -> String? {
+        var components: [String] = []
+
+        if let locality = placemark.locality, placemark.name != locality {
+            components.append(locality)
+        }
+        if let adminArea = placemark.administrativeArea {
+            components.append(adminArea)
+        }
+        if let country = placemark.country {
+            components.append(country)
+        }
+
+        return components.isEmpty ? nil : components.joined(separator: ", ")
     }
 
     private func validateAndSet() {

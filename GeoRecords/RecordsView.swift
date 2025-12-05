@@ -170,7 +170,7 @@ struct RecordCardView: View {
     }
 
     private var cardSpacing: CGFloat {
-        isCompactScreen ? 8 : 16
+        isCompactScreen ? 8 : 12
     }
 
     private var iconSize: CGFloat {
@@ -182,11 +182,11 @@ struct RecordCardView: View {
     }
 
     private var photoSize: CGFloat {
-        isCompactScreen ? 80 : 140
+        isCompactScreen ? 80 : 120
     }
 
     private var cardPadding: CGFloat {
-        isCompactScreen ? 12 : 20
+        isCompactScreen ? 12 : 16
     }
 
     private var horizontalPadding: CGFloat {

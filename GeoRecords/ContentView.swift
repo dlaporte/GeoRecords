@@ -183,29 +183,28 @@ struct ContentView: View {
         isCheckingForCloudData = true
 
         Task {
-            // Wait longer for CloudKit to initialize and sync
-            // Check multiple times with increasing delays
+            // Check immediately first, then retry with delays if needed
             var hasCloudData = false
             var attempts = 0
-            let maxAttempts = 5
+            let maxAttempts = 3
 
             while attempts < maxAttempts && !hasCloudData {
                 attempts += 1
-                let delay = UInt64(attempts * 2_000_000_000) // 2, 4, 6, 8, 10 seconds
 
                 debugLog("☁️ Checking for iCloud data (attempt \(attempts)/\(maxAttempts))...")
-                try? await Task.sleep(nanoseconds: delay)
-
                 hasCloudData = await persistenceController.hasExistingCloudData()
 
                 if hasCloudData {
-                    debugLog("☁️ Found iCloud data after \(attempts * 2) seconds")
+                    debugLog("☁️ Found iCloud data on attempt \(attempts)")
                     break
                 }
 
-                // If CloudKit is still syncing, wait longer
+                // If no data found and we have more attempts, wait before next check
                 if attempts < maxAttempts {
-                    debugLog("☁️ No data yet, checking again...")
+                    // Progressive delays: 0.5s, 1s (total max 1.5s instead of 6s)
+                    let delay = UInt64(attempts * 500_000_000) // 0.5, 1.0 seconds
+                    debugLog("☁️ No data yet, checking again in \(Double(delay) / 1_000_000_000)s...")
+                    try? await Task.sleep(nanoseconds: delay)
                 }
             }
 
@@ -245,17 +244,7 @@ struct ContentView: View {
             let geocoder = CLGeocoder()
             geocoder.reverseGeocodeLocation(currentLocation) { placemarks, error in
                 if let placemark = placemarks?.first {
-                    var components: [String] = []
-                    if let locality = placemark.locality {
-                        components.append(locality)
-                    }
-                    if let administrativeArea = placemark.administrativeArea {
-                        components.append(administrativeArea)
-                    }
-                    if let country = placemark.country {
-                        components.append(country)
-                    }
-                    let locationName = components.joined(separator: ", ")
+                    let locationName = FormatUtils.formatPlacemarkName(placemark)
 
                     Task { @MainActor in
                         self.settings.homeLocationName = locationName

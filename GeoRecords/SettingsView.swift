@@ -5,9 +5,11 @@ struct SettingsView: View {
     @StateObject private var photoScanner = PhotoLibraryScanner()
     @ObservedObject private var persistenceController = PersistenceController.shared
 
-    // State for Clear History confirmation.
-    @State private var showClearHistoryAlert = false
-    @State private var showClearHistoryConfirmation = false
+    // State for confirmation alerts
+    @State private var showConsolidateAlert = false
+    @State private var showClearRecordsAlert = false
+    @State private var showConsolidateResult = false
+    @State private var consolidateResultMessage = ""
     @State private var showImportView = false
     @State private var showPermissionAlert = false
     @State private var showManualImport = false
@@ -278,8 +280,13 @@ struct SettingsView: View {
                         settings.resetToDefaults()
                     }
 
-                    Button("Clear History") {
-                        showClearHistoryAlert = true
+                    Button("Consolidate Records") {
+                        showConsolidateAlert = true
+                    }
+                    .foregroundColor(.orange)
+
+                    Button("Clear Records") {
+                        showClearRecordsAlert = true
                     }
                     .foregroundColor(.red)
                 }
@@ -287,33 +294,46 @@ struct SettingsView: View {
                     Text("Danger Zone")
                 }
                 footer: {
-                    Text("Clearing history will permanently delete all recorded data and reset all your geographical records. This action cannot be undone.")
+                    Text("Consolidate keeps only the most extreme record for each type/timeframe. Clear Records permanently deletes all data locally and from iCloud.")
                         .font(.caption)
-                        .foregroundColor(.red)
+                        .foregroundColor(.secondary)
                 }
             }
             .navigationTitle("Settings")
-            .alert(isPresented: $showClearHistoryAlert) {
+            .alert(isPresented: $showConsolidateAlert) {
                 Alert(
-                    title: Text("⚠️ Clear All History"),
-                    message: Text("This will PERMANENTLY delete all your records including:\n\n• All 7 geographical records\n• Complete history log\n• All associated photos\n\nThis action CANNOT be undone.\n\nType DELETE below to confirm."),
-                    primaryButton: .destructive(Text("Clear Everything")) {
-                        showClearHistoryConfirmation = true
+                    title: Text("Consolidate Records?"),
+                    message: Text("This will remove all non-extreme records from your history, keeping only the best record for each type/timeframe combination.\n\nFor example, if you reached 42.5° North, then 42.6°, then 42.4°, only the 42.6° record will be kept.\n\nThis affects both local and iCloud data."),
+                    primaryButton: .default(Text("Consolidate")) {
+                        let removed = RecordHistoryManager.shared.consolidateRecords()
+                        if removed > 0 {
+                            consolidateResultMessage = "Successfully removed \(removed) non-extreme record\(removed == 1 ? "" : "s") from history."
+                        } else {
+                            consolidateResultMessage = "No records needed consolidation. All records are already extreme values!"
+                        }
+                        showConsolidateResult = true
                     },
                     secondaryButton: .cancel()
                 )
             }
-            .alert("Final Confirmation", isPresented: $showClearHistoryConfirmation) {
-                Button("Cancel", role: .cancel) {}
-                Button("Yes, Delete Everything", role: .destructive) {
-                    RecordHistoryManager.shared.clearHistory()
-                    // Reset setup flag to show wizard
-                    settings.hasCompletedSetup = false
-                    settings.saveSettings()
-                    showSetupWizard = true
-                }
+            .alert("Consolidation Complete", isPresented: $showConsolidateResult) {
+                Button("OK") {}
             } message: {
-                Text("Are you absolutely sure? All your geographical records and history will be permanently deleted.")
+                Text(consolidateResultMessage)
+            }
+            .alert(isPresented: $showClearRecordsAlert) {
+                Alert(
+                    title: Text("⚠️ Clear All Records"),
+                    message: Text("This will PERMANENTLY delete all your records including:\n\n• All 7 geographical records\n• Complete history log\n• All associated photos\n\nThis affects both local and iCloud data.\n\nThis action CANNOT be undone."),
+                    primaryButton: .destructive(Text("Delete Everything")) {
+                        RecordHistoryManager.shared.clearHistory()
+                        // Reset setup flag to show wizard
+                        settings.hasCompletedSetup = false
+                        settings.saveSettings()
+                        showSetupWizard = true
+                    },
+                    secondaryButton: .cancel()
+                )
             }
             .fullScreenCover(isPresented: $showSetupWizard) {
                 SetupWizardView()

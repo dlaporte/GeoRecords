@@ -5,6 +5,7 @@ import PhotosUI
 
 struct ManualRecordImportView: View {
     @EnvironmentObject var settings: SettingsManager
+    @EnvironmentObject var recordManager: RecordManager
     @Environment(\.dismiss) var dismiss
 
     @State private var selectedLocation: CLLocationCoordinate2D?
@@ -16,15 +17,57 @@ struct ManualRecordImportView: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var showNoLocationAlert = false
 
-    let recordTypes = [
-        "Furthest North",
-        "Furthest South",
-        "Furthest East",
-        "Furthest West",
-        "Furthest Up",
-        "Furthest Down",
-        "Furthest from Home"
-    ]
+    let recordTypes = RecordType.allTypeStrings
+
+    // Check which existing records will be replaced
+    private var recordsToReplace: [(TimeFrame, RecordDetail)] {
+        guard let location = selectedLocation else { return [] }
+
+        let value: Double
+        switch selectedRecordType {
+        case "Furthest North", "Furthest South":
+            value = location.latitude
+        case "Furthest East", "Furthest West":
+            value = location.longitude
+        case "Furthest Up", "Furthest Down":
+            return [] // Can't manually enter altitude
+        case "Furthest from Home":
+            guard let homeCoord = settings.homeCoordinate else { return [] }
+            let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
+            let recordLocation = CLLocation(latitude: location.latitude, longitude: location.longitude)
+            let distanceMeters = recordLocation.distance(from: homeLocation)
+            value = distanceMeters * metersToFeet // Convert to feet for storage
+        default:
+            return []
+        }
+
+        // Get current month and year boundaries
+        let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
+
+        // Determine which timeframes this record belongs to
+        let timeFrames: [TimeFrame]
+        if selectedDate >= startOfMonth {
+            timeFrames = [.month, .year, .allTime]
+        } else if selectedDate >= startOfYear {
+            timeFrames = [.year, .allTime]
+        } else {
+            timeFrames = [.allTime]
+        }
+
+        // Check which existing records would be replaced
+        var replacements: [(TimeFrame, RecordDetail)] = []
+        for timeFrame in timeFrames {
+            if let existing = recordManager.getRecord(type: selectedRecordType, timeFrame: timeFrame),
+               let recordType = RecordType.from(string: selectedRecordType) {
+                let wouldReplace = recordType.shouldReplace(newValue: value, oldValue: existing.value)
+                if wouldReplace {
+                    replacements.append((timeFrame, existing))
+                }
+            }
+        }
+
+        return replacements
+    }
 
     var body: some View {
         NavigationStack {
@@ -53,7 +96,7 @@ struct ManualRecordImportView: View {
                                 selectedLocation = userLocation.coordinate
                                 mapPosition = .region(MKCoordinateRegion(
                                     center: userLocation.coordinate,
-                                    span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                                    span: MKCoordinateSpan(latitudeDelta: defaultMapLatDelta, longitudeDelta: defaultMapLonDelta)
                                 ))
                             }
                         }) {
@@ -137,12 +180,20 @@ struct ManualRecordImportView: View {
             }
             .alert("Add Record?", isPresented: $showConfirmation) {
                 Button("Cancel", role: .cancel) {}
-                Button("Add Record") {
+                Button(recordsToReplace.isEmpty ? "Add Record" : "Replace Record") {
                     addRecord()
                 }
             } message: {
                 if let location = selectedLocation {
-                    Text("Add \(selectedRecordType) record at \(formatValue(for: selectedRecordType, location: location))?")
+                    if recordsToReplace.isEmpty {
+                        Text("Add \(selectedRecordType) record at \(formatValue(for: selectedRecordType, location: location))?")
+                    } else {
+                        let timeFramesText = recordsToReplace.map { $0.0.rawValue }.joined(separator: ", ")
+                        let oldestRecord = recordsToReplace.last!.1
+                        let dateText = mediumDateFormatter.string(from: oldestRecord.timestamp)
+
+                        Text("This will replace your \(selectedRecordType) record(s) for: \(timeFramesText).\n\nCurrent record from \(dateText) will be moved to history.")
+                    }
                 }
             }
             .alert("No Location Data", isPresented: $showNoLocationAlert) {
@@ -160,34 +211,12 @@ struct ManualRecordImportView: View {
     }
 
     private func formatValue(for recordType: String, location: CLLocationCoordinate2D) -> String {
-        switch recordType {
-        case "Furthest North":
-            return String(format: "%.4f°", location.latitude)
-        case "Furthest South":
-            return String(format: "%.4f°", location.latitude)
-        case "Furthest East":
-            return String(format: "%.4f°", location.longitude)
-        case "Furthest West":
-            return String(format: "%.4f°", location.longitude)
-        case "Furthest Up", "Furthest Down":
-            return "Altitude not available for manual entry"
-        case "Furthest from Home":
-            if let homeCoord = settings.homeCoordinate {
-                let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
-                let recordLocation = CLLocation(latitude: location.latitude, longitude: location.longitude)
-                let distance = recordLocation.distance(from: homeLocation)
-                if settings.unitSystem == .imperial {
-                    let miles = distance / 1609.344
-                    return String(format: "%.2f mi", miles)
-                } else {
-                    let km = distance / 1000.0
-                    return String(format: "%.2f km", km)
-                }
-            }
-            return "Set home location first"
-        default:
-            return ""
-        }
+        return FormatUtils.formatRecordValue(
+            for: recordType,
+            at: location,
+            homeCoordinate: settings.homeCoordinate,
+            unitSystem: settings.unitSystem
+        )
     }
 
     private func addRecord() {
@@ -209,7 +238,7 @@ struct ManualRecordImportView: View {
                 let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
                 let recordLocation = CLLocation(latitude: location.latitude, longitude: location.longitude)
                 let distanceMeters = recordLocation.distance(from: homeLocation)
-                value = distanceMeters * 3.28084 // Convert to feet for storage
+                value = distanceMeters * metersToFeet // Convert to feet for storage
             } else {
                 return // No home location set
             }
@@ -218,10 +247,7 @@ struct ManualRecordImportView: View {
         }
 
         // Get current month and year boundaries
-        let calendar = Calendar.current
-        let now = Date()
-        let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
-        let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
+        let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
 
         // Determine which timeframes this record belongs to based on its timestamp
         let timeFrames: [TimeFrame]
@@ -262,15 +288,9 @@ struct ManualRecordImportView: View {
 
         // Determine if this record should replace the existing one
         let shouldUpdate: Bool
-        if let existing = existing {
-            switch recordType {
-            case "Furthest North", "Furthest East", "Furthest Up", "Furthest from Home":
-                shouldUpdate = detail.value > existing.value  // Higher is better
-            case "Furthest South", "Furthest West", "Furthest Down":
-                shouldUpdate = detail.value < existing.value  // Lower is better
-            default:
-                shouldUpdate = false
-            }
+        if let existing = existing,
+           let type = RecordType.from(string: recordType) {
+            shouldUpdate = type.shouldReplace(newValue: detail.value, oldValue: existing.value)
         } else {
             shouldUpdate = true  // No existing record, so set it
         }
@@ -342,7 +362,7 @@ struct ManualRecordImportView: View {
                 selectedDate = photoDate
                 mapPosition = .region(MKCoordinateRegion(
                     center: coordinate,
-                    span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                    span: MKCoordinateSpan(latitudeDelta: defaultMapLatDelta, longitudeDelta: defaultMapLonDelta)
                 ))
             }
         } catch {
@@ -350,224 +370,5 @@ struct ManualRecordImportView: View {
                 showNoLocationAlert = true
             }
         }
-    }
-}
-
-// MARK: - Coordinate Picker View
-struct CoordinatePickerView: View {
-    @Binding var coordinate: CLLocationCoordinate2D?
-    @Binding var mapPosition: MapCameraPosition
-    @Environment(\.dismiss) var dismiss
-
-    @State private var inputMode: InputMode = .search
-    @State private var locationSearchText = ""
-    @State private var latitudeText = ""
-    @State private var longitudeText = ""
-    @State private var showError = false
-    @State private var errorMessage = ""
-    @State private var isSearching = false
-    @State private var searchResults: [CLPlacemark] = []
-
-    enum InputMode: String, CaseIterable {
-        case search = "Search"
-        case coordinates = "Coordinates"
-    }
-
-    var body: some View {
-        Form {
-            Section {
-                Picker("Input Method", selection: $inputMode) {
-                    ForEach(InputMode.allCases, id: \.self) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            if inputMode == .search {
-                Section(header: Text("Search for Location")) {
-                    TextField("Enter city, address, or place name", text: $locationSearchText)
-                        .autocapitalization(.words)
-                        .onChange(of: locationSearchText) { oldValue, newValue in
-                            // Clear results when user types
-                            searchResults = []
-                        }
-
-                    Text("Example: \"Paris, France\" or \"Eiffel Tower\"")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Section {
-                    Button(action: {
-                        searchLocation()
-                    }) {
-                        if isSearching {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                Text("Searching...")
-                                    .padding(.leading, 8)
-                                Spacer()
-                            }
-                        } else {
-                            Text("Search")
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .disabled(locationSearchText.isEmpty || isSearching)
-                }
-
-                if !searchResults.isEmpty {
-                    Section(header: Text("Search Results")) {
-                        ForEach(searchResults.indices, id: \.self) { index in
-                            Button(action: {
-                                selectLocation(searchResults[index])
-                            }) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(formatPlacemarkName(searchResults[index]))
-                                        .foregroundColor(.primary)
-                                    if let subtitle = formatPlacemarkSubtitle(searchResults[index]) {
-                                        Text(subtitle)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                Section(header: Text("Enter Coordinates")) {
-                    HStack {
-                        Text("Latitude:")
-                        TextField("40.7128", text: $latitudeText)
-                            .keyboardType(.numbersAndPunctuation)
-                            .multilineTextAlignment(.trailing)
-                    }
-
-                    HStack {
-                        Text("Longitude:")
-                        TextField("-74.0060", text: $longitudeText)
-                            .keyboardType(.numbersAndPunctuation)
-                            .multilineTextAlignment(.trailing)
-                    }
-
-                    Text("Latitude range: -90 to 90")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Text("Longitude range: -180 to 180")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Section {
-                    Button("Set Location") {
-                        validateAndSet()
-                    }
-                    .disabled(latitudeText.isEmpty || longitudeText.isEmpty)
-                }
-            }
-        }
-        .navigationTitle("Enter Location")
-        .navigationBarTitleDisplayMode(.inline)
-        .alert("Error", isPresented: $showError) {
-            Button("OK") {}
-        } message: {
-            Text(errorMessage)
-        }
-    }
-
-    private func searchLocation() {
-        isSearching = true
-        searchResults = []
-        let geocoder = CLGeocoder()
-
-        geocoder.geocodeAddressString(locationSearchText) { placemarks, error in
-            isSearching = false
-
-            if let error = error {
-                errorMessage = "Could not find location: \(error.localizedDescription)"
-                showError = true
-                return
-            }
-
-            guard let placemarks = placemarks, !placemarks.isEmpty else {
-                errorMessage = "No results found for '\(locationSearchText)'"
-                showError = true
-                return
-            }
-
-            searchResults = placemarks
-        }
-    }
-
-    private func selectLocation(_ placemark: CLPlacemark) {
-        guard let location = placemark.location else { return }
-
-        let newCoordinate = location.coordinate
-        coordinate = newCoordinate
-        mapPosition = .region(MKCoordinateRegion(
-            center: newCoordinate,
-            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
-        ))
-
-        dismiss()
-    }
-
-    private func formatPlacemarkName(_ placemark: CLPlacemark) -> String {
-        if let name = placemark.name {
-            return name
-        }
-        if let locality = placemark.locality {
-            return locality
-        }
-        return "Unknown Location"
-    }
-
-    private func formatPlacemarkSubtitle(_ placemark: CLPlacemark) -> String? {
-        var components: [String] = []
-
-        if let locality = placemark.locality, placemark.name != locality {
-            components.append(locality)
-        }
-        if let adminArea = placemark.administrativeArea {
-            components.append(adminArea)
-        }
-        if let country = placemark.country {
-            components.append(country)
-        }
-
-        return components.isEmpty ? nil : components.joined(separator: ", ")
-    }
-
-    private func validateAndSet() {
-        guard let lat = Double(latitudeText), let lon = Double(longitudeText) else {
-            errorMessage = "Please enter valid numbers for latitude and longitude"
-            showError = true
-            return
-        }
-
-        guard lat >= -90 && lat <= 90 else {
-            errorMessage = "Latitude must be between -90 and 90"
-            showError = true
-            return
-        }
-
-        guard lon >= -180 && lon <= 180 else {
-            errorMessage = "Longitude must be between -180 and 180"
-            showError = true
-            return
-        }
-
-        let newCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
-        coordinate = newCoordinate
-        mapPosition = .region(MKCoordinateRegion(
-            center: newCoordinate,
-            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
-        ))
-
-        dismiss()
     }
 }

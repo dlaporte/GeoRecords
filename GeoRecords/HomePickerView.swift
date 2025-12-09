@@ -2,31 +2,6 @@ import SwiftUI
 import MapKit
 import CoreLocation
 
-// MARK: - Geocoding Cache for Home Picker
-private actor HomeGeocodingCache {
-    private var cache: [String: String] = [:]
-
-    func getCachedLocation(latitude: Double, longitude: Double) -> String? {
-        let key = cacheKey(latitude: latitude, longitude: longitude)
-        return cache[key]
-    }
-
-    func setCachedLocation(latitude: Double, longitude: Double, name: String) {
-        let key = cacheKey(latitude: latitude, longitude: longitude)
-        cache[key] = name
-    }
-
-    private func cacheKey(latitude: Double, longitude: Double) -> String {
-        // Round to 4 decimal places (~11 meters precision)
-        let roundedLat = round(latitude * 10000) / 10000
-        let roundedLon = round(longitude * 10000) / 10000
-        return "\(roundedLat),\(roundedLon)"
-    }
-}
-
-// Global cache instance for home picker
-private let homeGeocodingCache = HomeGeocodingCache()
-
 struct HomePickerView: View {
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var settings: SettingsManager
@@ -42,7 +17,7 @@ struct HomePickerView: View {
         // Initialize with default position (will be updated in onAppear)
         _position = State(initialValue: .region(MKCoordinateRegion(
             center: defaultCoord,
-            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+            span: MKCoordinateSpan(latitudeDelta: defaultMapLatDelta, longitudeDelta: defaultMapLonDelta)
         )))
         _currentCoordinate = State(initialValue: defaultCoord)
     }
@@ -72,7 +47,7 @@ struct HomePickerView: View {
                     currentCoordinate = homeCoord
                     position = .region(MKCoordinateRegion(
                         center: homeCoord,
-                        span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                        span: MKCoordinateSpan(latitudeDelta: defaultMapLatDelta, longitudeDelta: defaultMapLonDelta)
                     ))
                     geocodeCoordinate(homeCoord)
                 }
@@ -103,7 +78,7 @@ struct HomePickerView: View {
                         currentCoordinate = currentLocation.coordinate
                         position = .region(MKCoordinateRegion(
                             center: currentLocation.coordinate,
-                            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                            span: MKCoordinateSpan(latitudeDelta: defaultMapLatDelta, longitudeDelta: defaultMapLonDelta)
                         ))
                     }
                     geocodeCoordinate(currentLocation.coordinate)
@@ -154,7 +129,7 @@ struct HomePickerView: View {
 
         // Check cache first
         Task {
-            if let cachedName = await homeGeocodingCache.getCachedLocation(latitude: lat, longitude: lon) {
+            if let cachedName = await sharedGeocodingCache.getCachedName(for: coordinate) {
                 debugLog("📍 Using cached location for (\(lat), \(lon)): \(cachedName)")
                 await MainActor.run {
                     self.locationName = cachedName
@@ -174,23 +149,11 @@ struct HomePickerView: View {
                 }
 
                 if let placemark = placemarks?.first {
-                    var components: [String] = []
-
-                    if let locality = placemark.locality {
-                        components.append(locality)
-                    }
-                    if let administrativeArea = placemark.administrativeArea {
-                        components.append(administrativeArea)
-                    }
-                    if let country = placemark.country {
-                        components.append(country)
-                    }
-
-                    let name = components.joined(separator: ", ")
+                    let name = FormatUtils.formatPlacemarkName(placemark)
 
                     // Store in cache
                     Task {
-                        await homeGeocodingCache.setCachedLocation(latitude: lat, longitude: lon, name: name)
+                        await sharedGeocodingCache.setCachedName(name, for: coordinate)
                         debugLog("💾 Cached location for (\(lat), \(lon)): \(name)")
                     }
 

@@ -3,31 +3,6 @@ import CoreLocation
 import UserNotifications
 import CoreData
 
-// MARK: - Geocoding Cache for Record Manager
-private actor RecordManagerGeocodingCache {
-    private var cache: [String: String] = [:]
-
-    func getCachedLocation(latitude: Double, longitude: Double) -> String? {
-        let key = cacheKey(latitude: latitude, longitude: longitude)
-        return cache[key]
-    }
-
-    func setCachedLocation(latitude: Double, longitude: Double, name: String) {
-        let key = cacheKey(latitude: latitude, longitude: longitude)
-        cache[key] = name
-    }
-
-    private func cacheKey(latitude: Double, longitude: Double) -> String {
-        // Round to 4 decimal places (~11 meters precision)
-        let roundedLat = round(latitude * 10000) / 10000
-        let roundedLon = round(longitude * 10000) / 10000
-        return "\(roundedLat),\(roundedLon)"
-    }
-}
-
-// Global cache instance for record manager
-private let recordManagerGeocodingCache = RecordManagerGeocodingCache()
-
 // MARK: - Models
 
 /// Time frame for records
@@ -35,6 +10,42 @@ enum TimeFrame: String, CaseIterable {
     case month = "Monthly"
     case year = "Yearly"
     case allTime = "All Time"
+}
+
+/// Record type enum for type safety and comparison logic
+enum RecordType: String, CaseIterable {
+    case north = "Furthest North"
+    case south = "Furthest South"
+    case east = "Furthest East"
+    case west = "Furthest West"
+    case up = "Furthest Up"
+    case down = "Furthest Down"
+    case fromHome = "Furthest from Home"
+
+    /// Whether this record type uses ascending comparison (higher is better)
+    var isAscending: Bool {
+        switch self {
+        case .north, .east, .up, .fromHome:
+            return true  // Higher values are better
+        case .south, .west, .down:
+            return false  // Lower values are better
+        }
+    }
+
+    /// Determine if a new value should replace an existing record
+    func shouldReplace(newValue: Double, oldValue: Double) -> Bool {
+        return isAscending ? newValue > oldValue : newValue < oldValue
+    }
+
+    /// All record type strings for compatibility
+    static var allTypeStrings: [String] {
+        return RecordType.allCases.map { $0.rawValue }
+    }
+
+    /// Get record type from string (for backward compatibility)
+    static func from(string: String) -> RecordType? {
+        return RecordType.allCases.first { $0.rawValue == string }
+    }
 }
 
 /// In-memory model for a record event.
@@ -48,9 +59,10 @@ struct RecordDetail: Identifiable {
     var recordType: String
     var timeFrame: TimeFrame    // Monthly, Yearly, or All Time
     var photoData: Data?        // JPEG photo data captured when record was set
+    var notes: String?          // User-added notes/description for this record
 
     /// Initialize with coordinate validation
-    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil) {
+    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, notes: String? = nil) {
         self.id = id
         self.value = value
         self.timestamp = timestamp
@@ -59,6 +71,7 @@ struct RecordDetail: Identifiable {
         self.recordType = recordType
         self.timeFrame = timeFrame
         self.photoData = photoData
+        self.notes = notes
 
         // Validate coordinate or use a safe default
         if CLLocationCoordinate2DIsValid(coordinate) {
@@ -79,32 +92,104 @@ struct RecordDetail: Identifiable {
 class RecordManager: NSObject, ObservableObject {
     static let shared = RecordManager()
 
+    // MARK: - Storage
+
+    /// Dictionary-based storage for all records (type -> timeframe -> record)
+    private var records: [String: [TimeFrame: RecordDetail]] = [:]
+
+    // MARK: - Computed Properties (for backward compatibility)
+
     // Monthly records
-    @Published var furthestNorthMonth: RecordDetail?
-    @Published var furthestSouthMonth: RecordDetail?
-    @Published var furthestEastMonth: RecordDetail?
-    @Published var furthestWestMonth: RecordDetail?
-    @Published var furthestUpMonth: RecordDetail?
-    @Published var furthestDownMonth: RecordDetail?
-    @Published var furthestFromHomeMonth: RecordDetail?
+    var furthestNorthMonth: RecordDetail? {
+        get { getRecord(type: "Furthest North", timeFrame: .month) }
+        set { setRecord(type: "Furthest North", timeFrame: .month, record: newValue) }
+    }
+    var furthestSouthMonth: RecordDetail? {
+        get { getRecord(type: "Furthest South", timeFrame: .month) }
+        set { setRecord(type: "Furthest South", timeFrame: .month, record: newValue) }
+    }
+    var furthestEastMonth: RecordDetail? {
+        get { getRecord(type: "Furthest East", timeFrame: .month) }
+        set { setRecord(type: "Furthest East", timeFrame: .month, record: newValue) }
+    }
+    var furthestWestMonth: RecordDetail? {
+        get { getRecord(type: "Furthest West", timeFrame: .month) }
+        set { setRecord(type: "Furthest West", timeFrame: .month, record: newValue) }
+    }
+    var furthestUpMonth: RecordDetail? {
+        get { getRecord(type: "Furthest Up", timeFrame: .month) }
+        set { setRecord(type: "Furthest Up", timeFrame: .month, record: newValue) }
+    }
+    var furthestDownMonth: RecordDetail? {
+        get { getRecord(type: "Furthest Down", timeFrame: .month) }
+        set { setRecord(type: "Furthest Down", timeFrame: .month, record: newValue) }
+    }
+    var furthestFromHomeMonth: RecordDetail? {
+        get { getRecord(type: "Furthest from Home", timeFrame: .month) }
+        set { setRecord(type: "Furthest from Home", timeFrame: .month, record: newValue) }
+    }
 
     // Yearly records
-    @Published var furthestNorthYear: RecordDetail?
-    @Published var furthestSouthYear: RecordDetail?
-    @Published var furthestEastYear: RecordDetail?
-    @Published var furthestWestYear: RecordDetail?
-    @Published var furthestUpYear: RecordDetail?
-    @Published var furthestDownYear: RecordDetail?
-    @Published var furthestFromHomeYear: RecordDetail?
+    var furthestNorthYear: RecordDetail? {
+        get { getRecord(type: "Furthest North", timeFrame: .year) }
+        set { setRecord(type: "Furthest North", timeFrame: .year, record: newValue) }
+    }
+    var furthestSouthYear: RecordDetail? {
+        get { getRecord(type: "Furthest South", timeFrame: .year) }
+        set { setRecord(type: "Furthest South", timeFrame: .year, record: newValue) }
+    }
+    var furthestEastYear: RecordDetail? {
+        get { getRecord(type: "Furthest East", timeFrame: .year) }
+        set { setRecord(type: "Furthest East", timeFrame: .year, record: newValue) }
+    }
+    var furthestWestYear: RecordDetail? {
+        get { getRecord(type: "Furthest West", timeFrame: .year) }
+        set { setRecord(type: "Furthest West", timeFrame: .year, record: newValue) }
+    }
+    var furthestUpYear: RecordDetail? {
+        get { getRecord(type: "Furthest Up", timeFrame: .year) }
+        set { setRecord(type: "Furthest Up", timeFrame: .year, record: newValue) }
+    }
+    var furthestDownYear: RecordDetail? {
+        get { getRecord(type: "Furthest Down", timeFrame: .year) }
+        set { setRecord(type: "Furthest Down", timeFrame: .year, record: newValue) }
+    }
+    var furthestFromHomeYear: RecordDetail? {
+        get { getRecord(type: "Furthest from Home", timeFrame: .year) }
+        set { setRecord(type: "Furthest from Home", timeFrame: .year, record: newValue) }
+    }
 
     // All-time records
-    @Published var furthestNorthAllTime: RecordDetail?
-    @Published var furthestSouthAllTime: RecordDetail?
-    @Published var furthestEastAllTime: RecordDetail?
-    @Published var furthestWestAllTime: RecordDetail?
-    @Published var furthestUpAllTime: RecordDetail?
-    @Published var furthestDownAllTime: RecordDetail?
-    @Published var furthestFromHomeAllTime: RecordDetail?
+    var furthestNorthAllTime: RecordDetail? {
+        get { getRecord(type: "Furthest North", timeFrame: .allTime) }
+        set { setRecord(type: "Furthest North", timeFrame: .allTime, record: newValue) }
+    }
+    var furthestSouthAllTime: RecordDetail? {
+        get { getRecord(type: "Furthest South", timeFrame: .allTime) }
+        set { setRecord(type: "Furthest South", timeFrame: .allTime, record: newValue) }
+    }
+    var furthestEastAllTime: RecordDetail? {
+        get { getRecord(type: "Furthest East", timeFrame: .allTime) }
+        set { setRecord(type: "Furthest East", timeFrame: .allTime, record: newValue) }
+    }
+    var furthestWestAllTime: RecordDetail? {
+        get { getRecord(type: "Furthest West", timeFrame: .allTime) }
+        set { setRecord(type: "Furthest West", timeFrame: .allTime, record: newValue) }
+    }
+    var furthestUpAllTime: RecordDetail? {
+        get { getRecord(type: "Furthest Up", timeFrame: .allTime) }
+        set { setRecord(type: "Furthest Up", timeFrame: .allTime, record: newValue) }
+    }
+    var furthestDownAllTime: RecordDetail? {
+        get { getRecord(type: "Furthest Down", timeFrame: .allTime) }
+        set { setRecord(type: "Furthest Down", timeFrame: .allTime, record: newValue) }
+    }
+    var furthestFromHomeAllTime: RecordDetail? {
+        get { getRecord(type: "Furthest from Home", timeFrame: .allTime) }
+        set { setRecord(type: "Furthest from Home", timeFrame: .allTime, record: newValue) }
+    }
+
+    // MARK: - Other State
 
     // Photo prompt state
     @Published var showPhotoPrompt = false
@@ -135,58 +220,21 @@ class RecordManager: NSObject, ObservableObject {
 
     /// Get a record by type and timeframe
     func getRecord(type: String, timeFrame: TimeFrame) -> RecordDetail? {
-        switch (type, timeFrame) {
-        case ("Furthest North", .month): return furthestNorthMonth
-        case ("Furthest North", .year): return furthestNorthYear
-        case ("Furthest North", .allTime): return furthestNorthAllTime
-        case ("Furthest South", .month): return furthestSouthMonth
-        case ("Furthest South", .year): return furthestSouthYear
-        case ("Furthest South", .allTime): return furthestSouthAllTime
-        case ("Furthest East", .month): return furthestEastMonth
-        case ("Furthest East", .year): return furthestEastYear
-        case ("Furthest East", .allTime): return furthestEastAllTime
-        case ("Furthest West", .month): return furthestWestMonth
-        case ("Furthest West", .year): return furthestWestYear
-        case ("Furthest West", .allTime): return furthestWestAllTime
-        case ("Furthest Up", .month): return furthestUpMonth
-        case ("Furthest Up", .year): return furthestUpYear
-        case ("Furthest Up", .allTime): return furthestUpAllTime
-        case ("Furthest Down", .month): return furthestDownMonth
-        case ("Furthest Down", .year): return furthestDownYear
-        case ("Furthest Down", .allTime): return furthestDownAllTime
-        case ("Furthest from Home", .month): return furthestFromHomeMonth
-        case ("Furthest from Home", .year): return furthestFromHomeYear
-        case ("Furthest from Home", .allTime): return furthestFromHomeAllTime
-        default: return nil
-        }
+        return records[type]?[timeFrame]
     }
 
     /// Set a record by type and timeframe
     func setRecord(type: String, timeFrame: TimeFrame, record: RecordDetail?) {
-        switch (type, timeFrame) {
-        case ("Furthest North", .month): furthestNorthMonth = record
-        case ("Furthest North", .year): furthestNorthYear = record
-        case ("Furthest North", .allTime): furthestNorthAllTime = record
-        case ("Furthest South", .month): furthestSouthMonth = record
-        case ("Furthest South", .year): furthestSouthYear = record
-        case ("Furthest South", .allTime): furthestSouthAllTime = record
-        case ("Furthest East", .month): furthestEastMonth = record
-        case ("Furthest East", .year): furthestEastYear = record
-        case ("Furthest East", .allTime): furthestEastAllTime = record
-        case ("Furthest West", .month): furthestWestMonth = record
-        case ("Furthest West", .year): furthestWestYear = record
-        case ("Furthest West", .allTime): furthestWestAllTime = record
-        case ("Furthest Up", .month): furthestUpMonth = record
-        case ("Furthest Up", .year): furthestUpYear = record
-        case ("Furthest Up", .allTime): furthestUpAllTime = record
-        case ("Furthest Down", .month): furthestDownMonth = record
-        case ("Furthest Down", .year): furthestDownYear = record
-        case ("Furthest Down", .allTime): furthestDownAllTime = record
-        case ("Furthest from Home", .month): furthestFromHomeMonth = record
-        case ("Furthest from Home", .year): furthestFromHomeYear = record
-        case ("Furthest from Home", .allTime): furthestFromHomeAllTime = record
-        default: break
+        // Notify observers that changes are coming
+        objectWillChange.send()
+
+        // Initialize nested dictionary if needed
+        if records[type] == nil {
+            records[type] = [:]
         }
+
+        // Set the record
+        records[type]?[timeFrame] = record
     }
 
     /// Block all alerts during photo import
@@ -219,6 +267,9 @@ class RecordManager: NSObject, ObservableObject {
     
     // MARK: - Load Records from Core Data
     func loadRecordsFromHistory() {
+        // Remove any duplicate records before loading
+        RecordHistoryManager.shared.removeDuplicates()
+
         let context = PersistenceController.shared.container.viewContext
 
         // Single batch fetch to get all record types at once
@@ -229,10 +280,7 @@ class RecordManager: NSObject, ObservableObject {
             let allEntries = try context.fetch(request)
 
             // Get current month and year boundaries
-            let calendar = Calendar.current
-            let now = Date()
-            let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
-            let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
+            let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
 
             // Filter entries by timeframe
             let monthEntries = allEntries.filter { entry in
@@ -298,7 +346,8 @@ class RecordManager: NSObject, ObservableObject {
             altitude: entry.altitude,
             locationName: entry.locationName,
             recordType: entry.recordType ?? "Unknown",
-            photoData: entry.photoData
+            photoData: entry.photoData,
+            notes: entry.notes
         )
     }
     
@@ -402,7 +451,7 @@ class RecordManager: NSObject, ObservableObject {
 
             // Check cache first
             Task {
-                if let cachedName = await recordManagerGeocodingCache.getCachedLocation(latitude: lat, longitude: lon) {
+                if let cachedName = await sharedGeocodingCache.getCachedName(for: location.coordinate) {
                     debugLog("📍 Using cached location for (\(lat), \(lon)): \(cachedName)")
                     await MainActor.run {
                         self.updateRecords(with: location, reverseGeocodedName: cachedName)
@@ -474,7 +523,7 @@ class RecordManager: NSObject, ObservableObject {
                         // Store in cache if successful
                         if let name = name {
                             Task {
-                                await recordManagerGeocodingCache.setCachedLocation(latitude: lat, longitude: lon, name: name)
+                                await sharedGeocodingCache.setCachedName(name, for: location.coordinate)
                                 debugLog("💾 Cached location for (\(lat), \(lon)): \(name)")
                             }
                         }
@@ -575,11 +624,11 @@ class RecordManager: NSObject, ObservableObject {
 
             // Furthest from Home (greater distance is better)
             if let distance = distanceMeters {
-                let distFeet = distance * 3.28084  // Store in feet for consistency
+                let distFeet = distance * metersToFeet  // Store in feet for consistency
                 checkAndUpdateRecord(
                     type: "Furthest from Home",
                     newValue: distFeet,
-                    threshold: distanceDeltaMeters * 3.28084,  // Convert to feet
+                    threshold: distanceDeltaMeters * metersToFeet,  // Convert to feet
                     compareAscending: false,
                     location: location,
                     reverseGeocodedName: reverseGeocodedName,
@@ -692,31 +741,7 @@ class RecordManager: NSObject, ObservableObject {
 
     // MARK: - Reset In-Memory Records
     func resetRecords() {
-        // Reset monthly records
-        furthestNorthMonth = nil
-        furthestSouthMonth = nil
-        furthestEastMonth = nil
-        furthestWestMonth = nil
-        furthestUpMonth = nil
-        furthestDownMonth = nil
-        furthestFromHomeMonth = nil
-
-        // Reset yearly records
-        furthestNorthYear = nil
-        furthestSouthYear = nil
-        furthestEastYear = nil
-        furthestWestYear = nil
-        furthestUpYear = nil
-        furthestDownYear = nil
-        furthestFromHomeYear = nil
-
-        // Reset all-time records
-        furthestNorthAllTime = nil
-        furthestSouthAllTime = nil
-        furthestEastAllTime = nil
-        furthestWestAllTime = nil
-        furthestUpAllTime = nil
-        furthestDownAllTime = nil
-        furthestFromHomeAllTime = nil
+        objectWillChange.send()
+        records.removeAll()
     }
 }

@@ -54,9 +54,7 @@ struct StatisticsView: View {
     }
 
     private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        return formatter.string(from: date)
+        return mediumDateFormatter.string(from: date)
     }
 }
 
@@ -70,10 +68,7 @@ struct TravelStatistics {
         self.firstRecordDate = entries.first?.timestamp
 
         // Get current month and year boundaries
-        let calendar = Calendar.current
-        let now = Date()
-        let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
-        let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
+        let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
 
         // Count records this month
         self.recordsThisMonth = entries.filter { entry in

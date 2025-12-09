@@ -45,11 +45,11 @@ struct RecordsView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    // Map in upper half
+                    // Map in upper half showing all records
                     Map(position: $mapPosition) {
-                        if let currentRecord = allRecords[safe: currentRecordIndex] {
-                            Marker(currentRecord.recordType, coordinate: currentRecord.coordinate)
-                                .tint(colorForRecordType(currentRecord.recordType))
+                        ForEach(allRecords, id: \.id) { record in
+                            Marker(record.recordType, coordinate: record.coordinate)
+                                .tint(colorForRecordType(record.recordType))
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -75,7 +75,7 @@ struct RecordsView: View {
                             withAnimation {
                                 mapPosition = .region(MKCoordinateRegion(
                                     center: record.coordinate,
-                                    span: MKCoordinateSpan(latitudeDelta: 2.0, longitudeDelta: 2.0)
+                                    span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                                 ))
                             }
                         }
@@ -100,7 +100,7 @@ struct RecordsView: View {
                     withAnimation {
                         mapPosition = .region(MKCoordinateRegion(
                             center: record.coordinate,
-                            span: MKCoordinateSpan(latitudeDelta: 2.0, longitudeDelta: 2.0)
+                            span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                         ))
                     }
                 }
@@ -116,7 +116,7 @@ struct RecordsView: View {
                 if let firstRecord = allRecords.first {
                     mapPosition = .region(MKCoordinateRegion(
                         center: firstRecord.coordinate,
-                        span: MKCoordinateSpan(latitudeDelta: 2.0, longitudeDelta: 2.0)
+                        span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                     ))
                 }
             }
@@ -300,9 +300,7 @@ struct RecordCardView: View {
     }
 
     private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        return formatter.string(from: date)
+        return mediumDateFormatter.string(from: date)
     }
 
     private func iconForRecordType(_ type: String) -> String {

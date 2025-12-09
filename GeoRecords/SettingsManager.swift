@@ -67,11 +67,11 @@ class SettingsManager: ObservableObject {
 
     // Imperial defaults
     private static let defaultMinAltitudeDeltaMetersImperial = 30.48  // 100 feet in meters
-    private static let defaultMinDistanceDeltaMetersImperial = 1609.344  // 1 mile in meters
+    private static let defaultMinDistanceDeltaMetersImperial = metersPerMile  // 1 mile in meters
 
     // Metric defaults
     private static let defaultMinAltitudeDeltaMetersMetric = 100.0  // 100 meters
-    private static let defaultMinDistanceDeltaMetersMetric = 1000.0  // 1 kilometer in meters
+    private static let defaultMinDistanceDeltaMetersMetric = metersPerKm  // 1 kilometer in meters
 
     private static let defaultHomeAddress = "Your Home Address"
     private static let defaultHomeCoordinate: CLLocationCoordinate2D? = nil

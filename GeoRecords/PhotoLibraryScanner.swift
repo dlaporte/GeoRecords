@@ -32,8 +32,7 @@ class PhotoLibraryScanner: ObservableObject {
     @Published var currentRecordTypeIndex = 0  // Index into recordTypes array
     @Published var isConfirming = false
 
-    private let recordTypes = ["Furthest North", "Furthest South", "Furthest East", "Furthest West",
-                               "Furthest Up", "Furthest Down", "Furthest from Home"]
+    private let recordTypes = RecordType.allTypeStrings
 
     // Candidates organized by timeframe, then record type (sorted by extremeness)
     private var candidatesByTimeFrame: [TimeFrame: [String: [DiscoveredRecord]]] = [:]
@@ -135,10 +134,7 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         // Get current month and year boundaries
-        let calendar = Calendar.current
-        let now = Date()
-        let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
-        let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
+        let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
 
         // Sort candidates by extremeness
         northCandidates.sort { $0.value > $1.value }  // Highest latitude first
@@ -195,7 +191,7 @@ class PhotoLibraryScanner: ObservableObject {
             ("Furthest West", westCandidates, nil),
             ("Furthest Up", upCandidates, nil),
             ("Furthest Down", downCandidates, nil),
-            ("Furthest from Home", fromHomeCandidates, { $0 * 3.28084 })
+            ("Furthest from Home", fromHomeCandidates, { $0 * metersToFeet })
         ]
 
         candidatesByTimeFrame = [
@@ -432,17 +428,10 @@ class PhotoLibraryScanner: ObservableObject {
 
         // Determine if this record should replace the existing one
         let shouldUpdate: Bool
-        if let existing = existing {
-            switch recordType {
-            case "Furthest North", "Furthest East", "Furthest Up", "Furthest from Home":
-                shouldUpdate = detail.value > existing.value  // Higher is better
-                debugLog("🔄 \(recordType) (\(timeFrame.rawValue)): new=\(detail.value) vs existing=\(existing.value), updating=\(shouldUpdate)")
-            case "Furthest South", "Furthest West", "Furthest Down":
-                shouldUpdate = detail.value < existing.value  // Lower is better
-                debugLog("🔄 \(recordType) (\(timeFrame.rawValue)): new=\(detail.value) vs existing=\(existing.value), updating=\(shouldUpdate)")
-            default:
-                shouldUpdate = false
-            }
+        if let existing = existing,
+           let type = RecordType.from(string: recordType) {
+            shouldUpdate = type.shouldReplace(newValue: detail.value, oldValue: existing.value)
+            debugLog("🔄 \(recordType) (\(timeFrame.rawValue)): new=\(detail.value) vs existing=\(existing.value), updating=\(shouldUpdate)")
         } else {
             shouldUpdate = true  // No existing record, so set it
             debugLog("🆕 \(recordType) (\(timeFrame.rawValue)): No existing record, setting new one with value=\(detail.value)")

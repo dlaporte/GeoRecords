@@ -7,59 +7,79 @@ enum FormatUtils {
     // MARK: - Record Type Display Names
 
     static func shortName(for recordType: String) -> String {
-        switch recordType {
-        case "Furthest North": return "North"
-        case "Furthest South": return "South"
-        case "Furthest East": return "East"
-        case "Furthest West": return "West"
-        case "Furthest Up": return "Up"
-        case "Furthest Down": return "Down"
-        case "Furthest from Home": return "From Home"
-        default: return recordType
+        guard let type = RecordType.from(string: recordType) else { return recordType }
+        switch type {
+        case .north: return "North"
+        case .south: return "South"
+        case .east: return "East"
+        case .west: return "West"
+        case .up: return "Up"
+        case .down: return "Down"
+        case .fromHome: return "From Home"
         }
     }
 
     // MARK: - Icons
 
     static func iconForRecordType(_ type: String) -> String {
-        switch type {
-        case "Furthest North": return "arrow.up.circle.fill"
-        case "Furthest South": return "arrow.down.circle.fill"
-        case "Furthest East": return "arrow.right.circle.fill"
-        case "Furthest West": return "arrow.left.circle.fill"
-        case "Furthest Up": return "mountain.2.fill"
-        case "Furthest Down": return "water.waves"
-        case "Furthest from Home": return "house.circle.fill"
-        default: return "location.circle.fill"
+        guard let recordType = RecordType.from(string: type) else { return "location.circle.fill" }
+        switch recordType {
+        case .north: return "arrow.up.circle.fill"
+        case .south: return "arrow.down.circle.fill"
+        case .east: return "arrow.right.circle.fill"
+        case .west: return "arrow.left.circle.fill"
+        case .up: return "mountain.2.fill"
+        case .down: return "water.waves"
+        case .fromHome: return "house.circle.fill"
         }
+    }
+
+    /// Returns an emoji prefix for a record type
+    static func emojiForRecordType(_ type: String) -> String {
+        guard let recordType = RecordType.from(string: type) else { return "" }
+        switch recordType {
+        case .north: return "⬆️"
+        case .south: return "⬇️"
+        case .east: return "➡️"
+        case .west: return "⬅️"
+        case .up: return "🏔"
+        case .down: return "🏖"
+        case .fromHome: return "🏠"
+        }
+    }
+
+    /// Returns a formatted label with emoji and short name for a record type
+    static func emojiLabel(for recordType: String) -> String {
+        let emoji = emojiForRecordType(recordType)
+        let short = shortName(for: recordType)
+        return "\(emoji) \(short)"
     }
 
     // MARK: - Colors
 
     static func colorForRecordType(_ type: String) -> Color {
-        switch type {
-        case "Furthest North": return .blue
-        case "Furthest South": return .cyan
-        case "Furthest East": return .orange
-        case "Furthest West": return .purple
-        case "Furthest Up": return .green
-        case "Furthest Down": return .brown
-        case "Furthest from Home": return .red
-        default: return .gray
+        guard let recordType = RecordType.from(string: type) else { return .gray }
+        switch recordType {
+        case .north: return .blue
+        case .south: return .cyan
+        case .east: return .orange
+        case .west: return .purple
+        case .up: return .green
+        case .down: return .brown
+        case .fromHome: return .red
         }
     }
 
     // MARK: - Value Formatting
 
     static func formatValue(value: Double, recordType: String, unitSystem: UnitSystem) -> String {
-        switch recordType {
-        case "Furthest North", "Furthest South":
+        guard let type = RecordType.from(string: recordType) else { return "\(value)" }
+
+        switch type {
+        case .north, .south, .east, .west:
             return String(format: "%.4f°", value)
 
-        case "Furthest East", "Furthest West":
-            return String(format: "%.4f°", value)
-
-        case "Furthest Up", "Furthest Down":
+        case .up, .down:
             // Value is stored in meters
             if unitSystem == .imperial {
                 let feet = value * metersToFeet
@@ -68,19 +88,15 @@ enum FormatUtils {
                 return String(format: "%.0f m", value)
             }
 
-        case "Furthest from Home":
-            // Value is stored in feet
+        case .fromHome:
+            // Value is stored in meters (consistent with altitude)
             if unitSystem == .imperial {
-                let miles = value / feetPerMile
+                let miles = value / metersPerMile
                 return String(format: "%.2f mi", miles)
             } else {
-                let meters = value * feetToMeters
-                let km = meters / metersPerKm
+                let km = value / metersPerKm
                 return String(format: "%.2f km", km)
             }
-
-        default:
-            return "\(value)"
         }
     }
 
@@ -101,9 +117,7 @@ enum FormatUtils {
             return nil
         }
 
-        let recordLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
-        let distanceMeters = recordLocation.distance(from: homeLocation)
+        let distanceMeters = distanceBetween(from: coordinate, to: homeCoord)
 
         if unitSystem == .imperial {
             let miles = distanceMeters / metersPerMile
@@ -132,23 +146,23 @@ enum FormatUtils {
         homeCoordinate: CLLocationCoordinate2D? = nil,
         unitSystem: UnitSystem
     ) -> String {
-        switch recordType {
-        case "Furthest North", "Furthest South":
+        guard let type = RecordType.from(string: recordType) else { return "" }
+
+        switch type {
+        case .north, .south:
             return String(format: "%.4f°", coordinate.latitude)
 
-        case "Furthest East", "Furthest West":
+        case .east, .west:
             return String(format: "%.4f°", coordinate.longitude)
 
-        case "Furthest Up", "Furthest Down":
+        case .up, .down:
             return "Altitude not available"
 
-        case "Furthest from Home":
+        case .fromHome:
             guard let homeCoord = homeCoordinate else {
                 return "Set home location first"
             }
-            let recordLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-            let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
-            let distance = recordLocation.distance(from: homeLocation)
+            let distance = distanceBetween(from: coordinate, to: homeCoord)
 
             if unitSystem == .imperial {
                 let miles = distance / metersPerMile
@@ -157,9 +171,6 @@ enum FormatUtils {
                 let km = distance / metersPerKm
                 return String(format: "%.2f km", km)
             }
-
-        default:
-            return ""
         }
     }
 
@@ -178,27 +189,32 @@ enum FormatUtils {
         unitSystem: UnitSystem,
         coordinatePrecision: Int = 4
     ) -> String {
-        if recordType.contains("North") || recordType.contains("South") ||
-           recordType.contains("East") || recordType.contains("West") {
+        guard let type = RecordType.from(string: recordType) else {
+            return String(format: "%.2f", value)
+        }
+
+        switch type {
+        case .north, .south, .east, .west:
             return String(format: "%.\(coordinatePrecision)f°", value)
-        } else if recordType.contains("Up") || recordType.contains("Down") {
+
+        case .up, .down:
             if unitSystem == .imperial {
                 let feet = altitude * metersToFeet
                 return String(format: "%.0f ft", feet)
             } else {
                 return String(format: "%.0f m", altitude)
             }
-        } else if recordType == "Furthest from Home" {
+
+        case .fromHome:
+            // Value is stored in meters
             if unitSystem == .imperial {
-                let miles = value / feetPerMile
+                let miles = value / metersPerMile
                 return String(format: "%.2f mi", miles)
             } else {
-                let meters = value * feetToMeters
-                let km = meters / metersPerKm
+                let km = value / metersPerKm
                 return String(format: "%.2f km", km)
             }
         }
-        return String(format: "%.2f", value)
     }
 
     /// Formats a CLPlacemark into a human-readable location name

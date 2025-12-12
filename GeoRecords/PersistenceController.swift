@@ -52,7 +52,7 @@ class PersistenceController: ObservableObject {
 
             if let error = error as NSError? {
                 // Log the error for debugging
-                print("⚠️ Core Data error: \(error), \(error.userInfo)")
+                debugLog("⚠️ Core Data error: \(error), \(error.userInfo)")
                 self.loadError = error
 
                 // Check if this is a CloudKit schema error (134060)
@@ -73,7 +73,7 @@ class PersistenceController: ObservableObject {
                     self.showDatabaseRecoveryAlert = true
                 }
             } else {
-                print("Persistent store loaded: \(storeDescription.url?.absoluteString ?? "")")
+                debugLog("Persistent store loaded: \(storeDescription.url?.absoluteString ?? "")")
             }
         }
 
@@ -145,7 +145,7 @@ class PersistenceController: ObservableObject {
             if let retryError = retryError {
                 debugLog("❌ Failed to recover Core Data: \(retryError)")
                 self.loadError = retryError
-                print("FATAL: Core Data store is permanently broken. User data operations will fail.")
+                debugLog("FATAL: Core Data store is permanently broken. User data operations will fail.")
             } else {
                 debugLog("✅ Successfully recovered Core Data store")
                 self.loadError = nil
@@ -182,5 +182,18 @@ class PersistenceController: ObservableObject {
             debugLog("☁️ Error checking for existing data: \(error)")
             return false
         }
+    }
+
+    /// Throwing version of hasExistingCloudData for proper error handling
+    func hasExistingCloudDataThrowing() async throws -> Bool {
+        let context = container.viewContext
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.fetchLimit = 1
+
+        let count = try await context.perform {
+            try context.count(for: request)
+        }
+        debugLog("☁️ Found \(count) record(s) in local database")
+        return count > 0
     }
 }

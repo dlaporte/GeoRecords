@@ -18,21 +18,23 @@ class SmartNotificationManager: ObservableObject {
 
     // MARK: - Settings
     func loadSettings() {
-        smartNotificationsEnabled = UserDefaults.standard.bool(forKey: "smartNotificationsEnabled")
-        if UserDefaults.standard.object(forKey: "smartNotificationsEnabled") == nil {
+        let defaults = UserDefaults.standard
+        smartNotificationsEnabled = defaults.bool(forKey: UserDefaultsKey.smartNotificationsEnabled.rawValue)
+        if defaults.object(forKey: UserDefaultsKey.smartNotificationsEnabled.rawValue) == nil {
             smartNotificationsEnabled = true // Default to enabled
         }
-        lastInactivityNotification = UserDefaults.standard.object(forKey: "lastInactivityNotification") as? Date
-        lastFunFactNotification = UserDefaults.standard.object(forKey: "lastFunFactNotification") as? Date
+        lastInactivityNotification = defaults.object(forKey: UserDefaultsKey.lastInactivityNotification.rawValue) as? Date
+        lastFunFactNotification = defaults.object(forKey: UserDefaultsKey.lastFunFactNotification.rawValue) as? Date
     }
 
     func saveSettings() {
-        UserDefaults.standard.set(smartNotificationsEnabled, forKey: "smartNotificationsEnabled")
+        let defaults = UserDefaults.standard
+        defaults.set(smartNotificationsEnabled, forKey: UserDefaultsKey.smartNotificationsEnabled.rawValue)
         if let date = lastInactivityNotification {
-            UserDefaults.standard.set(date, forKey: "lastInactivityNotification")
+            defaults.set(date, forKey: UserDefaultsKey.lastInactivityNotification.rawValue)
         }
         if let date = lastFunFactNotification {
-            UserDefaults.standard.set(date, forKey: "lastFunFactNotification")
+            defaults.set(date, forKey: UserDefaultsKey.lastFunFactNotification.rawValue)
         }
     }
 
@@ -40,149 +42,8 @@ class SmartNotificationManager: ObservableObject {
     func checkForSmartNotifications(location: CLLocation) {
         guard smartNotificationsEnabled else { return }
 
-        // Removed near record breaking notifications (too annoying)
-        // checkNearRecordBreaking(location: location)
         checkInactivity()
         checkFunFacts(location: location)
-    }
-
-    // MARK: - Near Record Breaking
-    private func checkNearRecordBreaking(location: CLLocation) {
-        let lat = location.coordinate.latitude
-        let lon = location.coordinate.longitude
-        let alt = location.altitude
-
-        let settings = SettingsManager.shared
-        let recordManager = RecordManager.shared
-
-        // Check if close to breaking any directional all-time record
-        if let furthestNorth = recordManager.furthestNorthAllTime {
-            let delta = furthestNorth.value - lat
-            if delta > 0 && delta <= settings.minLatitudeDelta * 2 {
-                let distance = calculateDistance(delta)
-                sendNearRecordNotification(
-                    recordType: "Furthest North",
-                    distance: distance
-                )
-            }
-        }
-
-        if let furthestSouth = recordManager.furthestSouthAllTime {
-            let delta = lat - furthestSouth.value
-            if delta > 0 && delta <= settings.minLatitudeDelta * 2 {
-                let distance = calculateDistance(delta)
-                sendNearRecordNotification(
-                    recordType: "Furthest South",
-                    distance: distance
-                )
-            }
-        }
-
-        if let furthestEast = recordManager.furthestEastAllTime {
-            let delta = furthestEast.value - lon
-            if delta > 0 && delta <= settings.minLongitudeDelta * 2 {
-                let distance = calculateDistance(delta)
-                sendNearRecordNotification(
-                    recordType: "Furthest East",
-                    distance: distance
-                )
-            }
-        }
-
-        if let furthestWest = recordManager.furthestWestAllTime {
-            let delta = lon - furthestWest.value
-            if delta > 0 && delta <= settings.minLongitudeDelta * 2 {
-                let distance = calculateDistance(delta)
-                sendNearRecordNotification(
-                    recordType: "Furthest West",
-                    distance: distance
-                )
-            }
-        }
-
-        // Check altitude records
-        if let furthestUp = recordManager.furthestUpAllTime {
-            let delta = furthestUp.value - alt
-            if delta > 0 && delta <= settings.minAltitudeDeltaMeters * 2 {
-                if settings.unitSystem == .imperial {
-                    let feet = delta * 3.28084
-                    sendNearRecordNotification(
-                        recordType: "Furthest Up",
-                        distance: String(format: "%.0f ft", feet)
-                    )
-                } else {
-                    sendNearRecordNotification(
-                        recordType: "Furthest Up",
-                        distance: String(format: "%.0f m", delta)
-                    )
-                }
-            }
-        }
-
-        if let furthestDown = recordManager.furthestDownAllTime {
-            let delta = alt - furthestDown.value
-            if delta > 0 && delta <= settings.minAltitudeDeltaMeters * 2 {
-                if settings.unitSystem == .imperial {
-                    let feet = delta * 3.28084
-                    sendNearRecordNotification(
-                        recordType: "Furthest Down",
-                        distance: String(format: "%.0f ft", feet)
-                    )
-                } else {
-                    sendNearRecordNotification(
-                        recordType: "Furthest Down",
-                        distance: String(format: "%.0f m", delta)
-                    )
-                }
-            }
-        }
-
-        // Check distance from home
-        if let homeCoord = settings.homeCoordinate,
-           let furthestFromHome = recordManager.furthestFromHomeAllTime {
-            let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
-            let currentDistance = location.distance(from: homeLocation)
-            let recordDistance = furthestFromHome.value / 3.28084 // Convert from feet to meters
-            let delta = recordDistance - currentDistance
-
-            if delta > 0 && delta <= settings.minDistanceDeltaMeters * 2 {
-                if settings.unitSystem == .imperial {
-                    let miles = delta / 1609.344
-                    sendNearRecordNotification(
-                        recordType: "Furthest from Home",
-                        distance: String(format: "%.2f mi", miles)
-                    )
-                } else {
-                    let km = delta / 1000.0
-                    sendNearRecordNotification(
-                        recordType: "Furthest from Home",
-                        distance: String(format: "%.2f km", km)
-                    )
-                }
-            }
-        }
-    }
-
-    private func calculateDistance(_ degrees: Double) -> String {
-        // Rough conversion: 1 degree ≈ 69 miles or 111 km
-        let settings = SettingsManager.shared
-        if settings.unitSystem == .imperial {
-            let miles = degrees * 69
-            return String(format: "%.1f mi", miles)
-        } else {
-            let km = degrees * 111
-            return String(format: "%.1f km", km)
-        }
-    }
-
-    private func sendNearRecordNotification(recordType: String, distance: String) {
-        let content = UNMutableNotificationContent()
-        content.title = "You're close to a record!"
-        content.body = "Only \(distance) away from breaking your \(recordType) record"
-        content.sound = .default
-
-        let request = UNNotificationRequest(identifier: "near-\(recordType)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
 
     // MARK: - Inactivity Check
@@ -224,7 +85,7 @@ class SmartNotificationManager: ObservableObject {
         content.body = "You haven't set a new record in \(days) days. Where will you go next?"
         content.sound = .default
 
-        let request = UNNotificationRequest(identifier: "inactivity", content: content, trigger: nil)
+        let request = UNNotificationRequest(identifier: NotificationIdentifier.inactivity, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
 
@@ -287,7 +148,7 @@ class SmartNotificationManager: ObservableObject {
         content.body = fact
         content.sound = .default
 
-        let request = UNNotificationRequest(identifier: "fun-fact", content: content, trigger: nil)
+        let request = UNNotificationRequest(identifier: NotificationIdentifier.funFact, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
 }

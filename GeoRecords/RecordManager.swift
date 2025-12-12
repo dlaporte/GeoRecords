@@ -3,52 +3,7 @@ import CoreLocation
 import UserNotifications
 import CoreData
 
-// MARK: - Models
-
-/// Time frame for records
-enum TimeFrame: String, CaseIterable {
-    case month = "Monthly"
-    case year = "Yearly"
-    case allTime = "All Time"
-}
-
-/// Record type enum for type safety and comparison logic
-enum RecordType: String, CaseIterable {
-    case north = "Furthest North"
-    case south = "Furthest South"
-    case east = "Furthest East"
-    case west = "Furthest West"
-    case up = "Furthest Up"
-    case down = "Furthest Down"
-    case fromHome = "Furthest from Home"
-
-    /// Whether this record type uses ascending comparison (higher is better)
-    var isAscending: Bool {
-        switch self {
-        case .north, .east, .up, .fromHome:
-            return true  // Higher values are better
-        case .south, .west, .down:
-            return false  // Lower values are better
-        }
-    }
-
-    /// Determine if a new value should replace an existing record
-    func shouldReplace(newValue: Double, oldValue: Double) -> Bool {
-        return isAscending ? newValue > oldValue : newValue < oldValue
-    }
-
-    /// All record type strings for compatibility
-    static var allTypeStrings: [String] {
-        return RecordType.allCases.map { $0.rawValue }
-    }
-
-    /// Get record type from string (for backward compatibility)
-    static func from(string: String) -> RecordType? {
-        return RecordType.allCases.first { $0.rawValue == string }
-    }
-}
-
-/// In-memory model for a record event.
+// MARK: - In-memory model for a record event
 struct RecordDetail: Identifiable {
     var id = UUID()
     var value: Double           // For latitude, longitude, altitude, or distance
@@ -62,6 +17,7 @@ struct RecordDetail: Identifiable {
     var notes: String?          // User-added notes/description for this record
 
     /// Initialize with coordinate validation
+    /// - Warning: Coordinates are validated and must be valid. Invalid coordinates will trigger an assertion in debug builds.
     init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, notes: String? = nil) {
         self.id = id
         self.value = value
@@ -73,11 +29,17 @@ struct RecordDetail: Identifiable {
         self.photoData = photoData
         self.notes = notes
 
-        // Validate coordinate or use a safe default
+        // Validate coordinate
         if CLLocationCoordinate2DIsValid(coordinate) {
             self.coordinate = coordinate
         } else {
-            debugLog("⚠️ Invalid coordinate detected: lat=\(coordinate.latitude), lon=\(coordinate.longitude). Using default.")
+            // Log error and assert in debug builds
+            let errorMsg = "⚠️ Invalid coordinate detected: lat=\(coordinate.latitude), lon=\(coordinate.longitude)"
+            debugLog(errorMsg)
+            #if DEBUG
+            assertionFailure(errorMsg)
+            #endif
+            // In production, use a safe default (though this should never happen)
             self.coordinate = CLLocationCoordinate2D(latitude: 0, longitude: 0)
         }
     }
@@ -86,10 +48,53 @@ struct RecordDetail: Identifiable {
     func formattedValue(unitSystem: UnitSystem) -> String {
         return FormatUtils.formatValue(value: value, recordType: recordType, unitSystem: unitSystem)
     }
+
+    /// Initialize from a Core Data RecordHistoryEntry
+    /// - Parameter entry: The Core Data entry to convert
+    /// - Returns: nil if the entry has no timestamp
+    init?(from entry: RecordHistoryEntry) {
+        guard let timestamp = entry.timestamp else { return nil }
+
+        let timeFrame: TimeFrame = {
+            if let timeFrameString = entry.timeFrame {
+                return TimeFrame(rawValue: timeFrameString) ?? .allTime
+            }
+            return .allTime  // Default for old entries without timeFrame
+        }()
+
+        self.init(
+            id: entry.id ?? UUID(),
+            value: entry.value,
+            timestamp: timestamp,
+            coordinate: CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude),
+            altitude: entry.altitude,
+            locationName: entry.locationName,
+            recordType: entry.recordType ?? "Unknown",
+            timeFrame: timeFrame,
+            photoData: entry.photoData,
+            notes: entry.notes
+        )
+    }
+}
+
+// MARK: - Protocol for Dependency Injection
+
+/// Protocol defining the public interface of RecordManager for testing and mocking
+@MainActor
+protocol RecordManaging: ObservableObject {
+    var showPhotoPrompt: Bool { get set }
+    var pendingRecordForPhoto: (type: String, detail: RecordDetail)? { get set }
+
+    func getRecord(type: String, timeFrame: TimeFrame) -> RecordDetail?
+    func setRecord(type: String, timeFrame: TimeFrame, record: RecordDetail?)
+    func updateRecords(with location: CLLocation, reverseGeocodedName: String?)
+    func loadRecordsFromHistory()
+    func resetRecords()
+    func attachPhotoToRecord(recordType: String, photoData: Data?)
 }
 
 @MainActor
-class RecordManager: NSObject, ObservableObject {
+class RecordManager: NSObject, ObservableObject, RecordManaging {
     static let shared = RecordManager()
 
     // MARK: - Storage
@@ -97,119 +102,38 @@ class RecordManager: NSObject, ObservableObject {
     /// Dictionary-based storage for all records (type -> timeframe -> record)
     private var records: [String: [TimeFrame: RecordDetail]] = [:]
 
-    // MARK: - Computed Properties (for backward compatibility)
-
-    // Monthly records
-    var furthestNorthMonth: RecordDetail? {
-        get { getRecord(type: "Furthest North", timeFrame: .month) }
-        set { setRecord(type: "Furthest North", timeFrame: .month, record: newValue) }
-    }
-    var furthestSouthMonth: RecordDetail? {
-        get { getRecord(type: "Furthest South", timeFrame: .month) }
-        set { setRecord(type: "Furthest South", timeFrame: .month, record: newValue) }
-    }
-    var furthestEastMonth: RecordDetail? {
-        get { getRecord(type: "Furthest East", timeFrame: .month) }
-        set { setRecord(type: "Furthest East", timeFrame: .month, record: newValue) }
-    }
-    var furthestWestMonth: RecordDetail? {
-        get { getRecord(type: "Furthest West", timeFrame: .month) }
-        set { setRecord(type: "Furthest West", timeFrame: .month, record: newValue) }
-    }
-    var furthestUpMonth: RecordDetail? {
-        get { getRecord(type: "Furthest Up", timeFrame: .month) }
-        set { setRecord(type: "Furthest Up", timeFrame: .month, record: newValue) }
-    }
-    var furthestDownMonth: RecordDetail? {
-        get { getRecord(type: "Furthest Down", timeFrame: .month) }
-        set { setRecord(type: "Furthest Down", timeFrame: .month, record: newValue) }
-    }
-    var furthestFromHomeMonth: RecordDetail? {
-        get { getRecord(type: "Furthest from Home", timeFrame: .month) }
-        set { setRecord(type: "Furthest from Home", timeFrame: .month, record: newValue) }
-    }
-
-    // Yearly records
-    var furthestNorthYear: RecordDetail? {
-        get { getRecord(type: "Furthest North", timeFrame: .year) }
-        set { setRecord(type: "Furthest North", timeFrame: .year, record: newValue) }
-    }
-    var furthestSouthYear: RecordDetail? {
-        get { getRecord(type: "Furthest South", timeFrame: .year) }
-        set { setRecord(type: "Furthest South", timeFrame: .year, record: newValue) }
-    }
-    var furthestEastYear: RecordDetail? {
-        get { getRecord(type: "Furthest East", timeFrame: .year) }
-        set { setRecord(type: "Furthest East", timeFrame: .year, record: newValue) }
-    }
-    var furthestWestYear: RecordDetail? {
-        get { getRecord(type: "Furthest West", timeFrame: .year) }
-        set { setRecord(type: "Furthest West", timeFrame: .year, record: newValue) }
-    }
-    var furthestUpYear: RecordDetail? {
-        get { getRecord(type: "Furthest Up", timeFrame: .year) }
-        set { setRecord(type: "Furthest Up", timeFrame: .year, record: newValue) }
-    }
-    var furthestDownYear: RecordDetail? {
-        get { getRecord(type: "Furthest Down", timeFrame: .year) }
-        set { setRecord(type: "Furthest Down", timeFrame: .year, record: newValue) }
-    }
-    var furthestFromHomeYear: RecordDetail? {
-        get { getRecord(type: "Furthest from Home", timeFrame: .year) }
-        set { setRecord(type: "Furthest from Home", timeFrame: .year, record: newValue) }
-    }
-
-    // All-time records
-    var furthestNorthAllTime: RecordDetail? {
-        get { getRecord(type: "Furthest North", timeFrame: .allTime) }
-        set { setRecord(type: "Furthest North", timeFrame: .allTime, record: newValue) }
-    }
-    var furthestSouthAllTime: RecordDetail? {
-        get { getRecord(type: "Furthest South", timeFrame: .allTime) }
-        set { setRecord(type: "Furthest South", timeFrame: .allTime, record: newValue) }
-    }
-    var furthestEastAllTime: RecordDetail? {
-        get { getRecord(type: "Furthest East", timeFrame: .allTime) }
-        set { setRecord(type: "Furthest East", timeFrame: .allTime, record: newValue) }
-    }
-    var furthestWestAllTime: RecordDetail? {
-        get { getRecord(type: "Furthest West", timeFrame: .allTime) }
-        set { setRecord(type: "Furthest West", timeFrame: .allTime, record: newValue) }
-    }
-    var furthestUpAllTime: RecordDetail? {
-        get { getRecord(type: "Furthest Up", timeFrame: .allTime) }
-        set { setRecord(type: "Furthest Up", timeFrame: .allTime, record: newValue) }
-    }
-    var furthestDownAllTime: RecordDetail? {
-        get { getRecord(type: "Furthest Down", timeFrame: .allTime) }
-        set { setRecord(type: "Furthest Down", timeFrame: .allTime, record: newValue) }
-    }
-    var furthestFromHomeAllTime: RecordDetail? {
-        get { getRecord(type: "Furthest from Home", timeFrame: .allTime) }
-        set { setRecord(type: "Furthest from Home", timeFrame: .allTime, record: newValue) }
-    }
-
     // MARK: - Other State
 
     // Photo prompt state
     @Published var showPhotoPrompt = false
     @Published var pendingRecordForPhoto: (type: String, detail: RecordDetail)?
 
+    // Geocoding status - tracks consecutive failures for user feedback
+    @Published var consecutiveGeocodingFailures = 0
+    private let maxGeocodingFailuresBeforeWarning = 3
+
+    /// Returns true if geocoding is experiencing issues
+    var hasGeocodingIssues: Bool {
+        consecutiveGeocodingFailures >= maxGeocodingFailuresBeforeWarning
+    }
+
+    // MARK: - State Management
+
+    /// Unified state for record updates and notifications
+    private enum UpdateState {
+        case idle
+        case updating(pending: CLLocation?)
+        case suppressingNotifications(until: Date)
+        case blockingAlerts  // During photo import
+    }
+
+    private var updateState: UpdateState = .idle
+
     // Reusable geocoder instance to prevent memory leaks
     private let geocoder = CLGeocoder()
     private var lastGeocodingTime: Date?
     private let geocodingThrottleInterval: TimeInterval = 60  // Minimum 60s between geocoding requests
     private var isGeocodingInProgress = false  // Prevent concurrent geocoding requests
-
-    // Serialization for record updates
-    private var isUpdatingRecords = false
-    private var pendingLocationUpdate: CLLocation?
-
-    // Suppress notifications temporarily after photo import
-    private var suppressNotificationsUntil: Date?
-
-    // Block all alerts during photo import (stronger than suppression)
-    private var blockAllAlertsDuringImport = false
 
     override init() {
         super.init()
@@ -239,30 +163,34 @@ class RecordManager: NSObject, ObservableObject {
 
     /// Block all alerts during photo import
     func blockAlertsDuringImport(block: Bool) {
-        blockAllAlertsDuringImport = block
+        if block {
+            updateState = .blockingAlerts
+        } else {
+            updateState = .idle
+        }
     }
 
     /// Call this after importing photos to suppress notifications for a period
     func suppressNotificationsAfterImport(durationSeconds: TimeInterval = 60) {
-        suppressNotificationsUntil = Date().addingTimeInterval(durationSeconds)
+        let suppressUntil = Date().addingTimeInterval(durationSeconds)
+        updateState = .suppressingNotifications(until: suppressUntil)
     }
 
     private var shouldSuppressNotifications: Bool {
-        // Hard block during import takes precedence
-        if blockAllAlertsDuringImport {
+        switch updateState {
+        case .blockingAlerts:
             return true
-        }
-
-        if let suppressUntil = suppressNotificationsUntil {
-            if Date() < suppressUntil {
+        case .suppressingNotifications(let until):
+            if Date() < until {
                 return true
             } else {
                 // Clear the suppression flag once expired
-                suppressNotificationsUntil = nil
+                updateState = .idle
                 return false
             }
+        case .idle, .updating:
+            return false
         }
-        return false
     }
     
     // MARK: - Load Records from Core Data
@@ -336,19 +264,7 @@ class RecordManager: NSObject, ObservableObject {
     }
 
     private func makeRecordDetail(from entry: RecordHistoryEntry) -> RecordDetail? {
-        guard let timestamp = entry.timestamp else { return nil }
-
-        return RecordDetail(
-            id: entry.id ?? UUID(),
-            value: entry.value,
-            timestamp: timestamp,
-            coordinate: CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude),
-            altitude: entry.altitude,
-            locationName: entry.locationName,
-            recordType: entry.recordType ?? "Unknown",
-            photoData: entry.photoData,
-            notes: entry.notes
-        )
+        return RecordDetail(from: entry)
     }
     
     // MARK: - Update Records
@@ -371,9 +287,7 @@ class RecordManager: NSObject, ObservableObject {
             // Calculate delta based on comparison direction
             let delta = compareAscending ? (current.value - newValue) : (newValue - current.value)
 
-            #if DEBUG
             debugLog("\(type) (\(timeFrame.rawValue)): new=\(newValue), current=\(current.value), delta=\(delta)")
-            #endif
 
             if delta > threshold {
                 let newRecord = RecordDetail(
@@ -428,110 +342,131 @@ class RecordManager: NSObject, ObservableObject {
         }
     }
 
-    func updateRecords(with location: CLLocation, reverseGeocodedName: String? = nil) {
-        // Serialize updates to prevent race conditions
-        if isUpdatingRecords {
-            pendingLocationUpdate = location
-            return
+    // MARK: - Geocoding Helper
+
+    /// Attempts to geocode a location, using cache and throttling
+    /// - Parameter location: The location to geocode
+    /// - Returns: The location name, or empty string if geocoding fails/is throttled
+    private func geocodeLocationIfNeeded(_ location: CLLocation) async -> String? {
+        let lat = location.coordinate.latitude
+        let lon = location.coordinate.longitude
+
+        // Check cache first
+        if let cachedName = await sharedGeocodingCache.getCachedName(for: location.coordinate) {
+            debugLog("📍 Using cached location for (\(lat), \(lon)): \(cachedName)")
+            return cachedName
         }
 
-        isUpdatingRecords = true
+        // Check if geocoding is already in progress
+        if isGeocodingInProgress {
+            debugLog("Geocoding already in progress, skipping request")
+            return ""
+        }
+
+        // Throttle geocoding to avoid rate limits
+        let now = Date()
+        if let lastTime = lastGeocodingTime, now.timeIntervalSince(lastTime) < geocodingThrottleInterval {
+            debugLog("Throttling geocoding request")
+            return ""
+        }
+
+        // Cancel any pending geocoding requests
+        if geocoder.isGeocoding {
+            geocoder.cancelGeocode()
+        }
+        lastGeocodingTime = now
+        isGeocodingInProgress = true
+
+        // Perform geocoding
+        debugLog("🌐 Geocoding location (\(lat), \(lon))")
+
+        return await withCheckedContinuation { continuation in
+            geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, error in
+                guard let self = self else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                defer {
+                    Task { @MainActor in
+                        self.isGeocodingInProgress = false
+                    }
+                }
+
+                var name: String? = nil
+
+                if let error = error {
+                    debugLog("Geocoding error: \(error.localizedDescription)")
+                    Task { @MainActor in
+                        self.consecutiveGeocodingFailures += 1
+                        if self.hasGeocodingIssues {
+                            debugLog("⚠️ Multiple geocoding failures detected (\(self.consecutiveGeocodingFailures))")
+                        }
+                    }
+                } else if let placemark = placemarks?.first {
+                    // Reset failure counter on success
+                    Task { @MainActor in
+                        self.consecutiveGeocodingFailures = 0
+                    }
+
+                    if let city = placemark.locality, let country = placemark.country {
+                        name = "\(city), \(country)"
+                    } else if let placemarkName = placemark.name {
+                        name = placemarkName
+                    }
+
+                    // Store in cache if successful
+                    if let name = name {
+                        Task {
+                            await sharedGeocodingCache.setCachedName(name, for: location.coordinate)
+                            debugLog("💾 Cached location for (\(lat), \(lon)): \(name)")
+                        }
+                    }
+                }
+
+                continuation.resume(returning: name)
+            }
+        }
+    }
+
+    func updateRecords(with location: CLLocation, reverseGeocodedName: String? = nil) {
+        // Serialize updates to prevent race conditions
+        switch updateState {
+        case .updating:
+            // Already updating, queue this location
+            updateState = .updating(pending: location)
+            return
+        case .blockingAlerts, .suppressingNotifications:
+            // Don't interrupt these states
+            break
+        case .idle:
+            // Ready to update
+            break
+        }
+
+        let previousState = updateState
+        updateState = .updating(pending: nil)
         defer {
-            isUpdatingRecords = false
             // Process pending update if any
-            if let pending = pendingLocationUpdate {
-                pendingLocationUpdate = nil
-                updateRecords(with: pending, reverseGeocodedName: reverseGeocodedName)
+            if case .updating(let pending) = updateState, let pendingLocation = pending {
+                updateRecords(with: pendingLocation, reverseGeocodedName: reverseGeocodedName)
+            } else {
+                // Restore previous state if it wasn't .idle or .updating
+                switch previousState {
+                case .suppressingNotifications, .blockingAlerts:
+                    updateState = previousState
+                default:
+                    updateState = .idle
+                }
             }
         }
 
         if reverseGeocodedName == nil {
-            let lat = location.coordinate.latitude
-            let lon = location.coordinate.longitude
-
-            // Check cache first
+            // Need to geocode first
             Task {
-                if let cachedName = await sharedGeocodingCache.getCachedName(for: location.coordinate) {
-                    debugLog("📍 Using cached location for (\(lat), \(lon)): \(cachedName)")
-                    await MainActor.run {
-                        self.updateRecords(with: location, reverseGeocodedName: cachedName)
-                    }
-                    return
-                }
-
-                // Not in cache, check if geocoding is already in progress
-                if await MainActor.run(body: { self.isGeocodingInProgress }) {
-                    debugLog("Geocoding already in progress, skipping request")
-                    await MainActor.run {
-                        self.updateRecords(with: location, reverseGeocodedName: "")
-                    }
-                    return
-                }
-
-                // Throttle geocoding to avoid rate limits and resource exhaustion
-                let now = Date()
-                let shouldThrottle = await MainActor.run {
-                    if let lastTime = self.lastGeocodingTime, now.timeIntervalSince(lastTime) < self.geocodingThrottleInterval {
-                        return true
-                    }
-                    return false
-                }
-
-                if shouldThrottle {
-                    // Skip geocoding, proceed with empty location name
-                    debugLog("Throttling geocoding request")
-                    await MainActor.run {
-                        self.updateRecords(with: location, reverseGeocodedName: "")
-                    }
-                    return
-                }
-
-                // Cancel any pending geocoding requests
+                let locationName = await geocodeLocationIfNeeded(location)
                 await MainActor.run {
-                    if self.geocoder.isGeocoding {
-                        self.geocoder.cancelGeocode()
-                    }
-                    self.lastGeocodingTime = now
-                    self.isGeocodingInProgress = true
-                }
-
-                // Perform geocoding
-                debugLog("🌐 Geocoding location (\(lat), \(lon))")
-                let geocoder = await MainActor.run { self.geocoder }
-
-                geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, error in
-                    guard let self = self else { return }
-
-                    defer {
-                        Task { @MainActor in
-                            self.isGeocodingInProgress = false
-                        }
-                    }
-
-                    var name: String? = nil
-
-                    if let error = error {
-                        debugLog("Geocoding error: \(error.localizedDescription)")
-                        // Continue with nil name rather than failing
-                    } else if let placemark = placemarks?.first {
-                        if let city = placemark.locality, let country = placemark.country {
-                            name = "\(city), \(country)"
-                        } else if let placemarkName = placemark.name {
-                            name = placemarkName
-                        }
-
-                        // Store in cache if successful
-                        if let name = name {
-                            Task {
-                                await sharedGeocodingCache.setCachedName(name, for: location.coordinate)
-                                debugLog("💾 Cached location for (\(lat), \(lon)): \(name)")
-                            }
-                        }
-                    }
-
-                    Task { @MainActor in
-                        self.updateRecords(with: location, reverseGeocodedName: name)
-                    }
+                    self.updateRecords(with: location, reverseGeocodedName: locationName)
                 }
             }
             return
@@ -549,10 +484,8 @@ class RecordManager: NSObject, ObservableObject {
 
         let distanceMeters = distanceFromHome(location: location, settings: settings)
 
-        #if DEBUG
         debugLog(">> updateRecords called")
         debugLog("Location: lat=\(lat), lon=\(lon), alt=\(alt)")
-        #endif
 
         // Check all timeframes for each record type
         for timeFrame in TimeFrame.allCases {
@@ -624,11 +557,10 @@ class RecordManager: NSObject, ObservableObject {
 
             // Furthest from Home (greater distance is better)
             if let distance = distanceMeters {
-                let distFeet = distance * metersToFeet  // Store in feet for consistency
                 checkAndUpdateRecord(
                     type: "Furthest from Home",
-                    newValue: distFeet,
-                    threshold: distanceDeltaMeters * metersToFeet,  // Convert to feet
+                    newValue: distance,  // Store in meters (consistent with altitude)
+                    threshold: distanceDeltaMeters,
                     compareAscending: false,
                     location: location,
                     reverseGeocodedName: reverseGeocodedName,
@@ -644,8 +576,7 @@ class RecordManager: NSObject, ObservableObject {
             debugLog("No home coordinate set; cannot compute distance from home.")
             return nil
         }
-        let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
-        return location.distance(from: homeLocation) // in meters
+        return distanceBetween(from: location.coordinate, to: homeCoord)
     }
     
     // MARK: - Send Notification with Deep Link Info
@@ -661,74 +592,27 @@ class RecordManager: NSObject, ObservableObject {
         content.sound = .default
         
         content.userInfo = ["recordType": recordType]
-        
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+
+        let request = UNNotificationRequest(identifier: NotificationIdentifier.newRecord(type: recordType), content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
     
     // MARK: - Photo Attachment
     func attachPhotoToRecord(recordType: String, photoData: Data?) {
         // Only all-time records can have photos (since we only prompt for all-time records)
-        // Find the matching all-time record and update it with photo data
-        var updatedRecord: RecordDetail?
+        guard var record = getRecord(type: recordType, timeFrame: .allTime) else { return }
 
-        switch recordType {
-        case "Furthest North":
-            if var record = furthestNorthAllTime {
-                record.photoData = photoData
-                furthestNorthAllTime = record
-                updatedRecord = record
-            }
-        case "Furthest South":
-            if var record = furthestSouthAllTime {
-                record.photoData = photoData
-                furthestSouthAllTime = record
-                updatedRecord = record
-            }
-        case "Furthest East":
-            if var record = furthestEastAllTime {
-                record.photoData = photoData
-                furthestEastAllTime = record
-                updatedRecord = record
-            }
-        case "Furthest West":
-            if var record = furthestWestAllTime {
-                record.photoData = photoData
-                furthestWestAllTime = record
-                updatedRecord = record
-            }
-        case "Furthest Up":
-            if var record = furthestUpAllTime {
-                record.photoData = photoData
-                furthestUpAllTime = record
-                updatedRecord = record
-            }
-        case "Furthest Down":
-            if var record = furthestDownAllTime {
-                record.photoData = photoData
-                furthestDownAllTime = record
-                updatedRecord = record
-            }
-        case "Furthest from Home":
-            if var record = furthestFromHomeAllTime {
-                record.photoData = photoData
-                furthestFromHomeAllTime = record
-                updatedRecord = record
-            }
-        default:
-            break
-        }
+        record.photoData = photoData
+        setRecord(type: recordType, timeFrame: .allTime, record: record)
 
         // Update Core Data with photo
-        if let record = updatedRecord {
-            RecordHistoryManager.shared.updateRecordPhoto(recordId: record.id, photoData: photoData)
-        }
+        RecordHistoryManager.shared.updateRecordPhoto(recordId: record.id, photoData: photoData)
     }
 
     // MARK: - Trigger Photo Prompt
     private func promptForPhoto(recordType: String, detail: RecordDetail) {
         // Block during import
-        if blockAllAlertsDuringImport {
+        if case .blockingAlerts = updateState {
             return
         }
 

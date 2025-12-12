@@ -2,14 +2,34 @@ import Foundation
 import Combine
 import CoreLocation
 
-/// Choose between Metric or Imperial units.
-enum UnitSystem: String, Codable {
-    case metric
-    case imperial
+// UnitSystem enum is now in Constants.swift (shared with widget)
+
+// MARK: - Protocol for Dependency Injection
+
+/// Protocol defining the public interface of SettingsManager for testing and mocking
+@MainActor
+protocol SettingsManaging: ObservableObject {
+    var hasCompletedSetup: Bool { get set }
+    var notifyOnMonthlyRecords: Bool { get set }
+    var notifyOnYearlyRecords: Bool { get set }
+    var notifyOnAllTimeRecords: Bool { get set }
+    var summaryNotificationsEnabled: Bool { get set }
+    var photoPromptsEnabled: Bool { get set }
+    var minLatitudeDelta: Double { get set }
+    var minLongitudeDelta: Double { get set }
+    var minAltitudeDeltaMeters: Double { get set }
+    var minDistanceDeltaMeters: Double { get set }
+    var homeAddress: String { get set }
+    var homeCoordinate: CLLocationCoordinate2D? { get set }
+    var homeLocationName: String? { get set }
+    var unitSystem: UnitSystem { get set }
+
+    func saveSettings()
+    func resetToDefaults()
 }
 
 @MainActor
-class SettingsManager: ObservableObject {
+class SettingsManager: ObservableObject, SettingsManaging {
     static let shared = SettingsManager()
 
     // MARK: - Published Properties
@@ -79,11 +99,12 @@ class SettingsManager: ObservableObject {
 
     // MARK: - Initialization
     private init() {
-        let defaults = UserDefaults.standard
+        // Use App Group UserDefaults so widget can read settings
+        let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? UserDefaults.standard
 
         // Load unit system
         let loadedUnitSystem: UnitSystem
-        if let unitRaw = defaults.string(forKey: "unitSystem"),
+        if let unitRaw = defaults.string(forKey: UserDefaultsKey.unitSystem.rawValue),
            let system = UnitSystem(rawValue: unitRaw) {
             loadedUnitSystem = system
         } else {
@@ -91,90 +112,90 @@ class SettingsManager: ObservableObject {
         }
 
         // Initialize common properties
-        self.hasCompletedSetup = defaults.object(forKey: "hasCompletedSetup") as? Bool ?? Self.defaultHasCompletedSetup
+        self.hasCompletedSetup = defaults.object(forKey: UserDefaultsKey.hasCompletedSetup.rawValue) as? Bool ?? Self.defaultHasCompletedSetup
 
         // Load notification settings (migrate old setting if needed)
-        if let oldNotifySetting = defaults.object(forKey: "notifyOnNewRecord") as? Bool {
+        if let oldNotifySetting = defaults.object(forKey: UserDefaultsKey.notifyOnNewRecord.rawValue) as? Bool {
             // Migrate from old single setting to new timeframe-based settings
             self.notifyOnMonthlyRecords = false
             self.notifyOnYearlyRecords = false
             self.notifyOnAllTimeRecords = oldNotifySetting
-            defaults.removeObject(forKey: "notifyOnNewRecord")
+            defaults.removeObject(forKey: UserDefaultsKey.notifyOnNewRecord.rawValue)
         } else {
-            self.notifyOnMonthlyRecords = defaults.object(forKey: "notifyOnMonthlyRecords") as? Bool ?? Self.defaultNotifyOnMonthlyRecords
-            self.notifyOnYearlyRecords = defaults.object(forKey: "notifyOnYearlyRecords") as? Bool ?? Self.defaultNotifyOnYearlyRecords
-            self.notifyOnAllTimeRecords = defaults.object(forKey: "notifyOnAllTimeRecords") as? Bool ?? Self.defaultNotifyOnAllTimeRecords
+            self.notifyOnMonthlyRecords = defaults.object(forKey: UserDefaultsKey.notifyOnMonthlyRecords.rawValue) as? Bool ?? Self.defaultNotifyOnMonthlyRecords
+            self.notifyOnYearlyRecords = defaults.object(forKey: UserDefaultsKey.notifyOnYearlyRecords.rawValue) as? Bool ?? Self.defaultNotifyOnYearlyRecords
+            self.notifyOnAllTimeRecords = defaults.object(forKey: UserDefaultsKey.notifyOnAllTimeRecords.rawValue) as? Bool ?? Self.defaultNotifyOnAllTimeRecords
         }
 
-        self.photoPromptsEnabled = defaults.object(forKey: "photoPromptsEnabled") as? Bool ?? Self.defaultPhotoPromptsEnabled
+        self.photoPromptsEnabled = defaults.object(forKey: UserDefaultsKey.photoPromptsEnabled.rawValue) as? Bool ?? Self.defaultPhotoPromptsEnabled
 
         // Load summary notifications setting (migrate from old separate settings if needed)
-        if let oldMonthlySetting = defaults.object(forKey: "monthlySummaryEnabled") as? Bool,
-           let oldYearlySetting = defaults.object(forKey: "yearlySummaryEnabled") as? Bool {
+        if let oldMonthlySetting = defaults.object(forKey: UserDefaultsKey.monthlySummaryEnabled.rawValue) as? Bool,
+           let oldYearlySetting = defaults.object(forKey: UserDefaultsKey.yearlySummaryEnabled.rawValue) as? Bool {
             // Migrate: enable if either was enabled
             self.summaryNotificationsEnabled = oldMonthlySetting || oldYearlySetting
-            defaults.removeObject(forKey: "monthlySummaryEnabled")
-            defaults.removeObject(forKey: "yearlySummaryEnabled")
+            defaults.removeObject(forKey: UserDefaultsKey.monthlySummaryEnabled.rawValue)
+            defaults.removeObject(forKey: UserDefaultsKey.yearlySummaryEnabled.rawValue)
         } else {
-            self.summaryNotificationsEnabled = defaults.object(forKey: "summaryNotificationsEnabled") as? Bool ?? Self.defaultSummaryNotificationsEnabled
+            self.summaryNotificationsEnabled = defaults.object(forKey: UserDefaultsKey.summaryNotificationsEnabled.rawValue) as? Bool ?? Self.defaultSummaryNotificationsEnabled
         }
-        self.minLatitudeDelta = defaults.object(forKey: "minLatitudeDelta") as? Double ?? Self.defaultMinLatitudeDelta
-        self.minLongitudeDelta = defaults.object(forKey: "minLongitudeDelta") as? Double ?? Self.defaultMinLongitudeDelta
+        self.minLatitudeDelta = defaults.object(forKey: UserDefaultsKey.minLatitudeDelta.rawValue) as? Double ?? Self.defaultMinLatitudeDelta
+        self.minLongitudeDelta = defaults.object(forKey: UserDefaultsKey.minLongitudeDelta.rawValue) as? Double ?? Self.defaultMinLongitudeDelta
         self.unitSystem = loadedUnitSystem
 
         // Initialize Imperial-specific settings
-        self.minAltitudeDeltaMetersImperial = defaults.object(forKey: "minAltitudeDeltaMetersImperial") as? Double ?? Self.defaultMinAltitudeDeltaMetersImperial
-        self.minDistanceDeltaMetersImperial = defaults.object(forKey: "minDistanceDeltaMetersImperial") as? Double ?? Self.defaultMinDistanceDeltaMetersImperial
+        self.minAltitudeDeltaMetersImperial = defaults.object(forKey: UserDefaultsKey.minAltitudeDeltaMetersImperial.rawValue) as? Double ?? Self.defaultMinAltitudeDeltaMetersImperial
+        self.minDistanceDeltaMetersImperial = defaults.object(forKey: UserDefaultsKey.minDistanceDeltaMetersImperial.rawValue) as? Double ?? Self.defaultMinDistanceDeltaMetersImperial
 
         // Initialize Metric-specific settings
-        self.minAltitudeDeltaMetersMetric = defaults.object(forKey: "minAltitudeDeltaMetersMetric") as? Double ?? Self.defaultMinAltitudeDeltaMetersMetric
-        self.minDistanceDeltaMetersMetric = defaults.object(forKey: "minDistanceDeltaMetersMetric") as? Double ?? Self.defaultMinDistanceDeltaMetersMetric
+        self.minAltitudeDeltaMetersMetric = defaults.object(forKey: UserDefaultsKey.minAltitudeDeltaMetersMetric.rawValue) as? Double ?? Self.defaultMinAltitudeDeltaMetersMetric
+        self.minDistanceDeltaMetersMetric = defaults.object(forKey: UserDefaultsKey.minDistanceDeltaMetersMetric.rawValue) as? Double ?? Self.defaultMinDistanceDeltaMetersMetric
 
         // Migrate old settings if needed
-        if let oldValue = defaults.object(forKey: "minAltitudeDeltaMeters") as? Double {
+        if let oldValue = defaults.object(forKey: UserDefaultsKey.minAltitudeDeltaMeters.rawValue) as? Double {
             // Migrate to appropriate unit-specific setting based on current unit system
             if loadedUnitSystem == .imperial {
                 self.minAltitudeDeltaMetersImperial = oldValue
             } else {
                 self.minAltitudeDeltaMetersMetric = oldValue
             }
-            defaults.removeObject(forKey: "minAltitudeDeltaMeters")
+            defaults.removeObject(forKey: UserDefaultsKey.minAltitudeDeltaMeters.rawValue)
         }
 
-        if let oldValue = defaults.object(forKey: "minDistanceDeltaMeters") as? Double {
+        if let oldValue = defaults.object(forKey: UserDefaultsKey.minDistanceDeltaMeters.rawValue) as? Double {
             if loadedUnitSystem == .imperial {
                 self.minDistanceDeltaMetersImperial = oldValue
             } else {
                 self.minDistanceDeltaMetersMetric = oldValue
             }
-            defaults.removeObject(forKey: "minDistanceDeltaMeters")
+            defaults.removeObject(forKey: UserDefaultsKey.minDistanceDeltaMeters.rawValue)
         }
 
-        self.homeAddress = defaults.string(forKey: "homeAddress") ?? Self.defaultHomeAddress
+        self.homeAddress = defaults.string(forKey: UserDefaultsKey.homeAddress.rawValue) ?? Self.defaultHomeAddress
 
         // Try loading home location from iCloud first, then fall back to UserDefaults
         let ubiquitousStore = NSUbiquitousKeyValueStore.default
 
         // Load home location name
-        if let iCloudName = ubiquitousStore.string(forKey: "homeLocationName") {
+        if let iCloudName = ubiquitousStore.string(forKey: UserDefaultsKey.homeLocationName.rawValue) {
             self.homeLocationName = iCloudName
             debugLog("☁️ Loaded home location name from iCloud: \(iCloudName)")
         } else {
-            self.homeLocationName = defaults.string(forKey: "homeLocationName")
+            self.homeLocationName = defaults.string(forKey: UserDefaultsKey.homeLocationName.rawValue)
         }
 
         // Load home coordinates
         let lat: Double?
         let lon: Double?
 
-        if let iCloudLat = ubiquitousStore.object(forKey: "homeLatitude") as? Double,
-           let iCloudLon = ubiquitousStore.object(forKey: "homeLongitude") as? Double {
+        if let iCloudLat = ubiquitousStore.object(forKey: UserDefaultsKey.homeLatitude.rawValue) as? Double,
+           let iCloudLon = ubiquitousStore.object(forKey: UserDefaultsKey.homeLongitude.rawValue) as? Double {
             lat = iCloudLat
             lon = iCloudLon
             debugLog("☁️ Loaded home coordinates from iCloud: (\(iCloudLat), \(iCloudLon))")
         } else {
-            lat = defaults.object(forKey: "homeLatitude") as? Double
-            lon = defaults.object(forKey: "homeLongitude") as? Double
+            lat = defaults.object(forKey: UserDefaultsKey.homeLatitude.rawValue) as? Double
+            lon = defaults.object(forKey: UserDefaultsKey.homeLongitude.rawValue) as? Double
         }
 
         if let lat = lat, let lon = lon {
@@ -190,47 +211,48 @@ class SettingsManager: ObservableObject {
         }
 
         // Perform migration cleanup after all properties are initialized
-        if defaults.object(forKey: "minAltitudeDeltaFeet") != nil {
-            defaults.removeObject(forKey: "minAltitudeDeltaFeet")
-            defaults.set(self.minAltitudeDeltaMeters, forKey: "minAltitudeDeltaMeters")
+        if defaults.object(forKey: UserDefaultsKey.minAltitudeDeltaFeet.rawValue) != nil {
+            defaults.removeObject(forKey: UserDefaultsKey.minAltitudeDeltaFeet.rawValue)
+            defaults.set(self.minAltitudeDeltaMeters, forKey: UserDefaultsKey.minAltitudeDeltaMeters.rawValue)
         }
     }
     
     // MARK: - Persistence
     func saveSettings() {
-        let defaults = UserDefaults.standard
+        // Use App Group UserDefaults so widget can read settings
+        let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? UserDefaults.standard
         let ubiquitousStore = NSUbiquitousKeyValueStore.default
 
-        defaults.set(hasCompletedSetup, forKey: "hasCompletedSetup")
-        defaults.set(notifyOnMonthlyRecords, forKey: "notifyOnMonthlyRecords")
-        defaults.set(notifyOnYearlyRecords, forKey: "notifyOnYearlyRecords")
-        defaults.set(notifyOnAllTimeRecords, forKey: "notifyOnAllTimeRecords")
-        defaults.set(summaryNotificationsEnabled, forKey: "summaryNotificationsEnabled")
-        defaults.set(photoPromptsEnabled, forKey: "photoPromptsEnabled")
-        defaults.set(minLatitudeDelta, forKey: "minLatitudeDelta")
-        defaults.set(minLongitudeDelta, forKey: "minLongitudeDelta")
+        defaults.set(hasCompletedSetup, forKey: UserDefaultsKey.hasCompletedSetup.rawValue)
+        defaults.set(notifyOnMonthlyRecords, forKey: UserDefaultsKey.notifyOnMonthlyRecords.rawValue)
+        defaults.set(notifyOnYearlyRecords, forKey: UserDefaultsKey.notifyOnYearlyRecords.rawValue)
+        defaults.set(notifyOnAllTimeRecords, forKey: UserDefaultsKey.notifyOnAllTimeRecords.rawValue)
+        defaults.set(summaryNotificationsEnabled, forKey: UserDefaultsKey.summaryNotificationsEnabled.rawValue)
+        defaults.set(photoPromptsEnabled, forKey: UserDefaultsKey.photoPromptsEnabled.rawValue)
+        defaults.set(minLatitudeDelta, forKey: UserDefaultsKey.minLatitudeDelta.rawValue)
+        defaults.set(minLongitudeDelta, forKey: UserDefaultsKey.minLongitudeDelta.rawValue)
 
         // Save both Imperial and Metric settings separately
-        defaults.set(minAltitudeDeltaMetersImperial, forKey: "minAltitudeDeltaMetersImperial")
-        defaults.set(minDistanceDeltaMetersImperial, forKey: "minDistanceDeltaMetersImperial")
-        defaults.set(minAltitudeDeltaMetersMetric, forKey: "minAltitudeDeltaMetersMetric")
-        defaults.set(minDistanceDeltaMetersMetric, forKey: "minDistanceDeltaMetersMetric")
+        defaults.set(minAltitudeDeltaMetersImperial, forKey: UserDefaultsKey.minAltitudeDeltaMetersImperial.rawValue)
+        defaults.set(minDistanceDeltaMetersImperial, forKey: UserDefaultsKey.minDistanceDeltaMetersImperial.rawValue)
+        defaults.set(minAltitudeDeltaMetersMetric, forKey: UserDefaultsKey.minAltitudeDeltaMetersMetric.rawValue)
+        defaults.set(minDistanceDeltaMetersMetric, forKey: UserDefaultsKey.minDistanceDeltaMetersMetric.rawValue)
 
-        defaults.set(homeAddress, forKey: "homeAddress")
+        defaults.set(homeAddress, forKey: UserDefaultsKey.homeAddress.rawValue)
         if let homeLocationName = homeLocationName {
-            defaults.set(homeLocationName, forKey: "homeLocationName")
+            defaults.set(homeLocationName, forKey: UserDefaultsKey.homeLocationName.rawValue)
             // Also save to iCloud
-            ubiquitousStore.set(homeLocationName, forKey: "homeLocationName")
+            ubiquitousStore.set(homeLocationName, forKey: UserDefaultsKey.homeLocationName.rawValue)
         }
         if let homeCoord = homeCoordinate {
-            defaults.set(homeCoord.latitude, forKey: "homeLatitude")
-            defaults.set(homeCoord.longitude, forKey: "homeLongitude")
+            defaults.set(homeCoord.latitude, forKey: UserDefaultsKey.homeLatitude.rawValue)
+            defaults.set(homeCoord.longitude, forKey: UserDefaultsKey.homeLongitude.rawValue)
             // Also save to iCloud
-            ubiquitousStore.set(homeCoord.latitude, forKey: "homeLatitude")
-            ubiquitousStore.set(homeCoord.longitude, forKey: "homeLongitude")
+            ubiquitousStore.set(homeCoord.latitude, forKey: UserDefaultsKey.homeLatitude.rawValue)
+            ubiquitousStore.set(homeCoord.longitude, forKey: UserDefaultsKey.homeLongitude.rawValue)
         }
 
-        defaults.set(unitSystem.rawValue, forKey: "unitSystem")
+        defaults.set(unitSystem.rawValue, forKey: UserDefaultsKey.unitSystem.rawValue)
 
         // Sync iCloud Key-Value Store
         ubiquitousStore.synchronize()

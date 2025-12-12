@@ -89,15 +89,7 @@ struct ExtremesTable: View {
     let recordManager: RecordManager
     let settings: SettingsManager
 
-    private let recordTypes = [
-        "Furthest North",
-        "Furthest South",
-        "Furthest East",
-        "Furthest West",
-        "Furthest Up",
-        "Furthest Down",
-        "Furthest from Home"
-    ]
+    private let recordTypes = RecordType.allTypeStrings
 
     var body: some View {
         VStack(spacing: 0) {
@@ -198,17 +190,7 @@ struct ExtremesRow: View {
     }
 
     private func iconForType(_ type: String) -> String {
-        let shortName = FormatUtils.shortName(for: type)
-        switch type {
-        case "Furthest North": return "⬆️ \(shortName)"
-        case "Furthest South": return "⬇️ \(shortName)"
-        case "Furthest East": return "➡️ \(shortName)"
-        case "Furthest West": return "⬅️ \(shortName)"
-        case "Furthest Up": return "🏔 \(shortName)"
-        case "Furthest Down": return "🏖 \(shortName)"
-        case "Furthest from Home": return "🏠 \(shortName)"
-        default: return type
-        }
+        return FormatUtils.emojiLabel(for: type)
     }
 }
 

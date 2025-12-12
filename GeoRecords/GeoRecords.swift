@@ -51,9 +51,9 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 func requestNotificationPermissions() {
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
         if let error = error {
-            print("Notification authorization error: \(error.localizedDescription)")
+            debugLog("Notification authorization error: \(error.localizedDescription)")
         } else {
-            print("Notification authorization granted: \(granted)")
+            debugLog("Notification authorization granted: \(granted)")
         }
     }
 }
@@ -81,6 +81,26 @@ struct GeoRecords: App {
                 .environmentObject(RecordHistoryManager.shared)
                 .environmentObject(persistenceController)
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
+                .onOpenURL { url in
+                    handleDeepLink(url)
+                }
+        }
+    }
+
+    // Handle deep links from widgets and other sources
+    private func handleDeepLink(_ url: URL) {
+        guard url.scheme == "georecords" else { return }
+
+        switch url.host {
+        case "records":
+            // Navigate to Records tab (already default)
+            debugLog("Deep link: Opening records tab from widget")
+        case "stats":
+            // Navigate to Stats tab
+            DeepLinkManager.shared.navigateToStats = true
+            debugLog("Deep link: Opening stats tab from widget")
+        default:
+            break
         }
     }
 }

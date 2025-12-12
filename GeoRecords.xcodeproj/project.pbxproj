@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		C3C50D4F2EECD7010003AFB3 /* GeoRecordsWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C3D31E242EEC9CC30048CB63 /* GeoRecordsWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		C3D31E272EEC9CC30048CB63 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3D31E262EEC9CC30048CB63 /* WidgetKit.framework */; };
+		C3D31E292EEC9CC30048CB63 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C3D31E282EEC9CC30048CB63 /* SwiftUI.framework */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		C3AD07A52D81C991009D8681 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -21,12 +27,37 @@
 			remoteGlobalIDString = C3AD07922D81C990009D8681;
 			remoteInfo = GeoRecords;
 		};
+		C3D31E362EEC9CC40048CB63 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C3AD078B2D81C990009D8681 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C3D31E232EEC9CC30048CB63;
+			remoteInfo = GeoRecordsWidgetExtension;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		C3D31E392EEC9CC40048CB63 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 12;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				C3C50D4F2EECD7010003AFB3 /* GeoRecordsWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		C3AD07932D81C990009D8681 /* GeoRecords.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GeoRecords.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C3AD07A42D81C991009D8681 /* GeoRecordsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GeoRecordsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C3AD07AE2D81C991009D8681 /* GeoRecordsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GeoRecordsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C3D31E242EEC9CC30048CB63 /* GeoRecordsWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GeoRecordsWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C3D31E262EEC9CC30048CB63 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		C3D31E282EEC9CC30048CB63 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		C3D31E3E2EEC9D5F0048CB63 /* GeoRecordsWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GeoRecordsWidgetExtension.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -37,6 +68,22 @@
 			);
 			target = C3AD07922D81C990009D8681 /* GeoRecords */;
 		};
+		C3D31E3D2EEC9CC40048CB63 /* Exceptions for "GeoRecordsWidget" folder in "GeoRecordsWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = C3D31E232EEC9CC30048CB63 /* GeoRecordsWidgetExtension */;
+		};
+		C3D31E402EECB2EB0048CB63 /* Exceptions for "GeoRecords" folder in "GeoRecordsWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Constants.swift,
+				FormatUtils.swift,
+				GeoRecordsModel.xcdatamodeld,
+			);
+			target = C3D31E232EEC9CC30048CB63 /* GeoRecordsWidgetExtension */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -44,6 +91,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				C3AD07FE2D81CCAB009D8681 /* Exceptions for "GeoRecords" folder in "GeoRecords" target */,
+				C3D31E402EECB2EB0048CB63 /* Exceptions for "GeoRecords" folder in "GeoRecordsWidgetExtension" target */,
 			);
 			path = GeoRecords;
 			sourceTree = "<group>";
@@ -56,6 +104,14 @@
 		C3AD07B12D81C991009D8681 /* GeoRecordsAppUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = GeoRecordsAppUITests;
+			sourceTree = "<group>";
+		};
+		C3D31E2A2EEC9CC30048CB63 /* GeoRecordsWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				C3D31E3D2EEC9CC40048CB63 /* Exceptions for "GeoRecordsWidget" folder in "GeoRecordsWidgetExtension" target */,
+			);
+			path = GeoRecordsWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -82,15 +138,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C3D31E212EEC9CC30048CB63 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C3D31E292EEC9CC30048CB63 /* SwiftUI.framework in Frameworks */,
+				C3D31E272EEC9CC30048CB63 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		C3AD078A2D81C990009D8681 = {
 			isa = PBXGroup;
 			children = (
+				C3D31E3E2EEC9D5F0048CB63 /* GeoRecordsWidgetExtension.entitlements */,
 				C3AD07952D81C990009D8681 /* GeoRecords */,
 				C3AD07A72D81C991009D8681 /* GeoRecordsAppTests */,
 				C3AD07B12D81C991009D8681 /* GeoRecordsAppUITests */,
+				C3D31E2A2EEC9CC30048CB63 /* GeoRecordsWidget */,
+				C3D31E252EEC9CC30048CB63 /* Frameworks */,
 				C3AD07942D81C990009D8681 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -101,8 +169,18 @@
 				C3AD07932D81C990009D8681 /* GeoRecords.app */,
 				C3AD07A42D81C991009D8681 /* GeoRecordsTests.xctest */,
 				C3AD07AE2D81C991009D8681 /* GeoRecordsUITests.xctest */,
+				C3D31E242EEC9CC30048CB63 /* GeoRecordsWidgetExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		C3D31E252EEC9CC30048CB63 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				C3D31E262EEC9CC30048CB63 /* WidgetKit.framework */,
+				C3D31E282EEC9CC30048CB63 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -115,10 +193,12 @@
 				C3AD078F2D81C990009D8681 /* Sources */,
 				C3AD07902D81C990009D8681 /* Frameworks */,
 				C3AD07912D81C990009D8681 /* Resources */,
+				C3D31E392EEC9CC40048CB63 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				C3D31E372EEC9CC40048CB63 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				C3AD07952D81C990009D8681 /* GeoRecords */,
@@ -176,6 +256,28 @@
 			productReference = C3AD07AE2D81C991009D8681 /* GeoRecordsUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		C3D31E232EEC9CC30048CB63 /* GeoRecordsWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C3D31E3C2EEC9CC40048CB63 /* Build configuration list for PBXNativeTarget "GeoRecordsWidgetExtension" */;
+			buildPhases = (
+				C3D31E202EEC9CC30048CB63 /* Sources */,
+				C3D31E212EEC9CC30048CB63 /* Frameworks */,
+				C3D31E222EEC9CC30048CB63 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				C3D31E2A2EEC9CC30048CB63 /* GeoRecordsWidget */,
+			);
+			name = GeoRecordsWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = GeoRecordsWidgetExtension;
+			productReference = C3D31E242EEC9CC30048CB63 /* GeoRecordsWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -183,7 +285,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1620;
+				LastSwiftUpdateCheck = 2610;
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
 					C3AD07922D81C990009D8681 = {
@@ -196,6 +298,9 @@
 					C3AD07AD2D81C991009D8681 = {
 						CreatedOnToolsVersion = 16.2;
 						TestTargetID = C3AD07922D81C990009D8681;
+					};
+					C3D31E232EEC9CC30048CB63 = {
+						CreatedOnToolsVersion = 26.1.1;
 					};
 				};
 			};
@@ -216,6 +321,7 @@
 				C3AD07922D81C990009D8681 /* GeoRecords */,
 				C3AD07A32D81C991009D8681 /* GeoRecordsTests */,
 				C3AD07AD2D81C991009D8681 /* GeoRecordsUITests */,
+				C3D31E232EEC9CC30048CB63 /* GeoRecordsWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -236,6 +342,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		C3AD07AC2D81C991009D8681 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C3D31E222EEC9CC30048CB63 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -266,6 +379,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C3D31E202EEC9CC30048CB63 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -278,6 +398,11 @@
 			isa = PBXTargetDependency;
 			target = C3AD07922D81C990009D8681 /* GeoRecords */;
 			targetProxy = C3AD07AF2D81C991009D8681 /* PBXContainerItemProxy */;
+		};
+		C3D31E372EEC9CC40048CB63 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C3D31E232EEC9CC30048CB63 /* GeoRecordsWidgetExtension */;
+			targetProxy = C3D31E362EEC9CC40048CB63 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -582,6 +707,71 @@
 			};
 			name = Release;
 		};
+		C3D31E3A2EEC9CC40048CB63 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = GeoRecordsWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = GeoRecordsWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = GeoRecordsWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = org.davidlaporte.GeoRecords.GeoRecordsWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C3D31E3B2EEC9CC40048CB63 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = GeoRecordsWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = GeoRecordsWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = GeoRecordsWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = org.davidlaporte.GeoRecords.GeoRecordsWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -617,6 +807,15 @@
 			buildConfigurations = (
 				C3AD07BF2D81C991009D8681 /* Debug */,
 				C3AD07C02D81C991009D8681 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C3D31E3C2EEC9CC40048CB63 /* Build configuration list for PBXNativeTarget "GeoRecordsWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C3D31E3A2EEC9CC40048CB63 /* Debug */,
+				C3D31E3B2EEC9CC40048CB63 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

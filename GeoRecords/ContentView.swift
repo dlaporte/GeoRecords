@@ -185,22 +185,30 @@ struct ContentView: View {
         Task {
             // Check immediately first, then retry with delays if needed
             var hasCloudData = false
+            var checkError: Error?
             var attempts = 0
             let maxAttempts = 3
 
-            while attempts < maxAttempts && !hasCloudData {
+            while attempts < maxAttempts && !hasCloudData && checkError == nil {
                 attempts += 1
 
                 debugLog("☁️ Checking for iCloud data (attempt \(attempts)/\(maxAttempts))...")
-                hasCloudData = await persistenceController.hasExistingCloudData()
 
-                if hasCloudData {
-                    debugLog("☁️ Found iCloud data on attempt \(attempts)")
-                    break
+                do {
+                    hasCloudData = try await persistenceController.hasExistingCloudDataThrowing()
+
+                    if hasCloudData {
+                        debugLog("☁️ Found iCloud data on attempt \(attempts)")
+                        break
+                    }
+                } catch {
+                    debugLog("☁️ Error checking iCloud data: \(error.localizedDescription)")
+                    checkError = error
+                    // Don't break immediately, will handle below
                 }
 
                 // If no data found and we have more attempts, wait before next check
-                if attempts < maxAttempts {
+                if attempts < maxAttempts && !hasCloudData && checkError == nil {
                     // Progressive delays: 0.5s, 1s (total max 1.5s instead of 6s)
                     let delay = UInt64(attempts * 500_000_000) // 0.5, 1.0 seconds
                     debugLog("☁️ No data yet, checking again in \(Double(delay) / 1_000_000_000)s...")
@@ -209,7 +217,12 @@ struct ContentView: View {
             }
 
             await MainActor.run {
-                if hasCloudData {
+                if checkError != nil {
+                    // Error occurred - show setup wizard with a warning
+                    debugLog("☁️ Failed to check iCloud after \(attempts) attempts, showing setup wizard")
+                    showDatabaseError = true
+                    showSetupWizard = true
+                } else if hasCloudData {
                     // Data exists in iCloud, ask user what to do
                     debugLog("☁️ Existing iCloud data detected, prompting user")
                     showRestoreChoiceAlert = true
@@ -241,12 +254,9 @@ struct ContentView: View {
             settings.homeCoordinate = currentLocation.coordinate
 
             // Also geocode to get location name
-            let geocoder = CLGeocoder()
-            geocoder.reverseGeocodeLocation(currentLocation) { placemarks, error in
-                if let placemark = placemarks?.first {
-                    let locationName = FormatUtils.formatPlacemarkName(placemark)
-
-                    Task { @MainActor in
+            Task {
+                if let locationName = await reverseGeocode(location: currentLocation) {
+                    await MainActor.run {
                         self.settings.homeLocationName = locationName
                         self.settings.saveSettings()
                         debugLog("☁️ Set home to: \(locationName)")

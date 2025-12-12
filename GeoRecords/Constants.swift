@@ -1,6 +1,103 @@
 import Foundation
 import SwiftUI
 import MapKit
+import CoreLocation
+
+// MARK: - Shared Models
+
+/// Unit system for displaying values
+enum UnitSystem: String, Codable {
+    case metric
+    case imperial
+}
+
+/// Time frame for records
+enum TimeFrame: String, CaseIterable {
+    case month = "Monthly"
+    case year = "Yearly"
+    case allTime = "All Time"
+}
+
+/// Record type enum for type safety and comparison logic
+enum RecordType: String, CaseIterable {
+    case north = "Furthest North"
+    case south = "Furthest South"
+    case east = "Furthest East"
+    case west = "Furthest West"
+    case up = "Furthest Up"
+    case down = "Furthest Down"
+    case fromHome = "Furthest from Home"
+
+    /// Whether this record type uses ascending comparison (higher is better)
+    var isAscending: Bool {
+        switch self {
+        case .north, .east, .up, .fromHome:
+            return true  // Higher values are better
+        case .south, .west, .down:
+            return false  // Lower values are better
+        }
+    }
+
+    /// Determine if a new value should replace an existing record
+    func shouldReplace(newValue: Double, oldValue: Double) -> Bool {
+        return isAscending ? newValue > oldValue : newValue < oldValue
+    }
+
+    /// All record type strings for compatibility
+    static var allTypeStrings: [String] {
+        return RecordType.allCases.map { $0.rawValue }
+    }
+
+    /// Get record type from string (for backward compatibility)
+    static func from(string: String) -> RecordType? {
+        return RecordType.allCases.first { $0.rawValue == string }
+    }
+}
+
+// MARK: - UserDefaults Keys
+
+/// Type-safe keys for UserDefaults storage
+enum UserDefaultsKey: String {
+    // Setup
+    case hasCompletedSetup
+
+    // Notification settings
+    case notifyOnMonthlyRecords
+    case notifyOnYearlyRecords
+    case notifyOnAllTimeRecords
+    case summaryNotificationsEnabled
+    case photoPromptsEnabled
+
+    // Smart notifications
+    case smartNotificationsEnabled
+    case lastInactivityNotification
+    case lastFunFactNotification
+
+    // Record thresholds
+    case minLatitudeDelta
+    case minLongitudeDelta
+    case minAltitudeDeltaMetersImperial
+    case minDistanceDeltaMetersImperial
+    case minAltitudeDeltaMetersMetric
+    case minDistanceDeltaMetersMetric
+
+    // Home location
+    case homeAddress
+    case homeLocationName
+    case homeLatitude
+    case homeLongitude
+
+    // Units
+    case unitSystem
+
+    // Legacy keys (for migration)
+    case notifyOnNewRecord  // Migrated to timeframe-specific settings
+    case minAltitudeDeltaFeet  // Migrated to meters
+    case minAltitudeDeltaMeters  // Migrated to unit-specific
+    case minDistanceDeltaMeters  // Migrated to unit-specific
+    case monthlySummaryEnabled  // Migrated to summaryNotificationsEnabled
+    case yearlySummaryEnabled  // Migrated to summaryNotificationsEnabled
+}
 
 // MARK: - Debug Logging
 
@@ -28,6 +125,45 @@ let metersPerMile = 1609.344
 /// Meters per kilometer
 let metersPerKm = 1000.0
 
+// MARK: - Distance Utilities
+
+/// Calculates distance between two coordinates in meters
+/// - Parameters:
+///   - from: Starting coordinate
+///   - to: Destination coordinate
+/// - Returns: Distance in meters
+func distanceBetween(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
+    let fromLocation = CLLocation(latitude: from.latitude, longitude: from.longitude)
+    let toLocation = CLLocation(latitude: to.latitude, longitude: to.longitude)
+    return fromLocation.distance(from: toLocation)
+}
+
+// MARK: - Geocoding Utilities
+
+/// Reverse geocodes a location to get a human-readable name
+/// - Parameter location: The location to geocode
+/// - Returns: Formatted location name or nil if geocoding fails
+func reverseGeocode(location: CLLocation) async -> String? {
+    let geocoder = CLGeocoder()
+    do {
+        let placemarks = try await geocoder.reverseGeocodeLocation(location)
+        if let placemark = placemarks.first {
+            return FormatUtils.formatPlacemarkName(placemark)
+        }
+    } catch {
+        debugLog("Geocoding error: \(error.localizedDescription)")
+    }
+    return nil
+}
+
+/// Reverse geocodes a coordinate to get a human-readable name
+/// - Parameter coordinate: The coordinate to geocode
+/// - Returns: Formatted location name or nil if geocoding fails
+func reverseGeocode(coordinate: CLLocationCoordinate2D) async -> String? {
+    let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+    return await reverseGeocode(location: location)
+}
+
 // MARK: - MapKit Constants
 
 /// Default map zoom level for record details (~5km at equator)
@@ -37,6 +173,38 @@ let defaultMapLonDelta = 0.05
 /// Wide map zoom level for overview
 let wideMapLatDelta = 2.0
 let wideMapLonDelta = 2.0
+
+// MARK: - UI Constants
+
+/// Screen height threshold for compact layout (iPhone 14/15 and smaller)
+let compactScreenHeightThreshold: CGFloat = 850
+
+// MARK: - Photo Import Constants
+
+/// Batch size for processing photos during library scan
+let photoScanBatchSize = 100
+
+/// Duration to suppress notifications after photo import (in seconds)
+let postImportNotificationSuppressionSeconds: TimeInterval = 180
+
+/// Same value in nanoseconds for Task.sleep
+let postImportNotificationSuppressionNanoseconds: UInt64 = 180_000_000_000
+
+// MARK: - Notification Identifiers
+
+/// Notification identifier constants for consistent deduplication
+enum NotificationIdentifier {
+    static let monthlySummary = "monthly-summary"
+    static let yearlySummary = "yearly-summary"
+    static let inactivity = "inactivity"
+    static let funFact = "fun-fact"
+
+    /// Creates a notification identifier for a new record notification
+    /// Using a consistent ID per record type allows deduplication
+    static func newRecord(type: String) -> String {
+        return "new-record-\(type.lowercased().replacingOccurrences(of: " ", with: "-"))"
+    }
+}
 
 // MARK: - Date Formatters
 
@@ -72,6 +240,34 @@ extension Date {
         let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
         let startOfYear = calendar.dateInterval(of: .year, for: now)?.start ?? now
         return (startOfMonth, startOfYear)
+    }
+
+    /// Returns the start date of the previous month or year (for summary calculations)
+    /// - Parameter timeFrame: The time frame to get the previous period for
+    /// - Returns: The start date of the previous period
+    static func startOfPreviousPeriod(for timeFrame: TimeFrame) -> Date {
+        let calendar = Calendar.current
+        let now = Date()
+
+        switch timeFrame {
+        case .month:
+            let lastMonth = calendar.date(byAdding: .month, value: -1, to: now) ?? now
+            return calendar.dateInterval(of: .month, for: lastMonth)?.start ?? now
+        case .year:
+            let lastYear = calendar.date(byAdding: .year, value: -1, to: now) ?? now
+            return calendar.dateInterval(of: .year, for: lastYear)?.start ?? now
+        case .allTime:
+            return Date.distantPast
+        }
+    }
+}
+
+// MARK: - Array Extensions
+
+/// Safe array subscript that returns nil instead of crashing on out-of-bounds access
+extension Array {
+    subscript(safe index: Int) -> Element? {
+        return indices.contains(index) ? self[index] : nil
     }
 }
 

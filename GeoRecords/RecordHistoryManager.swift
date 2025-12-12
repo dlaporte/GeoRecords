@@ -271,7 +271,7 @@ class RecordHistoryManager: ObservableObject {
                 // Use exact values for key - no tolerance
                 let key = "\(recordType)|\(timeFrame)|\(timestamp.timeIntervalSince1970)|\(record.value)|\(record.latitude)|\(record.longitude)"
 
-                if let existingRecord = seenRecords[key] {
+                if seenRecords[key] != nil {
                     // This is a duplicate - delete it
                     context.delete(record)
                     duplicatesRemoved += 1

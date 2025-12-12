@@ -136,23 +136,9 @@ struct HistoryCard: View {
     let entry: RecordHistoryEntry
 
     private func formattedValueForEntry() -> String {
-        // Convert Core Data entry to RecordDetail to reuse formatting logic
-        let timeFrame: TimeFrame = {
-            if let timeFrameString = entry.timeFrame {
-                return TimeFrame(rawValue: timeFrameString) ?? .allTime
-            }
-            return .allTime  // Default for old entries without timeFrame
-        }()
-
-        let detail = RecordDetail(
-            value: entry.value,
-            timestamp: entry.timestamp ?? Date(),
-            coordinate: CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude),
-            altitude: entry.altitude,
-            locationName: entry.locationName,
-            recordType: entry.recordType ?? "Unknown",
-            timeFrame: timeFrame
-        )
+        guard let detail = RecordDetail(from: entry) else {
+            return "—"
+        }
         return detail.formattedValue(unitSystem: SettingsManager.shared.unitSystem)
     }
 
@@ -230,7 +216,31 @@ struct HistoryCard: View {
     }
 }
 
+// MARK: - Filter Option Button
+
+/// Reusable filter option button with checkmark indicator
+private struct FilterOptionButton: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .foregroundColor(.blue)
+                }
+            }
+        }
+        .foregroundColor(.primary)
+    }
+}
+
 // MARK: - Filter Sheet
+
 struct FilterSheet: View {
     @Environment(\.dismiss) var dismiss
     @Binding var selectedRecordType: String?
@@ -251,66 +261,34 @@ struct FilterSheet: View {
         NavigationStack {
             Form {
                 Section(header: Text("Record Type")) {
-                    Button(action: {
-                        selectedRecordType = nil
-                    }) {
-                        HStack {
-                            Text("All Types")
-                            Spacer()
-                            if selectedRecordType == nil {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.blue)
-                            }
-                        }
-                    }
-                    .foregroundColor(.primary)
+                    FilterOptionButton(
+                        title: "All Types",
+                        isSelected: selectedRecordType == nil,
+                        action: { selectedRecordType = nil }
+                    )
 
                     ForEach(availableRecordTypes, id: \.self) { type in
-                        Button(action: {
-                            selectedRecordType = type
-                        }) {
-                            HStack {
-                                Text(type)
-                                Spacer()
-                                if selectedRecordType == type {
-                                    Image(systemName: "checkmark")
-                                        .foregroundColor(.blue)
-                                }
-                            }
-                        }
-                        .foregroundColor(.primary)
+                        FilterOptionButton(
+                            title: type,
+                            isSelected: selectedRecordType == type,
+                            action: { selectedRecordType = type }
+                        )
                     }
                 }
 
                 Section(header: Text("Time Frame")) {
-                    Button(action: {
-                        selectedTimeFrame = nil
-                    }) {
-                        HStack {
-                            Text("All Time Frames")
-                            Spacer()
-                            if selectedTimeFrame == nil {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.blue)
-                            }
-                        }
-                    }
-                    .foregroundColor(.primary)
+                    FilterOptionButton(
+                        title: "All Time Frames",
+                        isSelected: selectedTimeFrame == nil,
+                        action: { selectedTimeFrame = nil }
+                    )
 
                     ForEach(availableTimeFrames, id: \.self) { frame in
-                        Button(action: {
-                            selectedTimeFrame = frame
-                        }) {
-                            HStack {
-                                Text(frame)
-                                Spacer()
-                                if selectedTimeFrame == frame {
-                                    Image(systemName: "checkmark")
-                                        .foregroundColor(.blue)
-                                }
-                            }
-                        }
-                        .foregroundColor(.primary)
+                        FilterOptionButton(
+                            title: frame,
+                            isSelected: selectedTimeFrame == frame,
+                            action: { selectedTimeFrame = frame }
+                        )
                     }
                 }
 

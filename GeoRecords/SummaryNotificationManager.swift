@@ -15,7 +15,7 @@ class SummaryNotificationManager: ObservableObject {
         let settings = SettingsManager.shared
 
         // Remove existing summary notifications
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["monthly-summary", "yearly-summary"])
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [NotificationIdentifier.monthlySummary, NotificationIdentifier.yearlySummary])
 
         // Schedule both monthly and yearly summaries if enabled
         if settings.summaryNotificationsEnabled {
@@ -39,7 +39,7 @@ class SummaryNotificationManager: ObservableObject {
         dateComponents.minute = 0
 
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-        let request = UNNotificationRequest(identifier: "monthly-summary", content: content, trigger: trigger)
+        let request = UNNotificationRequest(identifier: NotificationIdentifier.monthlySummary, content: content, trigger: trigger)
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
@@ -66,7 +66,7 @@ class SummaryNotificationManager: ObservableObject {
         dateComponents.minute = 0
 
         let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-        let request = UNNotificationRequest(identifier: "yearly-summary", content: content, trigger: trigger)
+        let request = UNNotificationRequest(identifier: NotificationIdentifier.yearlySummary, content: content, trigger: trigger)
 
         UNUserNotificationCenter.current().add(request) { error in
             if let error = error {
@@ -121,23 +121,8 @@ class SummaryNotificationManager: ObservableObject {
         let context = PersistenceController.shared.container.viewContext
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
-        // Get date boundaries based on timeframe
-        let calendar = Calendar.current
-        let now = Date()
-
-        let startDate: Date
-        switch timeFrame {
-        case .month:
-            // Last month (not current month)
-            let lastMonth = calendar.date(byAdding: .month, value: -1, to: now) ?? now
-            startDate = calendar.dateInterval(of: .month, for: lastMonth)?.start ?? now
-        case .year:
-            // Last year (not current year)
-            let lastYear = calendar.date(byAdding: .year, value: -1, to: now) ?? now
-            startDate = calendar.dateInterval(of: .year, for: lastYear)?.start ?? now
-        case .allTime:
-            startDate = Date.distantPast
-        }
+        // Get start date of previous period using shared utility
+        let startDate = Date.startOfPreviousPeriod(for: timeFrame)
 
         request.predicate = NSPredicate(format: "timestamp >= %@ AND timeFrame == %@", startDate as NSDate, timeFrame.rawValue)
 

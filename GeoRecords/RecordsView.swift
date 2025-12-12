@@ -1,6 +1,12 @@
 import SwiftUI
 import MapKit
 
+// MARK: - Layout Constants
+
+private let mapHeightRatio: CGFloat = 0.5
+private let cardHeightOffset: CGFloat = 100
+private let pickerWidth: CGFloat = 280
+
 struct RecordsView: View {
     @EnvironmentObject var recordManager: RecordManager
     @EnvironmentObject var settings: SettingsManager
@@ -14,15 +20,9 @@ struct RecordsView: View {
 
     // Computed property to get all non-nil records in order for the selected timeframe
     private var allRecords: [RecordDetail] {
-        [
-            recordManager.getRecord(type: "Furthest North", timeFrame: selectedTimeFrame),
-            recordManager.getRecord(type: "Furthest South", timeFrame: selectedTimeFrame),
-            recordManager.getRecord(type: "Furthest East", timeFrame: selectedTimeFrame),
-            recordManager.getRecord(type: "Furthest West", timeFrame: selectedTimeFrame),
-            recordManager.getRecord(type: "Furthest Up", timeFrame: selectedTimeFrame),
-            recordManager.getRecord(type: "Furthest Down", timeFrame: selectedTimeFrame),
-            recordManager.getRecord(type: "Furthest from Home", timeFrame: selectedTimeFrame)
-        ].compactMap { $0 }
+        RecordType.allCases.compactMap { type in
+            recordManager.getRecord(type: type.rawValue, timeFrame: selectedTimeFrame)
+        }
     }
 
     var body: some View {
@@ -49,11 +49,11 @@ struct RecordsView: View {
                     Map(position: $mapPosition) {
                         ForEach(allRecords, id: \.id) { record in
                             Marker(record.recordType, coordinate: record.coordinate)
-                                .tint(colorForRecordType(record.recordType))
+                                .tint(FormatUtils.colorForRecordType(record.recordType))
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(height: UIScreen.main.bounds.height * 0.5)
+                    .frame(height: UIScreen.main.bounds.height * mapHeightRatio)
 
                     // Swipeable cards in lower half
                     TabView(selection: $currentRecordIndex) {
@@ -68,7 +68,7 @@ struct RecordsView: View {
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .frame(maxWidth: .infinity)
-                    .frame(height: UIScreen.main.bounds.height * 0.5 - 100)
+                    .frame(height: UIScreen.main.bounds.height * mapHeightRatio - cardHeightOffset)
                     .onChange(of: currentRecordIndex) { _, newIndex in
                         // Update map when swiping to new record
                         if let record = allRecords[safe: newIndex] {
@@ -91,7 +91,7 @@ struct RecordsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 280)
+                    .frame(width: pickerWidth)
                 }
             }
             .onChange(of: selectedTimeFrame) { _, _ in
@@ -140,119 +140,142 @@ struct RecordsView: View {
         // Deep links from notifications always go to all-time records
         return recordManager.getRecord(type: type, timeFrame: .allTime)
     }
+}
 
-    private func colorForRecordType(_ type: String) -> Color {
-        switch type {
-        case "Furthest North": return .blue
-        case "Furthest South": return .cyan
-        case "Furthest East": return .orange
-        case "Furthest West": return .purple
-        case "Furthest Up": return .green
-        case "Furthest Down": return .brown
-        case "Furthest from Home": return .red
-        default: return .gray
+// MARK: - Record Card Sizing
+
+/// Encapsulates responsive sizing values for record cards
+private struct CardSizing {
+    let isCompact: Bool
+
+    init() {
+        let screenHeight = UIScreen.main.bounds.height
+        isCompact = screenHeight < compactScreenHeightThreshold
+    }
+
+    var cardSpacing: CGFloat { isCompact ? 8 : 12 }
+    var iconSize: CGFloat { isCompact ? 32 : 44 }
+    var valueFontSize: CGFloat { isCompact ? 24 : 36 }
+    var photoSize: CGFloat { isCompact ? 80 : 120 }
+    var cardPadding: CGFloat { isCompact ? 12 : 16 }
+    var horizontalPadding: CGFloat { isCompact ? 10 : 16 }
+    var contentSpacing: CGFloat { isCompact ? 6 : 12 }
+}
+
+// MARK: - Record Card Header
+
+private struct RecordCardHeader: View {
+    let recordType: String
+    let timestamp: Date
+    let sizing: CardSizing
+
+    var body: some View {
+        HStack(spacing: sizing.isCompact ? 8 : 12) {
+            Image(systemName: FormatUtils.iconForRecordType(recordType))
+                .font(sizing.isCompact ? .title3 : .title)
+                .foregroundColor(FormatUtils.colorForRecordType(recordType))
+                .frame(width: sizing.iconSize, height: sizing.iconSize)
+                .background(FormatUtils.colorForRecordType(recordType).opacity(0.1))
+                .cornerRadius(8)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(recordType)
+                    .font(sizing.isCompact ? .caption : .headline)
+                    .fontWeight(.semibold)
+                Text(mediumDateFormatter.string(from: timestamp))
+                    .font(sizing.isCompact ? .caption2 : .caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+        }
+    }
+}
+
+// MARK: - Record Value Display
+
+private struct RecordValueDisplay: View {
+    let value: String
+    let recordType: String
+    let sizing: CardSizing
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: sizing.isCompact ? 2 : 4) {
+            if !sizing.isCompact {
+                Text("Value")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Text(value)
+                .font(.system(size: sizing.valueFontSize, weight: .bold, design: .rounded))
+                .foregroundColor(FormatUtils.colorForRecordType(recordType))
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+        }
+    }
+}
+
+// MARK: - Record Photo Thumbnail
+
+private struct RecordPhotoThumbnail: View {
+    let photoData: Data
+    let sizing: CardSizing
+
+    var body: some View {
+        if let uiImage = UIImage(data: photoData) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: sizing.photoSize, height: sizing.photoSize)
+                .clipShape(RoundedRectangle(cornerRadius: sizing.isCompact ? 8 : 12))
         }
     }
 }
 
 // MARK: - Record Card View
+
 struct RecordCardView: View {
     let record: RecordDetail
     @EnvironmentObject var settings: SettingsManager
 
-    // Responsive sizing based on screen height
-    private var screenHeight: CGFloat {
-        UIScreen.main.bounds.height
-    }
-
-    private var isCompactScreen: Bool {
-        screenHeight < 850 // iPhone 14/15 and smaller
-    }
-
-    private var cardSpacing: CGFloat {
-        isCompactScreen ? 8 : 12
-    }
-
-    private var iconSize: CGFloat {
-        isCompactScreen ? 32 : 44
-    }
-
-    private var valueFontSize: CGFloat {
-        isCompactScreen ? 24 : 36
-    }
-
-    private var photoSize: CGFloat {
-        isCompactScreen ? 80 : 120
-    }
-
-    private var cardPadding: CGFloat {
-        isCompactScreen ? 12 : 16
-    }
-
-    private var horizontalPadding: CGFloat {
-        isCompactScreen ? 10 : 16
-    }
+    private let sizing = CardSizing()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: cardSpacing) {
-            // Header with icon and title only
-            HStack(spacing: isCompactScreen ? 8 : 12) {
-                // Icon (always shown)
-                Image(systemName: iconForRecordType(record.recordType))
-                    .font(isCompactScreen ? .title3 : .title)
-                    .foregroundColor(colorForRecordType(record.recordType))
-                    .frame(width: iconSize, height: iconSize)
-                    .background(colorForRecordType(record.recordType).opacity(0.1))
-                    .cornerRadius(8)
+        VStack(alignment: .leading, spacing: sizing.cardSpacing) {
+            RecordCardHeader(
+                recordType: record.recordType,
+                timestamp: record.timestamp,
+                sizing: sizing
+            )
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(record.recordType)
-                        .font(isCompactScreen ? .caption : .headline)
-                        .fontWeight(.semibold)
-                    Text(formatDate(record.timestamp))
-                        .font(isCompactScreen ? .caption2 : .caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer()
-            }
-
-            if !isCompactScreen {
+            if !sizing.isCompact {
                 Divider()
             }
 
             // Main content with photo on the right
-            HStack(alignment: .top, spacing: isCompactScreen ? 8 : 16) {
+            HStack(alignment: .top, spacing: sizing.isCompact ? 8 : 16) {
                 // Left side - record details
-                VStack(alignment: .leading, spacing: isCompactScreen ? 6 : 12) {
-                    // Value
-                    VStack(alignment: .leading, spacing: isCompactScreen ? 2 : 4) {
-                        if !isCompactScreen {
-                            Text("Value")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Text(record.formattedValue(unitSystem: settings.unitSystem))
-                            .font(.system(size: valueFontSize, weight: .bold, design: .rounded))
-                            .foregroundColor(colorForRecordType(record.recordType))
-                            .minimumScaleFactor(0.7)
-                            .lineLimit(1)
-                    }
+                VStack(alignment: .leading, spacing: sizing.contentSpacing) {
+                    RecordValueDisplay(
+                        value: record.formattedValue(unitSystem: settings.unitSystem),
+                        recordType: record.recordType,
+                        sizing: sizing
+                    )
 
                     // Location
                     if let locationName = record.locationName {
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Location")
-                                .font(isCompactScreen ? .caption2 : .caption)
+                                .font(sizing.isCompact ? .caption2 : .caption)
                                 .foregroundColor(.secondary)
                             Text(locationName)
-                                .font(isCompactScreen ? .caption2 : .subheadline)
-                                .lineLimit(isCompactScreen ? 1 : 2)
+                                .font(sizing.isCompact ? .caption2 : .subheadline)
+                                .lineLimit(sizing.isCompact ? 1 : 2)
                         }
                     }
 
-                    // Coordinates (smaller on compact)
-                    if !isCompactScreen {
+                    // Coordinates (only on full-size)
+                    if !sizing.isCompact {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Coordinates")
                                 .font(.caption)
@@ -264,21 +287,16 @@ struct RecordCardView: View {
                     }
                 }
 
-                // Right side - photo thumbnail if available
-                if let photoData = record.photoData,
-                   let uiImage = UIImage(data: photoData) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: photoSize, height: photoSize)
-                        .clipShape(RoundedRectangle(cornerRadius: isCompactScreen ? 8 : 12))
+                // Right side - photo thumbnail
+                if let photoData = record.photoData {
+                    RecordPhotoThumbnail(photoData: photoData, sizing: sizing)
                 }
             }
 
             Spacer(minLength: 0)
 
             // Tap to view detail hint
-            if !isCompactScreen {
+            if !sizing.isCompact {
                 HStack {
                     Spacer()
                     Text("Tap for details")
@@ -290,31 +308,12 @@ struct RecordCardView: View {
                 }
             }
         }
-        .padding(cardPadding)
+        .padding(sizing.cardPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: isCompactScreen ? 16 : 20)
+            RoundedRectangle(cornerRadius: sizing.isCompact ? 16 : 20)
                 .fill(Color(UIColor.secondarySystemBackground))
         )
-        .padding(.horizontal, horizontalPadding)
-    }
-
-    private func formatDate(_ date: Date) -> String {
-        return mediumDateFormatter.string(from: date)
-    }
-
-    private func iconForRecordType(_ type: String) -> String {
-        return FormatUtils.iconForRecordType(type)
-    }
-
-    private func colorForRecordType(_ type: String) -> Color {
-        return FormatUtils.colorForRecordType(type)
-    }
-}
-
-// Safe array subscript
-extension Array {
-    subscript(safe index: Int) -> Element? {
-        return indices.contains(index) ? self[index] : nil
+        .padding(.horizontal, sizing.horizontalPadding)
     }
 }

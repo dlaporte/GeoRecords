@@ -27,6 +27,10 @@ class PhotoLibraryScanner: ObservableObject {
     @Published var discoveredRecords: [DiscoveredRecord] = []  // Currently displayed record(s)
     @Published var errorMessage: String?
 
+    // Import status tracking
+    @Published var isImporting = false
+    @Published var importProgress: (current: Int, total: Int) = (0, 0)
+
     // Three-phase confirmation flow
     @Published var currentTimeFrame: TimeFrame? = nil  // Current phase: month, year, or allTime
     @Published var currentRecordTypeIndex = 0  // Index into recordTypes array
@@ -86,7 +90,7 @@ class PhotoLibraryScanner: ObservableObject {
         var fromHomeCandidates: [(value: Double, asset: PHAsset, location: CLLocation)] = []
 
         // Scan all photos asynchronously in batches
-        let batchSize = 100
+        let batchSize = photoScanBatchSize
         let count = allPhotos.count
 
         for batchStart in stride(from: 0, to: count, by: batchSize) {
@@ -122,8 +126,7 @@ class PhotoLibraryScanner: ObservableObject {
 
                     // Distance from home
                     if let homeCoord = homeCoordinate {
-                        let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
-                        let distance = location.distance(from: homeLocation)
+                        let distance = distanceBetween(from: location.coordinate, to: homeCoord)
                         fromHomeCandidates.append((distance, asset, location))
                     }
                 }
@@ -191,7 +194,7 @@ class PhotoLibraryScanner: ObservableObject {
             ("Furthest West", westCandidates, nil),
             ("Furthest Up", upCandidates, nil),
             ("Furthest Down", downCandidates, nil),
-            ("Furthest from Home", fromHomeCandidates, { $0 * metersToFeet })
+            ("Furthest from Home", fromHomeCandidates, nil)  // Store in meters (consistent with altitude)
         ]
 
         candidatesByTimeFrame = [
@@ -257,9 +260,10 @@ class PhotoLibraryScanner: ObservableObject {
             let candidateIndex = currentCandidateIndices[key] ?? 0
 
             if let candidates = candidatesByTimeFrame[timeFrame]?[recordType],
-               candidateIndex < candidates.count {
+               candidateIndex < candidates.count,
+               let candidate = candidates[safe: candidateIndex] {
                 // Found a candidate to show
-                discoveredRecords = [candidates[candidateIndex]]
+                discoveredRecords = [candidate]
                 return
             }
 
@@ -317,9 +321,10 @@ class PhotoLibraryScanner: ObservableObject {
             currentCandidateIndices[key] = candidateIndex
 
             if let candidates = candidatesByTimeFrame[timeFrame]?[recordType],
-               candidateIndex < candidates.count {
+               candidateIndex < candidates.count,
+               let candidate = candidates[safe: candidateIndex] {
                 // Show next candidate
-                discoveredRecords = [candidates[candidateIndex]]
+                discoveredRecords = [candidate]
                 return
             }
         }
@@ -371,17 +376,29 @@ class PhotoLibraryScanner: ObservableObject {
     func importSelectedRecords(completion: @escaping (Int) -> Void) async {
         let selectedRecords = confirmedRecords
 
+        // Reset import state
+        await MainActor.run {
+            isImporting = true
+            importProgress = (0, selectedRecords.count)
+        }
+
         // Block ALL alerts during import - this is foolproof
         await MainActor.run {
             RecordManager.shared.blockAlertsDuringImport(block: true)
         }
 
-        for record in selectedRecords {
+        var successCount = 0
+
+        for (index, record) in selectedRecords.enumerated() {
+            // Update progress
+            await MainActor.run {
+                importProgress = (index, selectedRecords.count)
+            }
+
             // Get photo data from asset
             let photoData = await getPhotoData(from: record.photoAsset)
 
             // Use the timeframes that were determined during scanning
-            // (These are the specific timeframes this photo was selected for)
             let timeFrames = record.beatsTimeFrames
             debugLog("📅 Importing \(record.recordType) for timeframes: \(timeFrames.map { $0.rawValue }.joined(separator: ", "))")
 
@@ -392,7 +409,7 @@ class PhotoLibraryScanner: ObservableObject {
                     timestamp: record.timestamp,
                     coordinate: record.coordinate,
                     altitude: record.altitude,
-                    locationName: record.locationName,  // Use geocoded name from confirmation
+                    locationName: record.locationName,
                     recordType: record.recordType,
                     timeFrame: timeFrame,
                     photoData: photoData
@@ -400,25 +417,29 @@ class PhotoLibraryScanner: ObservableObject {
 
                 // Add to record manager and history
                 await MainActor.run {
-                    // Update in-memory record
                     updateRecordManager(recordType: record.recordType, detail: detail, timeFrame: timeFrame)
-
-                    // Save to Core Data
                     RecordHistoryManager.shared.addRecord(recordType: record.recordType, detail: detail)
                 }
             }
+            successCount += 1
         }
 
         await MainActor.run {
+            importProgress = (selectedRecords.count, selectedRecords.count)
+            isImporting = false
+
+            // Log summary
+            debugLog("✅ Import completed successfully. \(successCount) records imported.")
+
             // Unblock alerts after a delay
             Task {
-                try? await Task.sleep(nanoseconds: 180_000_000_000) // 180 seconds = 3 minutes
+                try? await Task.sleep(nanoseconds: postImportNotificationSuppressionNanoseconds)
                 RecordManager.shared.blockAlertsDuringImport(block: false)
             }
 
             // Also use the time-based suppression system as backup
-            RecordManager.shared.suppressNotificationsAfterImport(durationSeconds: 180)
-            completion(selectedRecords.count)
+            RecordManager.shared.suppressNotificationsAfterImport(durationSeconds: postImportNotificationSuppressionSeconds)
+            completion(successCount)
         }
     }
 

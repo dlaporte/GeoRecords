@@ -18,9 +18,15 @@ enum SetupFlowState: Equatable {
 struct LocationHealthBanner: View {
     @ObservedObject var locationManager = LocationManager.shared
     @Binding var isDismissed: Bool
+    var selectedTab: Int
+
+    /// Only show location banner on the Records tab (tag 0) where it's most relevant
+    private var shouldShow: Bool {
+        !locationManager.healthStatus.isHealthy && !isDismissed && selectedTab == 0
+    }
 
     var body: some View {
-        if !locationManager.healthStatus.isHealthy && !isDismissed {
+        if shouldShow {
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
                     Image(systemName: locationManager.healthStatus.icon)
@@ -86,8 +92,8 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                // Location health banner at top
-                LocationHealthBanner(isDismissed: $locationManager.healthBannerDismissed)
+                // Location health banner at top (only shown on Records tab)
+                LocationHealthBanner(isDismissed: $locationManager.healthBannerDismissed, selectedTab: selectedTab)
 
             TabView(selection: $selectedTab) {
                 RecordsView()

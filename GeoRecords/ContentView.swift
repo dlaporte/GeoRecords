@@ -17,12 +17,15 @@ enum SetupFlowState: Equatable {
 
 struct LocationHealthBanner: View {
     @ObservedObject var locationManager = LocationManager.shared
+    @ObservedObject var settings = SettingsManager.shared
     @Binding var isDismissed: Bool
     var selectedTab: Int
 
-    /// Only show location banner on the Records tab (tag 0) where it's most relevant
+    /// Only show location banner on the Records tab after setup is complete
     private var shouldShow: Bool {
-        !locationManager.healthStatus.isHealthy && !isDismissed && selectedTab == 0
+        // Don't show if setup hasn't been completed - user hasn't had a chance to grant permission yet
+        guard settings.hasCompletedSetup else { return false }
+        return !locationManager.healthStatus.isHealthy && !isDismissed && selectedTab == 0
     }
 
     var body: some View {

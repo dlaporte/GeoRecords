@@ -135,7 +135,7 @@ class RecordHistoryManager: ObservableObject {
         do {
             let results = try context.fetch(request)
             if let entry = results.first {
-                let recordType = entry.recordType ?? "Unknown"
+                let recordType = entry.recordType ?? unknownValueString
                 context.delete(entry)
                 try context.save()
                 debugLog("Deleted record: \(recordType) with id: \(recordId)")
@@ -221,7 +221,7 @@ class RecordHistoryManager: ObservableObject {
                     if record.objectID != toKeep?.objectID {
                         context.delete(record)
                         recordsRemoved += 1
-                        debugLog("🗑️ Consolidating: Removed \(record.recordType ?? "Unknown") (\(record.timeFrame ?? "Unknown")) with value \(record.value)")
+                        debugLog("🗑️ Consolidating: Removed \(record.recordType ?? unknownValueString) (\(record.timeFrame ?? unknownValueString)) with value \(record.value)")
                     }
                 }
             }

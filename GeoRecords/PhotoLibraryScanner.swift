@@ -225,7 +225,7 @@ class PhotoLibraryScanner: ObservableObject {
                         // Photo is too high above terrain - likely airplane
                         invalidAssetIds.insert(photo.asset.localIdentifier)
                         // Track location for filtering daily statistics
-                        let locKey = String(format: "%.4f,%.4f", photo.location.coordinate.latitude, photo.location.coordinate.longitude)
+                        let locKey = String(format: coordinatePairFormat, photo.location.coordinate.latitude, photo.location.coordinate.longitude)
                         invalidLocations.insert(locKey)
                         debugLog("✈️ Filtered airplane photo: \(Int(photo.value))m altitude, terrain: \(Int(terrainElevation))m, above: \(Int(altitudeAboveTerrain))m")
                     }
@@ -253,7 +253,7 @@ class PhotoLibraryScanner: ObservableObject {
         // Filter out airplane locations from daily statistics before recording
         if !invalidLocations.isEmpty {
             allLocationsWithDates.removeAll { loc in
-                let locKey = String(format: "%.4f,%.4f", loc.location.coordinate.latitude, loc.location.coordinate.longitude)
+                let locKey = String(format: coordinatePairFormat, loc.location.coordinate.latitude, loc.location.coordinate.longitude)
                 return invalidLocations.contains(locKey)
             }
         }

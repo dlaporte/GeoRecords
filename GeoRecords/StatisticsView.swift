@@ -39,7 +39,7 @@ private func fetchMostExtremeRecord(recordType: String, from startDate: Date, to
     )
 
     // Sort by value to get the most extreme
-    let ascending = recordType == "Furthest South" || recordType == "Furthest West" || recordType == "Furthest Down"
+    let ascending = recordType == RecordType.south.rawValue || recordType == RecordType.west.rawValue || recordType == RecordType.down.rawValue
     request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
     request.fetchLimit = 1
 
@@ -118,8 +118,8 @@ struct StatisticsView: View {
                                     negativeLabel: "S",
                                     data: chartDataForNS,
                                     timeFrame: selectedTimeFrame,
-                                    positiveRecordType: "Furthest North",
-                                    negativeRecordType: "Furthest South",
+                                    positiveRecordType: RecordType.north.rawValue,
+                                    negativeRecordType: RecordType.south.rawValue,
                                     unitSystem: settings.unitSystem
                                 )
 
@@ -134,8 +134,8 @@ struct StatisticsView: View {
                                     negativeLabel: "W",
                                     data: chartDataForEW,
                                     timeFrame: selectedTimeFrame,
-                                    positiveRecordType: "Furthest East",
-                                    negativeRecordType: "Furthest West",
+                                    positiveRecordType: RecordType.east.rawValue,
+                                    negativeRecordType: RecordType.west.rawValue,
                                     unitSystem: settings.unitSystem
                                 )
                             } else {
@@ -160,8 +160,8 @@ struct StatisticsView: View {
                                 negativeLabel: "Below",
                                 data: chartDataForElevationBidirectional,
                                 timeFrame: selectedTimeFrame,
-                                positiveRecordType: "Furthest Up",
-                                negativeRecordType: "Furthest Down",
+                                positiveRecordType: RecordType.up.rawValue,
+                                negativeRecordType: RecordType.down.rawValue,
                                 unitSystem: settings.unitSystem
                             )
                         }
@@ -180,7 +180,7 @@ struct StatisticsView: View {
                                     color: .red,
                                     data: chartDataForDistance,
                                     timeFrame: selectedTimeFrame,
-                                    recordTypeToQuery: "Furthest from Home",
+                                    recordTypeToQuery: RecordType.fromHome.rawValue,
                                     unitSystem: settings.unitSystem
                                 )
                             } else {
@@ -258,7 +258,7 @@ struct StatisticsView: View {
     private var currentElevationFormatted: String {
         guard let range = currentElevation else { return "—" }
         if settings.unitSystem == .imperial {
-            return String(format: "%.0f ft", range * 3.28084)
+            return String(format: "%.0f ft", range * metersToFeet)
         } else {
             return String(format: "%.0f m", range)
         }
@@ -267,9 +267,9 @@ struct StatisticsView: View {
     private var currentDistanceFormatted: String {
         guard let distance = currentDistance else { return "—" }
         if settings.unitSystem == .imperial {
-            return String(format: "%.1f mi", distance / 1609.344)
+            return String(format: "%.1f mi", distance / metersPerMile)
         } else {
-            return String(format: "%.1f km", distance / 1000.0)
+            return String(format: "%.1f km", distance / metersPerKm)
         }
     }
 
@@ -435,7 +435,7 @@ struct StatisticsView: View {
     }
 
     private var chartDataForElevationBidirectional: [BidirectionalChartDataPoint] {
-        let conversionFactor = settings.unitSystem == .imperial ? 3.28084 : 1.0
+        let conversionFactor = settings.unitSystem == .imperial ? metersToFeet : 1.0
 
         switch selectedTimeFrame {
         case .month:
@@ -475,7 +475,7 @@ struct StatisticsView: View {
     }
 
     private var chartDataForDistance: [ChartDataPoint] {
-        let conversionFactor = settings.unitSystem == .imperial ? 1.0 / 1609.344 : 1.0 / 1000.0
+        let conversionFactor = settings.unitSystem == .imperial ? 1.0 / metersPerMile : 1.0 / metersPerKm
 
         switch selectedTimeFrame {
         case .month:
@@ -1042,7 +1042,7 @@ private struct BidirectionalLocationOverlay: View {
     }
 
     private func locationText(for record: RecordHistoryEntry) -> String {
-        if let name = record.locationName, !name.isEmpty, name != "Unknown Location" {
+        if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
             return name
         }
         return String(format: "%.2f, %.2f", record.latitude, record.longitude)
@@ -1076,7 +1076,7 @@ private struct LocationOverlay: View {
                     .font(.caption)
                     .foregroundColor(.red)
 
-                if let locationName = record.locationName, !locationName.isEmpty, locationName != "Unknown Location" {
+                if let locationName = record.locationName, !locationName.isEmpty, locationName != unknownLocationString {
                     Text(locationName)
                         .font(.caption)
                         .lineLimit(1)
@@ -1106,21 +1106,21 @@ private struct LocationOverlay: View {
 
     private func formatValue(_ record: RecordHistoryEntry) -> String {
         switch recordType {
-        case "Furthest North", "Furthest South":
+        case RecordType.north.rawValue, RecordType.south.rawValue:
             return String(format: "%.2f°", record.value)
-        case "Furthest East", "Furthest West":
+        case RecordType.east.rawValue, RecordType.west.rawValue:
             return String(format: "%.2f°", record.value)
-        case "Furthest Up", "Furthest Down":
+        case RecordType.up.rawValue, RecordType.down.rawValue:
             if unitSystem == .imperial {
                 return String(format: "%.0f ft", record.value * metersToFeet)
             } else {
                 return String(format: "%.0f m", record.value)
             }
-        case "Furthest from Home":
+        case RecordType.fromHome.rawValue:
             if unitSystem == .imperial {
-                return String(format: "%.1f mi", record.value / 1609.344)
+                return String(format: "%.1f mi", record.value / metersPerMile)
             } else {
-                return String(format: "%.1f km", record.value / 1000.0)
+                return String(format: "%.1f km", record.value / metersPerKm)
             }
         default:
             return String(format: "%.2f", record.value)

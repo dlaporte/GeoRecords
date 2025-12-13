@@ -69,7 +69,7 @@ struct RecordDetail: Identifiable {
             coordinate: CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude),
             altitude: entry.altitude,
             locationName: entry.locationName,
-            recordType: entry.recordType ?? "Unknown",
+            recordType: entry.recordType ?? unknownValueString,
             timeFrame: timeFrame,
             photoData: entry.photoData,
             notes: entry.notes
@@ -132,7 +132,6 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     // Reusable geocoder instance to prevent memory leaks
     private let geocoder = CLGeocoder()
     private var lastGeocodingTime: Date?
-    private let geocodingThrottleInterval: TimeInterval = 60  // Minimum 60s between geocoding requests
     private var isGeocodingInProgress = false  // Prevent concurrent geocoding requests
 
     override init() {
@@ -228,7 +227,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             // Helper to process records for a timeframe
             func loadRecordsForTimeFrame(entries: [RecordHistoryEntry], timeFrame: TimeFrame) {
                 let grouped = Dictionary(grouping: entries) { entry -> String in
-                    entry.recordType ?? "Unknown"
+                    entry.recordType ?? unknownValueString
                 }
 
                 // Process each record type

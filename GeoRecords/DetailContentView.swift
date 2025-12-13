@@ -80,7 +80,7 @@ struct DetailContentView: View {
     }
 
     private var locationName: String {
-        if let name = record.locationName, !name.isEmpty, name != "Unknown Location" {
+        if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
             return name
         }
         return formattedCoordinates
@@ -169,7 +169,7 @@ struct DetailContentView: View {
                     .lineLimit(1)
 
                 // Location name
-                if let name = record.locationName, !name.isEmpty, name != "Unknown Location" {
+                if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
                     Text(name)
                         .font(.headline)
                         .foregroundColor(.secondary)
@@ -281,7 +281,7 @@ struct DetailContentView: View {
     private var shouldShowAltitude: Bool {
         // Show altitude for elevation records or if altitude is significant
         let type = record.recordType.lowercased()
-        return type.contains("up") || type.contains("down") || abs(record.altitude) > 100
+        return type.contains("up") || type.contains("down") || abs(record.altitude) > altitudeDisplayThreshold
     }
 
     // MARK: - Location Card

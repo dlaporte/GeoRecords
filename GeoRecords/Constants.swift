@@ -254,6 +254,31 @@ func validateLocation(_ location: CLLocation) -> LocationValidationResult {
     )
 }
 
+// MARK: - String Constants
+
+/// Default string for unknown/missing values
+let unknownValueString = "Unknown"
+
+/// Default string for unknown location
+let unknownLocationString = "Unknown Location"
+
+/// Coordinate format precision (4 decimal places ≈ 11 meters accuracy)
+let coordinateFormatPrecision = "%.4f"
+
+/// Coordinate pair format string
+let coordinatePairFormat = "%.4f,%.4f"
+
+// MARK: - Threshold Constants
+
+/// Batch save threshold for DailyStatisticManager
+let dailyStatisticBatchThreshold = 100
+
+/// Geocoding throttle interval in seconds
+let geocodingThrottleInterval: TimeInterval = 60
+
+/// Altitude threshold for showing altitude in detail views (meters)
+let altitudeDisplayThreshold: Double = 100
+
 // MARK: - Photo Import Constants
 
 /// Batch size for processing photos during library scan
@@ -302,6 +327,20 @@ let compactDateFormatter: DateFormatter = {
 let mediumDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateStyle = .medium
+    return formatter
+}()
+
+/// ISO-style date formatter (yyyy-MM-dd) for compact displays
+let isoDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter
+}()
+
+/// 24-hour time formatter (HH:mm) for compact displays
+let time24Formatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "HH:mm"
     return formatter
 }()
 

@@ -9,7 +9,7 @@ import MapKit
 ///   - record: The record to delete
 ///   - recordManager: The record manager to update
 @MainActor
-private func deleteRecordFromStorage(_ record: RecordDetail, recordManager: RecordManager) {
+func deleteRecordFromStorage(_ record: RecordDetail, recordManager: RecordManager) {
     // Delete from Core Data history
     RecordHistoryManager.shared.deleteRecord(recordId: record.id)
 
@@ -26,7 +26,7 @@ private func deleteRecordFromStorage(_ record: RecordDetail, recordManager: Reco
 ///   - notes: The new notes (or nil to clear)
 ///   - recordManager: The record manager to update
 @MainActor
-private func updateRecordNotes(for record: RecordDetail, notes: String?, recordManager: RecordManager) {
+func updateRecordNotes(for record: RecordDetail, notes: String?, recordManager: RecordManager) {
     // Update Core Data
     RecordHistoryManager.shared.updateRecordNotes(recordId: record.id, notes: notes)
 

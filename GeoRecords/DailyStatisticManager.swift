@@ -17,7 +17,7 @@ class DailyStatisticManager: ObservableObject {
 
     /// Track pending changes to batch save
     private var pendingChanges = 0
-    private let batchSaveThreshold = 100
+    private let batchSaveThreshold = dailyStatisticBatchThreshold
 
     /// Cache for DailyStatistic objects during batch operations
     private var statisticCache: [Date: DailyStatistic] = [:]

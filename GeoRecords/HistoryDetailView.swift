@@ -70,18 +70,8 @@ private struct HistoryDetailContent: View {
     }
 
     private func saveNotes(_ notes: String?) {
-        guard let entryId = entry.id,
-              let record = recordDetail else { return }
-
-        // Update Core Data
-        RecordHistoryManager.shared.updateRecordNotes(recordId: entryId, notes: notes)
-
-        // Update in-memory record if this is the current record for its timeframe
-        if var currentRecord = recordManager.getRecord(type: record.recordType, timeFrame: record.timeFrame),
-           currentRecord.id == entryId {
-            currentRecord.notes = notes
-            recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: currentRecord)
-        }
+        guard let record = recordDetail else { return }
+        updateRecordNotes(for: record, notes: notes, recordManager: recordManager)
     }
 }
 
@@ -109,17 +99,7 @@ struct HistoryDetailView: View {
     }
 
     private func saveNotes(_ notes: String?) {
-        guard let entryId = entry.id,
-              let record = recordDetail else { return }
-
-        // Update Core Data
-        RecordHistoryManager.shared.updateRecordNotes(recordId: entryId, notes: notes)
-
-        // Update in-memory record if this is the current record for its timeframe
-        if var currentRecord = recordManager.getRecord(type: record.recordType, timeFrame: record.timeFrame),
-           currentRecord.id == entryId {
-            currentRecord.notes = notes
-            recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: currentRecord)
-        }
+        guard let record = recordDetail else { return }
+        updateRecordNotes(for: record, notes: notes, recordManager: recordManager)
     }
 }

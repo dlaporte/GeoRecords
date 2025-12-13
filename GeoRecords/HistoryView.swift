@@ -157,7 +157,7 @@ struct CompactHistoryRow: View {
     }
 
     private var locationText: String {
-        if let name = entry.locationName, !name.isEmpty, name != "Unknown Location" {
+        if let name = entry.locationName, !name.isEmpty, name != unknownLocationString {
             return name
         }
         return String(format: "%.2f, %.2f", entry.latitude, entry.longitude)
@@ -165,16 +165,12 @@ struct CompactHistoryRow: View {
 
     private var formattedDate: String {
         guard let timestamp = entry.timestamp else { return "—" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: timestamp)
+        return isoDateFormatter.string(from: timestamp)
     }
 
     private var formattedTime: String {
         guard let timestamp = entry.timestamp else { return "" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: timestamp)
+        return time24Formatter.string(from: timestamp)
     }
 
     private var timeFrameAbbrev: String {

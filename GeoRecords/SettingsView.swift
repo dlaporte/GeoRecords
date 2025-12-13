@@ -53,7 +53,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 // MARK: - Notifications Section
-                Section(header: Text("Notifications")) {
+                Section {
                     Toggle("Monthly Records", isOn: $settings.notifyOnMonthlyRecords)
                         .onChange(of: settings.notifyOnMonthlyRecords) { _, _ in
                             settings.saveSettings()
@@ -79,6 +79,40 @@ struct SettingsView: View {
                         .onChange(of: settings.photoPromptsEnabled) { _, _ in
                             settings.saveSettings()
                         }
+
+                    Toggle("Inactivity Reminder", isOn: $settings.inactivityReminderEnabled)
+                        .onChange(of: settings.inactivityReminderEnabled) { _, _ in
+                            settings.saveSettings()
+                            // Reschedule or cancel the reminder
+                            Task { @MainActor in
+                                if settings.inactivityReminderEnabled {
+                                    LocationManager.shared.scheduleInactivityReminder()
+                                } else {
+                                    LocationManager.shared.cancelInactivityReminder()
+                                }
+                            }
+                        }
+
+                    if settings.inactivityReminderEnabled {
+                        Picker("Remind after", selection: $settings.inactivityReminderDays) {
+                            Text("3 days").tag(3)
+                            Text("7 days").tag(7)
+                            Text("14 days").tag(14)
+                            Text("30 days").tag(30)
+                        }
+                        .pickerStyle(MenuPickerStyle())
+                        .onChange(of: settings.inactivityReminderDays) { _, _ in
+                            settings.saveSettings()
+                            // Reschedule with new interval
+                            Task { @MainActor in
+                                LocationManager.shared.scheduleInactivityReminder()
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Inactivity reminder sends a notification if the app hasn't tracked any locations in the selected time period.")
                 }
 
                 // MARK: - iCloud Sync Section

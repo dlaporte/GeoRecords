@@ -12,6 +12,7 @@ import SwiftUI
 struct GeoRecordsWidgetBundle: WidgetBundle {
     var body: some Widget {
         GeoRecordsWidget()
+        SingleRecordWidget()
         GeoRecordsWidgetControl()
         GeoRecordsWidgetLiveActivity()
     }

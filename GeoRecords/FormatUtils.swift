@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import MapKit
 
 /// Shared formatting utilities for GeoRecords app
 enum FormatUtils {
@@ -221,6 +222,25 @@ enum FormatUtils {
     /// - Parameter placemark: The placemark to format
     /// - Returns: Formatted location name (e.g., "San Francisco, CA, United States")
     static func formatPlacemarkName(_ placemark: CLPlacemark) -> String {
+        var components: [String] = []
+
+        if let locality = placemark.locality {
+            components.append(locality)
+        }
+        if let adminArea = placemark.administrativeArea {
+            components.append(adminArea)
+        }
+        if let country = placemark.country {
+            components.append(country)
+        }
+
+        return components.isEmpty ? "Unknown Location" : components.joined(separator: ", ")
+    }
+
+    /// Formats an MKPlacemark into a human-readable location name
+    /// - Parameter placemark: The MKPlacemark to format
+    /// - Returns: Formatted location name (e.g., "San Francisco, CA, United States")
+    static func formatMKPlacemarkName(_ placemark: MKPlacemark) -> String {
         var components: [String] = []
 
         if let locality = placemark.locality {

@@ -237,8 +237,17 @@ struct SetupWizardView: View {
         settings.notifyOnAllTimeRecords = notificationsEnabled
         settings.summaryNotificationsEnabled = summaryNotificationsEnabled
         settings.photoPromptsEnabled = photoPromptsEnabled
+        // Enable inactivity reminder if user granted notification permission
+        settings.inactivityReminderEnabled = notificationsEnabled
         settings.hasCompletedSetup = true
         settings.saveSettings()
+
+        // Schedule inactivity reminder if enabled
+        if notificationsEnabled {
+            Task { @MainActor in
+                LocationManager.shared.scheduleInactivityReminder()
+            }
+        }
 
         // Notification permissions already requested when leaving step 3
 

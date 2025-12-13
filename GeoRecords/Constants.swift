@@ -73,6 +73,10 @@ enum UserDefaultsKey: String {
     case lastInactivityNotification
     case lastFunFactNotification
 
+    // Inactivity reminder
+    case inactivityReminderEnabled
+    case inactivityReminderDays
+
     // Record thresholds
     case minLatitudeDelta
     case minLongitudeDelta
@@ -143,6 +147,7 @@ func distanceBetween(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -
 /// Reverse geocodes a location to get a human-readable name
 /// - Parameter location: The location to geocode
 /// - Returns: Formatted location name or nil if geocoding fails
+@available(iOS, deprecated: 26.0, message: "Use MapKit geocoding when API stabilizes")
 func reverseGeocode(location: CLLocation) async -> String? {
     let geocoder = CLGeocoder()
     do {
@@ -159,6 +164,7 @@ func reverseGeocode(location: CLLocation) async -> String? {
 /// Reverse geocodes a coordinate to get a human-readable name
 /// - Parameter coordinate: The coordinate to geocode
 /// - Returns: Formatted location name or nil if geocoding fails
+@available(iOS, deprecated: 26.0, message: "Use MapKit geocoding when API stabilizes")
 func reverseGeocode(coordinate: CLLocationCoordinate2D) async -> String? {
     let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
     return await reverseGeocode(location: location)

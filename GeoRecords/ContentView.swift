@@ -1,12 +1,73 @@
 import SwiftUI
 import CoreLocation
 
+// MARK: - Location Health Banner
+
+struct LocationHealthBanner: View {
+    @ObservedObject var locationManager = LocationManager.shared
+    @Binding var isDismissed: Bool
+
+    var body: some View {
+        if !locationManager.healthStatus.isHealthy && !isDismissed {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Image(systemName: locationManager.healthStatus.icon)
+                        .font(.title3)
+                        .foregroundColor(locationManager.healthStatus.color)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(locationManager.healthStatus == .disabled(reason: "") ? "Location Disabled" : "Location Issue")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+
+                        Text(locationManager.healthStatus.message)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    Spacer()
+
+                    Button(action: {
+                        locationManager.openSettings()
+                    }) {
+                        Text("Fix")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(locationManager.healthStatus.color)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                    }
+
+                    Button(action: {
+                        withAnimation {
+                            isDismissed = true
+                        }
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(8)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Color(UIColor.secondarySystemBackground))
+            }
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var deepLinkManager: DeepLinkManager
     @EnvironmentObject var recordManager: RecordManager
     @EnvironmentObject var recordHistoryManager: RecordHistoryManager
     @EnvironmentObject var persistenceController: PersistenceController
     @EnvironmentObject var settings: SettingsManager
+    @ObservedObject var locationManager = LocationManager.shared
     @State private var showDatabaseError = false
     @State private var showSetupWizard = false
     @State private var selectedTab = 0
@@ -16,28 +77,33 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-        TabView(selection: $selectedTab) {
-            RecordsView()
-                .tabItem {
-                    Label("Records", systemImage: "doc.text")
-                }
-                .tag(0)
-            HistoryView()
-                .tabItem {
-                    Label("History", systemImage: "clock")
-                }
-                .tag(1)
-            StatisticsView()
-                .tabItem {
-                    Label("Stats", systemImage: "chart.bar.fill")
-                }
-                .tag(2)
-            SettingsView()
-                .tabItem {
-                    Label("Settings", systemImage: "gear")
-                }
-                .tag(3)
-        }
+            VStack(spacing: 0) {
+                // Location health banner at top
+                LocationHealthBanner(isDismissed: $locationManager.healthBannerDismissed)
+
+            TabView(selection: $selectedTab) {
+                RecordsView()
+                    .tabItem {
+                        Label("Records", systemImage: "doc.text")
+                    }
+                    .tag(0)
+                HistoryView()
+                    .tabItem {
+                        Label("History", systemImage: "clock")
+                    }
+                    .tag(1)
+                StatisticsView()
+                    .tabItem {
+                        Label("Stats", systemImage: "chart.bar.fill")
+                    }
+                    .tag(2)
+                SettingsView()
+                    .tabItem {
+                        Label("Settings", systemImage: "gear")
+                    }
+                    .tag(3)
+            }
+        }  // End VStack
         .onAppear {
             // Check if setup needs to be shown or if we should restore from iCloud
             if !settings.hasCompletedSetup && !isCheckingForCloudData {
@@ -47,6 +113,21 @@ struct ContentView: View {
             // Check for database errors on app launch
             if PersistenceController.shared.loadError != nil {
                 showDatabaseError = true
+            }
+
+            // Check location health status
+            locationManager.updateHealthStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            // Re-check health when returning from Settings
+            locationManager.updateHealthStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            // Reschedule inactivity reminder each time app becomes active
+            // This "dead man's switch" approach ensures the notification only fires
+            // if the app hasn't been opened in X days
+            Task { @MainActor in
+                locationManager.scheduleInactivityReminder()
             }
         }
         .onChange(of: deepLinkManager.navigateToStats) { _, shouldNavigate in

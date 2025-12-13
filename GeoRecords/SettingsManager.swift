@@ -15,6 +15,8 @@ protocol SettingsManaging: ObservableObject {
     var notifyOnAllTimeRecords: Bool { get set }
     var summaryNotificationsEnabled: Bool { get set }
     var photoPromptsEnabled: Bool { get set }
+    var inactivityReminderEnabled: Bool { get set }
+    var inactivityReminderDays: Int { get set }
     var minLatitudeDelta: Double { get set }
     var minLongitudeDelta: Double { get set }
     var minAltitudeDeltaMeters: Double { get set }
@@ -39,6 +41,8 @@ class SettingsManager: ObservableObject, SettingsManaging {
     @Published var notifyOnAllTimeRecords: Bool
     @Published var summaryNotificationsEnabled: Bool
     @Published var photoPromptsEnabled: Bool
+    @Published var inactivityReminderEnabled: Bool
+    @Published var inactivityReminderDays: Int
     @Published var minLatitudeDelta: Double
     @Published var minLongitudeDelta: Double
     @Published var homeAddress: String
@@ -82,6 +86,8 @@ class SettingsManager: ObservableObject, SettingsManaging {
     private static let defaultNotifyOnAllTimeRecords = false  // Set by user in wizard
     private static let defaultSummaryNotificationsEnabled = true  // Set by user in wizard
     private static let defaultPhotoPromptsEnabled = true
+    private static let defaultInactivityReminderEnabled = false  // Set by wizard based on notification permission
+    private static let defaultInactivityReminderDays = 7  // Remind after 7 days of inactivity
     private static let defaultMinLatitudeDelta = 0.1  // ~7 miles / 11 km
     private static let defaultMinLongitudeDelta = 0.1  // ~7 miles / 11 km
 
@@ -128,6 +134,10 @@ class SettingsManager: ObservableObject, SettingsManaging {
         }
 
         self.photoPromptsEnabled = defaults.object(forKey: UserDefaultsKey.photoPromptsEnabled.rawValue) as? Bool ?? Self.defaultPhotoPromptsEnabled
+
+        // Load inactivity reminder settings
+        self.inactivityReminderEnabled = defaults.object(forKey: UserDefaultsKey.inactivityReminderEnabled.rawValue) as? Bool ?? Self.defaultInactivityReminderEnabled
+        self.inactivityReminderDays = defaults.object(forKey: UserDefaultsKey.inactivityReminderDays.rawValue) as? Int ?? Self.defaultInactivityReminderDays
 
         // Load summary notifications setting (migrate from old separate settings if needed)
         if let oldMonthlySetting = defaults.object(forKey: UserDefaultsKey.monthlySummaryEnabled.rawValue) as? Bool,
@@ -229,6 +239,8 @@ class SettingsManager: ObservableObject, SettingsManaging {
         defaults.set(notifyOnAllTimeRecords, forKey: UserDefaultsKey.notifyOnAllTimeRecords.rawValue)
         defaults.set(summaryNotificationsEnabled, forKey: UserDefaultsKey.summaryNotificationsEnabled.rawValue)
         defaults.set(photoPromptsEnabled, forKey: UserDefaultsKey.photoPromptsEnabled.rawValue)
+        defaults.set(inactivityReminderEnabled, forKey: UserDefaultsKey.inactivityReminderEnabled.rawValue)
+        defaults.set(inactivityReminderDays, forKey: UserDefaultsKey.inactivityReminderDays.rawValue)
         defaults.set(minLatitudeDelta, forKey: UserDefaultsKey.minLatitudeDelta.rawValue)
         defaults.set(minLongitudeDelta, forKey: UserDefaultsKey.minLongitudeDelta.rawValue)
 
@@ -263,6 +275,8 @@ class SettingsManager: ObservableObject, SettingsManaging {
         notifyOnYearlyRecords = Self.defaultNotifyOnYearlyRecords
         notifyOnAllTimeRecords = Self.defaultNotifyOnAllTimeRecords
         summaryNotificationsEnabled = Self.defaultSummaryNotificationsEnabled
+        inactivityReminderEnabled = Self.defaultInactivityReminderEnabled
+        inactivityReminderDays = Self.defaultInactivityReminderDays
         minLatitudeDelta = Self.defaultMinLatitudeDelta
         minLongitudeDelta = Self.defaultMinLongitudeDelta
 

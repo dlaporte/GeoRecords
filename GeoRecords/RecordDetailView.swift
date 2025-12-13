@@ -2,6 +2,42 @@ import SwiftUI
 import CoreLocation
 import MapKit
 
+// MARK: - Shared Record Operations
+
+/// Deletes a record from Core Data and clears it from in-memory storage
+/// - Parameters:
+///   - record: The record to delete
+///   - recordManager: The record manager to update
+@MainActor
+private func deleteRecordFromStorage(_ record: RecordDetail, recordManager: RecordManager) {
+    // Delete from Core Data history
+    RecordHistoryManager.shared.deleteRecord(recordId: record.id)
+
+    // Clear from RecordManager in-memory
+    recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: nil)
+
+    // Reload records from history to get the next best record
+    recordManager.loadRecordsFromHistory()
+}
+
+/// Updates notes for a record in both Core Data and in-memory storage
+/// - Parameters:
+///   - record: The record to update
+///   - notes: The new notes (or nil to clear)
+///   - recordManager: The record manager to update
+@MainActor
+private func updateRecordNotes(for record: RecordDetail, notes: String?, recordManager: RecordManager) {
+    // Update Core Data
+    RecordHistoryManager.shared.updateRecordNotes(recordId: record.id, notes: notes)
+
+    // Update in-memory record if it's the current one
+    if var updatedRecord = recordManager.getRecord(type: record.recordType, timeFrame: record.timeFrame),
+       updatedRecord.id == record.id {
+        updatedRecord.notes = notes
+        recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: updatedRecord)
+    }
+}
+
 // MARK: - Record Detail Pager
 
 struct RecordDetailPager: View {
@@ -57,15 +93,7 @@ struct RecordDetailPager: View {
     }
 
     private func deleteRecord(_ record: RecordDetail) {
-        // Delete from Core Data history
-        RecordHistoryManager.shared.deleteRecord(recordId: record.id)
-
-        // Clear from RecordManager in-memory
-        recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: nil)
-
-        // Reload records from history
-        recordManager.loadRecordsFromHistory()
-
+        deleteRecordFromStorage(record, recordManager: recordManager)
         dismiss()
     }
 }
@@ -93,12 +121,7 @@ private struct RecordDetailContent: View {
     }
 
     private func saveNotes(_ notes: String?) {
-        RecordHistoryManager.shared.updateRecordNotes(recordId: record.id, notes: notes)
-
-        if var updatedRecord = recordManager.getRecord(type: record.recordType, timeFrame: record.timeFrame) {
-            updatedRecord.notes = notes
-            recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: updatedRecord)
-        }
+        updateRecordNotes(for: record, notes: notes, recordManager: recordManager)
     }
 }
 
@@ -135,26 +158,11 @@ struct RecordDetailView: View {
     }
 
     private func saveNotes(_ notes: String?) {
-        // Update Core Data
-        RecordHistoryManager.shared.updateRecordNotes(recordId: record.id, notes: notes)
-
-        // Update in-memory record
-        if var updatedRecord = recordManager.getRecord(type: record.recordType, timeFrame: record.timeFrame) {
-            updatedRecord.notes = notes
-            recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: updatedRecord)
-        }
+        updateRecordNotes(for: record, notes: notes, recordManager: recordManager)
     }
 
     private func deleteRecord() {
-        // Delete from Core Data history
-        RecordHistoryManager.shared.deleteRecord(recordId: record.id)
-
-        // Clear from RecordManager in-memory using the helper method
-        recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: nil)
-
-        // Reload records from history to get the next best record
-        recordManager.loadRecordsFromHistory()
-
+        deleteRecordFromStorage(record, recordManager: recordManager)
         dismiss()
     }
 }

@@ -3,14 +3,6 @@ import Photos
 import CoreLocation
 import UIKit
 
-// MARK: - Elevation Validation Constants
-
-/// Minimum photo altitude to trigger terrain validation (3000ft in meters)
-private let elevationValidationThreshold: Double = 914.4  // 3000ft
-
-/// Maximum allowed altitude above terrain before photo is rejected (1500ft in meters)
-private let maxAltitudeAboveTerrain: Double = 457.2  // 1500ft
-
 // MARK: - Open-Elevation API
 
 /// Fetches terrain elevation for coordinates using Open-Elevation API
@@ -170,10 +162,10 @@ class PhotoLibraryScanner: ObservableObject {
                     let lon = location.coordinate.longitude
                     let alt = location.altitude
 
-                    // Skip photos with (0, 0) coordinates and zero altitude - these are placeholder values
-                    // for photos without real GPS data
-                    let isNullIsland = abs(lat) < 0.01 && abs(lon) < 0.01 && abs(alt) < 1.0
-                    if isNullIsland {
+                    // Skip invalid locations (Null Island or unrealistic altitude)
+                    if case .valid = validateLocation(latitude: lat, longitude: lon, altitude: alt) {
+                        // Location is valid, continue processing
+                    } else {
                         continue
                     }
 
@@ -207,9 +199,9 @@ class PhotoLibraryScanner: ObservableObject {
         // Validate high-altitude photos against terrain elevation
         // This filters out airplane photos while keeping legitimate mountain/building photos
         var invalidLocations: Set<String> = []  // Key: "lat,lon" for matching
-        let highAltitudePhotos = upCandidates.filter { $0.value > elevationValidationThreshold }
+        let highAltitudePhotos = upCandidates.filter { $0.value > terrainValidationAltitudeThreshold }
         if !highAltitudePhotos.isEmpty {
-            debugLog("⛰️ Validating \(highAltitudePhotos.count) high-altitude photos (>\(Int(elevationValidationThreshold))m)...")
+            debugLog("⛰️ Validating \(highAltitudePhotos.count) high-altitude photos (>\(Int(terrainValidationAltitudeThreshold))m)...")
 
             // Batch validate in groups of 100 (API limit)
             var invalidAssetIds: Set<String> = []
@@ -229,7 +221,7 @@ class PhotoLibraryScanner: ObservableObject {
                     }
 
                     let altitudeAboveTerrain = photo.value - terrainElevation
-                    if altitudeAboveTerrain > maxAltitudeAboveTerrain {
+                    if altitudeAboveTerrain > maxAltitudeAboveTerrainMeters {
                         // Photo is too high above terrain - likely airplane
                         invalidAssetIds.insert(photo.asset.localIdentifier)
                         // Track location for filtering daily statistics

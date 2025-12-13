@@ -26,24 +26,21 @@ class DailyStatisticManager: ObservableObject {
     /// Call this whenever a new location is received (real-time or photo import)
     /// Set batchMode=true when importing many records to defer saves
     func recordLocation(_ location: CLLocation, date: Date? = nil, homeCoordinate: CLLocationCoordinate2D?, batchMode: Bool = false) {
+        // Validate location before recording
+        switch validateLocation(location) {
+        case .nullIsland:
+            debugLog("⚠️ Skipping Null Island location for daily statistics")
+            return
+        case .unrealisticAltitude(let meters):
+            debugLog("⚠️ Skipping unrealistic altitude (\(Int(meters))m) for daily statistics - likely airplane")
+            return
+        case .valid:
+            break
+        }
+
         let latitude = location.coordinate.latitude
         let longitude = location.coordinate.longitude
         let altitude = location.altitude
-
-        // Skip "Null Island" locations (0,0 with ~0 altitude) - these are placeholder values
-        let isNullIsland = abs(latitude) < 0.01 && abs(longitude) < 0.01 && abs(altitude) < 1.0
-        if isNullIsland {
-            debugLog("⚠️ Skipping Null Island location for daily statistics")
-            return
-        }
-
-        // Skip unrealistic altitudes (likely airplane or bad GPS data)
-        // Mount Everest is 8,849m - anything above 9,000m is not a ground location
-        let maxRealisticAltitude: Double = 9000.0  // meters
-        if altitude > maxRealisticAltitude {
-            debugLog("⚠️ Skipping unrealistic altitude (\(Int(altitude))m) for daily statistics - likely airplane")
-            return
-        }
 
         let targetDate = date ?? Date()
         let dayStart = Calendar.current.startOfDay(for: targetDate)

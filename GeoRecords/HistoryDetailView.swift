@@ -54,36 +54,33 @@ struct HistoryDetailPager: View {
 private struct HistoryDetailContent: View {
     let entry: RecordHistoryEntry
     @EnvironmentObject var settings: SettingsManager
+    @EnvironmentObject var recordManager: RecordManager
 
-    private var recordDetail: RecordDetail {
-        let timeFrame: TimeFrame
-        if let tf = entry.timeFrame {
-            timeFrame = TimeFrame(rawValue: tf) ?? .allTime
-        } else {
-            timeFrame = .allTime
-        }
-
-        return RecordDetail(
-            id: entry.id ?? UUID(),
-            value: entry.value,
-            timestamp: entry.timestamp ?? Date(),
-            coordinate: CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude),
-            altitude: entry.altitude,
-            locationName: entry.locationName,
-            recordType: entry.recordType ?? "Unknown",
-            timeFrame: timeFrame,
-            photoData: entry.photoData,
-            notes: entry.notes
-        )
+    private var recordDetail: RecordDetail? {
+        RecordDetail(from: entry)
     }
 
     var body: some View {
-        DetailContentView(record: recordDetail, onSaveNotes: saveNotes)
+        if let record = recordDetail {
+            DetailContentView(record: record, onSaveNotes: saveNotes)
+        } else {
+            Text("Unable to load record details")
+                .foregroundColor(.secondary)
+        }
     }
 
     private func saveNotes(_ notes: String?) {
-        if let entryId = entry.id {
-            RecordHistoryManager.shared.updateRecordNotes(recordId: entryId, notes: notes)
+        guard let entryId = entry.id,
+              let record = recordDetail else { return }
+
+        // Update Core Data
+        RecordHistoryManager.shared.updateRecordNotes(recordId: entryId, notes: notes)
+
+        // Update in-memory record if this is the current record for its timeframe
+        if var currentRecord = recordManager.getRecord(type: record.recordType, timeFrame: record.timeFrame),
+           currentRecord.id == entryId {
+            currentRecord.notes = notes
+            recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: currentRecord)
         }
     }
 }
@@ -93,38 +90,36 @@ private struct HistoryDetailContent: View {
 struct HistoryDetailView: View {
     let entry: RecordHistoryEntry
     @EnvironmentObject var settings: SettingsManager
+    @EnvironmentObject var recordManager: RecordManager
 
-    private var recordDetail: RecordDetail {
-        let timeFrame: TimeFrame
-        if let tf = entry.timeFrame {
-            timeFrame = TimeFrame(rawValue: tf) ?? .allTime
-        } else {
-            timeFrame = .allTime
-        }
-
-        return RecordDetail(
-            id: entry.id ?? UUID(),
-            value: entry.value,
-            timestamp: entry.timestamp ?? Date(),
-            coordinate: CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude),
-            altitude: entry.altitude,
-            locationName: entry.locationName,
-            recordType: entry.recordType ?? "Unknown",
-            timeFrame: timeFrame,
-            photoData: entry.photoData,
-            notes: entry.notes
-        )
+    private var recordDetail: RecordDetail? {
+        RecordDetail(from: entry)
     }
 
     var body: some View {
-        DetailContentView(record: recordDetail, onSaveNotes: saveNotes)
-            .navigationTitle(entry.recordType ?? "Detail")
+        Group {
+            if let record = recordDetail {
+                DetailContentView(record: record, onSaveNotes: saveNotes)
+            } else {
+                Text("Unable to load record details")
+                    .foregroundColor(.secondary)
+            }
+        }
+        .navigationTitle(entry.recordType ?? "Detail")
     }
 
     private func saveNotes(_ notes: String?) {
+        guard let entryId = entry.id,
+              let record = recordDetail else { return }
+
         // Update Core Data
-        if let entryId = entry.id {
-            RecordHistoryManager.shared.updateRecordNotes(recordId: entryId, notes: notes)
+        RecordHistoryManager.shared.updateRecordNotes(recordId: entryId, notes: notes)
+
+        // Update in-memory record if this is the current record for its timeframe
+        if var currentRecord = recordManager.getRecord(type: record.recordType, timeFrame: record.timeFrame),
+           currentRecord.id == entryId {
+            currentRecord.notes = notes
+            recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: currentRecord)
         }
     }
 }

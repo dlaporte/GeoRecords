@@ -185,6 +185,75 @@ let wideMapLonDelta = 2.0
 /// Screen height threshold for compact layout (iPhone 14/15 and smaller)
 let compactScreenHeightThreshold: CGFloat = 850
 
+// MARK: - Location Validation Constants
+
+/// Threshold for detecting "Null Island" (0,0) coordinates - approximately 1km
+let nullIslandCoordinateThreshold = 0.01
+
+/// Threshold for detecting zero altitude at Null Island
+let nullIslandAltitudeThreshold = 1.0
+
+/// Maximum realistic altitude on Earth (meters) - Mount Everest is 8,849m
+let maxRealisticAltitudeMeters = 9000.0
+
+/// Minimum altitude to trigger terrain validation during photo import (3000ft in meters)
+let terrainValidationAltitudeThreshold = 914.4
+
+/// Maximum allowed altitude above terrain before rejecting (1500ft in meters)
+let maxAltitudeAboveTerrainMeters = 457.2
+
+/// Coordinate tolerance for duplicate detection (approximately 1 meter)
+let duplicateCoordinateTolerance = 0.00001
+
+/// Value tolerance for duplicate detection
+let duplicateValueTolerance = 0.0001
+
+/// Time tolerance for duplicate detection (in seconds)
+let duplicateTimeTolerance: TimeInterval = 1.0
+
+// MARK: - Location Validation Utilities
+
+/// Result of location validation
+enum LocationValidationResult {
+    case valid
+    case nullIsland
+    case unrealisticAltitude(meters: Double)
+}
+
+/// Validates a location for recording
+/// - Parameters:
+///   - latitude: The latitude coordinate
+///   - longitude: The longitude coordinate
+///   - altitude: The altitude in meters
+/// - Returns: Validation result indicating if location is valid or why it's invalid
+func validateLocation(latitude: Double, longitude: Double, altitude: Double) -> LocationValidationResult {
+    // Check for "Null Island" (0,0 with ~0 altitude) - placeholder values for missing GPS
+    let isNullIsland = abs(latitude) < nullIslandCoordinateThreshold &&
+                       abs(longitude) < nullIslandCoordinateThreshold &&
+                       abs(altitude) < nullIslandAltitudeThreshold
+    if isNullIsland {
+        return .nullIsland
+    }
+
+    // Check for unrealistic altitudes (above Mount Everest)
+    if altitude > maxRealisticAltitudeMeters {
+        return .unrealisticAltitude(meters: altitude)
+    }
+
+    return .valid
+}
+
+/// Validates a CLLocation for recording
+/// - Parameter location: The location to validate
+/// - Returns: Validation result indicating if location is valid or why it's invalid
+func validateLocation(_ location: CLLocation) -> LocationValidationResult {
+    return validateLocation(
+        latitude: location.coordinate.latitude,
+        longitude: location.coordinate.longitude,
+        altitude: location.altitude
+    )
+}
+
 // MARK: - Photo Import Constants
 
 /// Batch size for processing photos during library scan

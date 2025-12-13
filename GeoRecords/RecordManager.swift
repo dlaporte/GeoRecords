@@ -444,23 +444,21 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             break
         }
 
-        // Skip "Null Island" locations (0,0 with ~0 altitude) - these are placeholder values
+        // Validate location before processing
+        switch validateLocation(location) {
+        case .nullIsland:
+            debugLog("⚠️ Skipping Null Island location - invalid GPS data")
+            return
+        case .unrealisticAltitude(let meters):
+            debugLog("⚠️ Skipping unrealistic altitude (\(Int(meters))m) - likely airplane or bad GPS")
+            return
+        case .valid:
+            break
+        }
+
         let lat = location.coordinate.latitude
         let lon = location.coordinate.longitude
         let alt = location.altitude
-        let isNullIsland = abs(lat) < 0.01 && abs(lon) < 0.01 && abs(alt) < 1.0
-        if isNullIsland {
-            debugLog("⚠️ Skipping Null Island location - invalid GPS data")
-            return
-        }
-
-        // Skip unrealistic altitudes (likely airplane or bad GPS data)
-        // Mount Everest is 8,849m - anything above 9,000m is not a ground location
-        let maxRealisticAltitude: Double = 9000.0  // meters
-        if alt > maxRealisticAltitude {
-            debugLog("⚠️ Skipping unrealistic altitude (\(Int(alt))m) - likely airplane or bad GPS")
-            return
-        }
 
         let previousState = updateState
         updateState = .updating(pendingQueue: [])

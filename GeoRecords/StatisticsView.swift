@@ -3,6 +3,76 @@ import Charts
 import CoreData
 import CoreLocation
 
+// MARK: - Chart Display Constants
+
+/// Data count threshold for reducing x-axis labels in monthly view
+private let monthlyLabelThreshold = 15
+
+/// Data count threshold for reducing x-axis labels in yearly/all-time view
+private let yearlyLabelThreshold = 10
+
+/// Show every Nth label in monthly view when crowded
+private let monthlyLabelInterval = 5
+
+/// Show years divisible by this in all-time view (e.g., 2000, 2005, 2010)
+private let allTimeLabelInterval = 5
+
+/// Y-axis padding percentage for standard charts
+private let chartYAxisPadding = 0.1
+
+/// Y-axis padding percentage for bidirectional charts
+private let bidirectionalChartYAxisPadding = 0.15
+
+// MARK: - Shared Chart Helpers
+
+/// Fetches the most extreme record for a given type and date range
+/// Used by chart cards to display location info when dragging
+private func fetchMostExtremeRecord(recordType: String, from startDate: Date, to endDate: Date) -> RecordHistoryEntry? {
+    let context = PersistenceController.shared.container.viewContext
+    let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+    request.predicate = NSPredicate(
+        format: "recordType == %@ AND timestamp >= %@ AND timestamp <= %@",
+        recordType,
+        startDate as NSDate,
+        endDate as NSDate
+    )
+
+    // Sort by value to get the most extreme
+    let ascending = recordType == "Furthest South" || recordType == "Furthest West" || recordType == "Furthest Down"
+    request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
+    request.fetchLimit = 1
+
+    do {
+        return try context.fetch(request).first
+    } catch {
+        debugLog("Error fetching record for chart: \(error.localizedDescription)")
+        return nil
+    }
+}
+
+/// Determines if an x-axis label should be shown to avoid overcrowding
+/// - Parameters:
+///   - value: The axis value to check
+///   - dataCount: Total number of data points
+///   - timeFrame: Current time frame being displayed
+/// - Returns: Whether to show this label
+private func shouldShowXAxisLabel(for value: AxisValue, dataCount: Int, timeFrame: TimeFrame) -> Bool {
+    // For monthly view (day-by-day), show every 5th day
+    if timeFrame == .month && dataCount > monthlyLabelThreshold {
+        if let label = value.as(String.self), let day = Int(label) {
+            return day % monthlyLabelInterval == 1 || day == dataCount
+        }
+    }
+    // For all-time view (year-by-year), show every 5th year (2000, 2005, 2010...)
+    if timeFrame == .allTime && dataCount > yearlyLabelThreshold {
+        if let label = value.as(String.self), let year = Int(label) {
+            return year % allTimeLabelInterval == 0
+        }
+    }
+    return true
+}
+
 struct StatisticsView: View {
     @EnvironmentObject var settings: SettingsManager
     @State private var selectedTimeFrame: TimeFrame = .allTime
@@ -512,13 +582,13 @@ struct StatChartCard: View {
     @State private var recordCache: [String: RecordHistoryEntry] = [:]  // Cache by label
     @State private var dragLocation: CGFloat = 0
 
-    // Computed Y-axis range with 10% padding
+    // Computed Y-axis range with padding
     private var yAxisRange: ClosedRange<Double> {
         let values = data.map { $0.value }
         let minVal = values.min() ?? 0
         let maxVal = values.max() ?? 1
         let range = maxVal - minVal
-        let padding = range * 0.1
+        let padding = range * chartYAxisPadding
         // Ensure minimum is 0 for distance charts, add padding otherwise
         let lowerBound = max(0, minVal - padding)
         let upperBound = maxVal + padding
@@ -580,7 +650,7 @@ struct StatChartCard: View {
                 }
                 .chartXAxis {
                     AxisMarks(values: .automatic) { value in
-                        if shouldShowXAxisLabel(for: value, in: data) {
+                        if shouldShowXAxisLabel(for: value, dataCount: data.count, timeFrame: timeFrame) {
                             AxisValueLabel()
                                 .font(.caption2)
                         }
@@ -682,47 +752,6 @@ struct StatChartCard: View {
         }
     }
 
-    private func fetchMostExtremeRecord(recordType: String, from startDate: Date, to endDate: Date) -> RecordHistoryEntry? {
-        let context = PersistenceController.shared.container.viewContext
-        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-
-        request.predicate = NSPredicate(
-            format: "recordType == %@ AND timestamp >= %@ AND timestamp <= %@",
-            recordType,
-            startDate as NSDate,
-            endDate as NSDate
-        )
-
-        // Sort by value to get the most extreme
-        let ascending = recordType == "Furthest South" || recordType == "Furthest West" || recordType == "Furthest Down"
-        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
-        request.fetchLimit = 1
-
-        do {
-            let results = try context.fetch(request)
-            return results.first
-        } catch {
-            debugLog("Error fetching record for chart: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    /// Determine if we should show the x-axis label to avoid overcrowding
-    private func shouldShowXAxisLabel(for value: AxisValue, in data: [ChartDataPoint]) -> Bool {
-        // For monthly view (day-by-day), show every 5th day
-        if timeFrame == .month && data.count > 15 {
-            if let label = value.as(String.self), let day = Int(label) {
-                return day % 5 == 1 || day == data.count
-            }
-        }
-        // For all-time view (year-by-year), show every 5th year (2000, 2005, 2010...)
-        if timeFrame == .allTime && data.count > 10 {
-            if let label = value.as(String.self), let year = Int(label) {
-                return year % 5 == 0
-            }
-        }
-        return true
-    }
 }
 
 // MARK: - Bidirectional Stat Chart Card (for N/S, E/W, Up/Down)
@@ -755,7 +784,7 @@ struct BidirectionalStatChartCard: View {
 
         // Calculate range and add symmetric padding
         let absMax = max(abs(maxPositive), abs(minNegative))
-        let padding = absMax * 0.15
+        let padding = absMax * bidirectionalChartYAxisPadding
 
         // If data is roughly symmetric around zero, make the axis symmetric
         if maxPositive > 0 && minNegative < 0 {
@@ -858,7 +887,7 @@ struct BidirectionalStatChartCard: View {
                 }
                 .chartXAxis {
                     AxisMarks(values: .automatic) { value in
-                        if shouldShowXAxisLabel(for: value, in: data) {
+                        if shouldShowXAxisLabel(for: value, dataCount: data.count, timeFrame: timeFrame) {
                             AxisValueLabel()
                                 .font(.caption2)
                         }
@@ -954,42 +983,6 @@ struct BidirectionalStatChartCard: View {
         }
     }
 
-    private func fetchMostExtremeRecord(recordType: String, from startDate: Date, to endDate: Date) -> RecordHistoryEntry? {
-        let context = PersistenceController.shared.container.viewContext
-        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-
-        request.predicate = NSPredicate(
-            format: "recordType == %@ AND timestamp >= %@ AND timestamp <= %@",
-            recordType,
-            startDate as NSDate,
-            endDate as NSDate
-        )
-
-        let ascending = recordType == "Furthest South" || recordType == "Furthest West" || recordType == "Furthest Down"
-        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
-        request.fetchLimit = 1
-
-        do {
-            return try context.fetch(request).first
-        } catch {
-            debugLog("Error fetching record for chart: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    private func shouldShowXAxisLabel(for value: AxisValue, in data: [BidirectionalChartDataPoint]) -> Bool {
-        if timeFrame == .month && data.count > 15 {
-            if let label = value.as(String.self), let day = Int(label) {
-                return day % 5 == 1 || day == data.count
-            }
-        }
-        if timeFrame == .allTime && data.count > 10 {
-            if let label = value.as(String.self), let year = Int(label) {
-                return year % 5 == 0
-            }
-        }
-        return true
-    }
 }
 
 // MARK: - Bidirectional Location Overlay

@@ -47,20 +47,15 @@ class RecordHistoryManager: ObservableObject {
     private func recordExists(recordType: String, detail: RecordDetail) -> Bool {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
-        // Define tolerance for coordinate comparison (about 1 meter)
-        let coordinateTolerance = 0.00001
-        let valueTolerance = 0.0001
-        let timeTolerance: TimeInterval = 1.0 // 1 second
-
-        // Calculate date range for comparison
-        let timestampMin = detail.timestamp.addingTimeInterval(-timeTolerance)
-        let timestampMax = detail.timestamp.addingTimeInterval(timeTolerance)
-        let valueMin = detail.value - valueTolerance
-        let valueMax = detail.value + valueTolerance
-        let latMin = detail.coordinate.latitude - coordinateTolerance
-        let latMax = detail.coordinate.latitude + coordinateTolerance
-        let lonMin = detail.coordinate.longitude - coordinateTolerance
-        let lonMax = detail.coordinate.longitude + coordinateTolerance
+        // Calculate date range for comparison using shared tolerance constants
+        let timestampMin = detail.timestamp.addingTimeInterval(-duplicateTimeTolerance)
+        let timestampMax = detail.timestamp.addingTimeInterval(duplicateTimeTolerance)
+        let valueMin = detail.value - duplicateValueTolerance
+        let valueMax = detail.value + duplicateValueTolerance
+        let latMin = detail.coordinate.latitude - duplicateCoordinateTolerance
+        let latMax = detail.coordinate.latitude + duplicateCoordinateTolerance
+        let lonMin = detail.coordinate.longitude - duplicateCoordinateTolerance
+        let lonMax = detail.coordinate.longitude + duplicateCoordinateTolerance
 
         // Match records with same type, timeframe, timestamp (within 1 second), and similar coordinates
         request.predicate = NSPredicate(

@@ -15,6 +15,11 @@ enum LocationHealthStatus: Equatable {
         return false
     }
 
+    var isDisabled: Bool {
+        if case .disabled = self { return true }
+        return false
+    }
+
     var message: String {
         switch self {
         case .healthy:
@@ -61,6 +66,9 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// Whether the user has dismissed the health banner
     @Published var healthBannerDismissed: Bool = false
 
+    /// Cached authorization status to avoid blocking main thread
+    private var cachedAuthorizationStatus: CLAuthorizationStatus?
+
     override init() {
         super.init()
         debugLog("LocationManager initialized")
@@ -79,22 +87,22 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         // Don't request authorization automatically - wait for user to start wizard
         // Start monitoring will begin after authorization is granted
 
-        // Check health status on init
-        updateHealthStatus()
+        // Check health status asynchronously to avoid blocking main thread
+        Task {
+            await updateHealthStatusAsync()
+        }
     }
 
     // MARK: - Health Check
 
     /// Check and update the overall health status of location services
+    /// This synchronous version uses cached values when possible
     func updateHealthStatus() {
-        // Check if location services are enabled globally
-        guard CLLocationManager.locationServicesEnabled() else {
-            healthStatus = .disabled(reason: "Location Services are turned off. Enable them in Settings → Privacy & Security → Location Services.")
-            return
-        }
+        // Use cached auth status if available, otherwise get current
+        let authStatus = cachedAuthorizationStatus ?? locationManager.authorizationStatus
+        cachedAuthorizationStatus = authStatus
 
-        // Check authorization status
-        let authStatus = locationManager.authorizationStatus
+        // Check authorization status first (doesn't block)
         switch authStatus {
         case .notDetermined:
             healthStatus = .disabled(reason: "Location permission not yet requested. Complete the setup wizard to enable tracking.")
@@ -126,6 +134,23 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         // All checks passed
         healthStatus = .healthy
         healthBannerDismissed = false  // Reset dismissal when healthy
+    }
+
+    /// Async version that checks locationServicesEnabled on background thread
+    @MainActor
+    func updateHealthStatusAsync() async {
+        // Check if location services are enabled globally (can block, so run on background)
+        let servicesEnabled = await Task.detached {
+            CLLocationManager.locationServicesEnabled()
+        }.value
+
+        guard servicesEnabled else {
+            healthStatus = .disabled(reason: "Location Services are turned off. Enable them in Settings → Privacy & Security → Location Services.")
+            return
+        }
+
+        // Now check the rest synchronously (these don't block)
+        updateHealthStatus()
     }
 
     /// Open the app's settings page
@@ -245,6 +270,9 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        // Update cached status
+        cachedAuthorizationStatus = manager.authorizationStatus
+
         switch manager.authorizationStatus {
         case .authorizedAlways:
             debugLog("✅ Always authorization granted - background tracking enabled")

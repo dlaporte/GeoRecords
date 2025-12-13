@@ -299,7 +299,7 @@ struct NotificationsStepView: View {
                 Text("Record Notifications")
                     .font(.system(size: 28, weight: .bold))
 
-                Text("Get notified when you break all-time records")
+                Text("Get notified when you break records")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -308,7 +308,7 @@ struct NotificationsStepView: View {
             VStack(spacing: 16) {
                 NotificationToggleCard(
                     title: "Enable Notifications",
-                    subtitle: "Receive alerts when you set new all-time records",
+                    subtitle: "Receive alerts for yearly and all-time records",
                     icon: "bell.fill",
                     isEnabled: $notificationsEnabled
                 )

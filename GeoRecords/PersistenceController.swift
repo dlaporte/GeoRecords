@@ -132,11 +132,25 @@ class PersistenceController: ObservableObject {
 
     func attemptDatabaseRecovery(storeURL: URL) {
         debugLog("User approved database recovery. Removing corrupted store at: \(storeURL)")
-        try? FileManager.default.removeItem(at: storeURL)
+
+        // Remove corrupted store with explicit error handling
+        do {
+            try FileManager.default.removeItem(at: storeURL)
+            debugLog("✅ Successfully removed corrupted database file")
+        } catch {
+            debugLog("⚠️ Failed to remove corrupted database: \(error.localizedDescription)")
+            // Continue anyway - the store might not exist or might be removed on retry
+        }
 
         // Create backup file to indicate deletion happened
         let backupMarker = storeURL.deletingLastPathComponent().appendingPathComponent("database_was_reset.txt")
-        try? "Database was reset on \(Date())".write(to: backupMarker, atomically: true, encoding: .utf8)
+        do {
+            try "Database was reset on \(Date())".write(to: backupMarker, atomically: true, encoding: .utf8)
+            debugLog("✅ Created database reset marker file")
+        } catch {
+            debugLog("⚠️ Failed to create reset marker file: \(error.localizedDescription)")
+            // Non-critical, continue with recovery
+        }
 
         // Retry loading
         container.loadPersistentStores { [weak self] retryDescription, retryError in
@@ -185,15 +199,54 @@ class PersistenceController: ObservableObject {
     }
 
     /// Throwing version of hasExistingCloudData for proper error handling
+    /// Waits for initial CloudKit sync to complete before checking
     func hasExistingCloudDataThrowing() async throws -> Bool {
-        let context = container.viewContext
-        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-        request.fetchLimit = 1
+        // Wait for CloudKit to complete initial import (up to 15 seconds)
+        let maxWaitTime: TimeInterval = 15.0
+        let checkInterval: TimeInterval = 0.3
+        var waitedTime: TimeInterval = 0
+        var syncStarted = false
 
-        let count = try await context.perform {
-            try context.count(for: request)
+        // Wait for sync to start and then complete
+        while waitedTime < maxWaitTime {
+            let currentlySyncing = await MainActor.run(body: { self.isSyncing })
+
+            if currentlySyncing {
+                syncStarted = true
+                debugLog("☁️ Waiting for CloudKit sync to complete...")
+                try await Task.sleep(nanoseconds: UInt64(checkInterval * 1_000_000_000))
+                waitedTime += checkInterval
+                continue
+            }
+
+            // Sync finished (or not started yet) - check if we have data
+            let context = container.viewContext
+            let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+            request.fetchLimit = 1
+
+            let count = try await context.perform {
+                try context.count(for: request)
+            }
+            debugLog("☁️ Found \(count) record(s) in local database (after \(String(format: "%.1f", waitedTime))s)")
+
+            if count > 0 {
+                return true
+            }
+
+            // If sync already started and completed with no data, we're done
+            if syncStarted {
+                debugLog("☁️ CloudKit sync completed but no data found")
+                return false
+            }
+
+            // No data yet and sync hasn't started - wait a bit more
+            if waitedTime < maxWaitTime {
+                try await Task.sleep(nanoseconds: UInt64(checkInterval * 1_000_000_000))
+                waitedTime += checkInterval
+            }
         }
-        debugLog("☁️ Found \(count) record(s) in local database")
-        return count > 0
+
+        debugLog("☁️ No data found after waiting \(maxWaitTime)s for CloudKit sync")
+        return false
     }
 }

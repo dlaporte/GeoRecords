@@ -122,7 +122,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     /// Unified state for record updates and notifications
     private enum UpdateState {
         case idle
-        case updating(pending: CLLocation?)
+        case updating(pendingQueue: [CLLocation])
         case suppressingNotifications(until: Date)
         case blockingAlerts  // During photo import
     }
@@ -432,9 +432,9 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     func updateRecords(with location: CLLocation, reverseGeocodedName: String? = nil) {
         // Serialize updates to prevent race conditions
         switch updateState {
-        case .updating:
-            // Already updating, queue this location
-            updateState = .updating(pending: location)
+        case .updating(let pendingQueue):
+            // Already updating, add to queue
+            updateState = .updating(pendingQueue: pendingQueue + [location])
             return
         case .blockingAlerts, .suppressingNotifications:
             // Don't interrupt these states
@@ -445,19 +445,23 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         }
 
         let previousState = updateState
-        updateState = .updating(pending: nil)
+        updateState = .updating(pendingQueue: [])
         defer {
-            // Process pending update if any
-            if case .updating(let pending) = updateState, let pendingLocation = pending {
-                updateRecords(with: pendingLocation, reverseGeocodedName: reverseGeocodedName)
-            } else {
-                // Restore previous state if it wasn't .idle or .updating
-                switch previousState {
-                case .suppressingNotifications, .blockingAlerts:
-                    updateState = previousState
-                default:
-                    updateState = .idle
+            // Process all pending updates
+            if case .updating(let pendingQueue) = updateState, !pendingQueue.isEmpty {
+                // Process each queued location
+                for pendingLocation in pendingQueue {
+                    // Reset state for each iteration
+                    updateState = .updating(pendingQueue: [])
+                    updateRecords(with: pendingLocation, reverseGeocodedName: nil)
                 }
+            }
+            // Restore previous state if it wasn't .idle or .updating
+            switch previousState {
+            case .suppressingNotifications, .blockingAlerts:
+                updateState = previousState
+            default:
+                updateState = .idle
             }
         }
 

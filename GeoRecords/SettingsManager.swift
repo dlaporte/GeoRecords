@@ -292,4 +292,18 @@ class SettingsManager: ObservableObject, SettingsManaging {
 
         saveSettings()
     }
+
+    /// Reset only delta values to defaults (used from Settings > Minimum Deltas)
+    func resetDeltasToDefaults() {
+        minLatitudeDelta = Self.defaultMinLatitudeDelta
+        minLongitudeDelta = Self.defaultMinLongitudeDelta
+
+        // Reset both Imperial and Metric to their respective defaults
+        minAltitudeDeltaMetersImperial = Self.defaultMinAltitudeDeltaMetersImperial
+        minDistanceDeltaMetersImperial = Self.defaultMinDistanceDeltaMetersImperial
+        minAltitudeDeltaMetersMetric = Self.defaultMinAltitudeDeltaMetersMetric
+        minDistanceDeltaMetersMetric = Self.defaultMinDistanceDeltaMetersMetric
+
+        saveSettings()
+    }
 }

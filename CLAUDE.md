@@ -51,9 +51,10 @@ The app uses several singleton managers that serve as the source of truth:
    - Key settings:
      - `notifyOnMonthlyRecords: Bool` - Whether to send notifications for monthly records (default: false)
      - `notifyOnYearlyRecords: Bool` - Whether to send notifications for yearly records (default: false)
-     - `notifyOnAllTimeRecords: Bool` - Whether to send notifications for all-time records (default: true)
+     - `notifyOnAllTimeRecords: Bool` - Whether to send notifications for all-time records (default: false, set by wizard)
      - `minLatitudeDelta`, `minLongitudeDelta` - Threshold in degrees for directional records
-     - `minAltitudeDeltaFeet` - Threshold for altitude records (stored as feet, converted to meters)
+     - `minAltitudeDeltaMeters` - Threshold for altitude records (stored in meters)
+     - `minDistanceDeltaMeters` - Threshold for distance records (stored in meters)
      - `homeCoordinate: CLLocationCoordinate2D?` - For "Furthest from Home" calculations
      - `unitSystem: UnitSystem` - `.metric` or `.imperial` for display
    - Use `saveSettings()` after modifying properties
@@ -75,7 +76,7 @@ The app uses several singleton managers that serve as the source of truth:
 - `id: UUID`
 - `timestamp: Date`
 - `recordType: String` - e.g., "Furthest North"
-- `value: Double` - The extreme value (latitude, longitude, altitude meters, or distance feet)
+- `value: Double` - The extreme value (latitude, longitude, altitude in meters, or distance in meters)
 - `latitude: Double`, `longitude: Double`
 - `altitude: Double` - Always stored in meters
 - `locationName: String?` - Reverse geocoded name
@@ -105,10 +106,10 @@ The app uses several singleton managers that serve as the source of truth:
 
 ### Unit System Conversions
 
-- **Altitude:** Core Data stores meters, but `RecordDetail.value` for "Furthest Up/Down" also stores meters
-  - Display conversion happens in views: `value * 3.28084` for imperial
-- **Distance from Home:** Core Data stores feet in the `value` field
-  - Display: feet → miles (imperial) or feet/3.28084 → meters/km (metric)
+- **Altitude:** Core Data stores meters, and `RecordDetail.value` for "Furthest Up/Down" also stores meters
+  - Display conversion happens in views: `value * 3.28084` for imperial (feet)
+- **Distance from Home:** Core Data stores meters in the `value` field
+  - Display: meters → miles (imperial) or meters → km (metric)
 - **Lat/Lon:** Always stored and displayed as degrees
 
 ### Record Threshold Logic
@@ -118,9 +119,9 @@ Records are updated only if the delta exceeds the configured threshold:
 - South: `currentLat - newLat > minLatitudeDelta`
 - East: `newLon - currentLon > minLongitudeDelta`
 - West: `currentLon - newLon > minLongitudeDelta`
-- Up: `newAlt - currentAlt > minAltitudeDeltaFeet * 0.3048` (converted to meters)
-- Down: `currentAlt - newAlt > minAltitudeDeltaFeet * 0.3048`
-- Furthest from Home: `newDistance > currentDistance` (any increase)
+- Up: `newAlt - currentAlt > minAltitudeDeltaMeters`
+- Down: `currentAlt - newAlt > minAltitudeDeltaMeters`
+- Furthest from Home: `newDistance - currentDistance > minDistanceDeltaMeters`
 
 ### Background Location
 

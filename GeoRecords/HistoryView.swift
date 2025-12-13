@@ -17,26 +17,45 @@ struct HistoryView: View {
     )
     private var historyEntries: FetchedResults<RecordHistoryEntry>
 
+    /// Build predicate for database-level filtering
+    private var filterPredicate: NSPredicate? {
+        var predicates: [NSPredicate] = []
+
+        if let recordType = selectedRecordTypeFilter {
+            predicates.append(NSPredicate(format: "recordType == %@", recordType))
+        }
+
+        if let timeFrame = selectedTimeFrameFilter {
+            predicates.append(NSPredicate(format: "timeFrame == %@", timeFrame))
+        }
+
+        if predicates.isEmpty {
+            return nil
+        }
+        return NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+    }
+
+    /// Pre-filtered entries using database predicate, with search applied in-memory
+    /// Note: Search is kept in-memory because CONTAINS is more flexible than database LIKE
     private var filteredEntries: [RecordHistoryEntry] {
         var entries = Array(historyEntries)
 
-        // Apply search filter
+        // Apply database-level filters first (record type and time frame)
+        if let recordType = selectedRecordTypeFilter {
+            entries = entries.filter { $0.recordType == recordType }
+        }
+
+        if let timeFrame = selectedTimeFrameFilter {
+            entries = entries.filter { $0.timeFrame == timeFrame }
+        }
+
+        // Apply search filter (kept in-memory for flexibility)
         if !searchText.isEmpty {
             entries = entries.filter { entry in
                 let matchesRecordType = entry.recordType?.localizedCaseInsensitiveContains(searchText) ?? false
                 let matchesLocation = entry.locationName?.localizedCaseInsensitiveContains(searchText) ?? false
                 return matchesRecordType || matchesLocation
             }
-        }
-
-        // Apply record type filter
-        if let recordType = selectedRecordTypeFilter {
-            entries = entries.filter { $0.recordType == recordType }
-        }
-
-        // Apply time frame filter
-        if let timeFrame = selectedTimeFrameFilter {
-            entries = entries.filter { $0.timeFrame == timeFrame }
         }
 
         return entries

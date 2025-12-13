@@ -1,6 +1,18 @@
 import SwiftUI
 import CoreLocation
 
+// MARK: - Setup Flow State
+
+/// Represents mutually exclusive states for the setup/restore flow
+enum SetupFlowState: Equatable {
+    case none
+    case checkingCloud
+    case showingRestoreChoice
+    case restoringFromCloud
+    case showingSetupWizard
+    case databaseError
+}
+
 // MARK: - Location Health Banner
 
 struct LocationHealthBanner: View {
@@ -16,7 +28,7 @@ struct LocationHealthBanner: View {
                         .foregroundColor(locationManager.healthStatus.color)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(locationManager.healthStatus == .disabled(reason: "") ? "Location Disabled" : "Location Issue")
+                        Text(locationManager.healthStatus.isDisabled ? "Location Disabled" : "Location Issue")
                             .font(.subheadline)
                             .fontWeight(.semibold)
 
@@ -68,12 +80,8 @@ struct ContentView: View {
     @EnvironmentObject var persistenceController: PersistenceController
     @EnvironmentObject var settings: SettingsManager
     @ObservedObject var locationManager = LocationManager.shared
-    @State private var showDatabaseError = false
-    @State private var showSetupWizard = false
     @State private var selectedTab = 0
-    @State private var isCheckingForCloudData = false
-    @State private var showRestoringMessage = false
-    @State private var showRestoreChoiceAlert = false
+    @State private var setupFlowState: SetupFlowState = .none
 
     var body: some View {
         ZStack {
@@ -106,13 +114,13 @@ struct ContentView: View {
         }  // End VStack
         .onAppear {
             // Check if setup needs to be shown or if we should restore from iCloud
-            if !settings.hasCompletedSetup && !isCheckingForCloudData {
+            if !settings.hasCompletedSetup && setupFlowState == .none {
                 checkForCloudRestore()
             }
 
             // Check for database errors on app launch
             if PersistenceController.shared.loadError != nil {
-                showDatabaseError = true
+                setupFlowState = .databaseError
             }
 
             // Check location health status
@@ -136,11 +144,17 @@ struct ContentView: View {
                 deepLinkManager.navigateToStats = false  // Reset flag
             }
         }
-        .fullScreenCover(isPresented: $showSetupWizard) {
+        .fullScreenCover(isPresented: Binding(
+            get: { setupFlowState == .showingSetupWizard },
+            set: { if !$0 { setupFlowState = .none } }
+        )) {
             SetupWizardView()
                 .environmentObject(settings)
         }
-        .alert(isPresented: $showDatabaseError) {
+        .alert(isPresented: Binding(
+            get: { setupFlowState == .databaseError },
+            set: { if !$0 { setupFlowState = .none } }
+        )) {
             Alert(
                 title: Text("Database Error"),
                 message: Text("The app encountered a problem with its database. Your data may have been reset."),
@@ -166,12 +180,15 @@ struct ContentView: View {
                 secondaryButton: .cancel(Text("Cancel"))
             )
         }
-        .alert("Restore from iCloud?", isPresented: $showRestoreChoiceAlert) {
+        .alert("Restore from iCloud?", isPresented: Binding(
+            get: { setupFlowState == .showingRestoreChoice },
+            set: { if !$0 { setupFlowState = .none } }
+        )) {
             Button("Restore from iCloud") {
                 restoreFromiCloud()
             }
             Button("Start Fresh", role: .cancel) {
-                showSetupWizard = true
+                setupFlowState = .showingSetupWizard
             }
         } message: {
             Text("We found existing records in your iCloud account. Would you like to restore them, or start fresh on this device?")
@@ -192,7 +209,7 @@ struct ContentView: View {
         }
 
             // Checking for iCloud data overlay
-            if isCheckingForCloudData {
+            if setupFlowState == .checkingCloud {
                 ZStack {
                     Color.black.opacity(0.4)
                         .ignoresSafeArea()
@@ -215,7 +232,7 @@ struct ContentView: View {
             }
 
             // Restoring from iCloud overlay
-            if showRestoringMessage {
+            if setupFlowState == .restoringFromCloud {
                 ZStack {
                     Color.black.opacity(0.4)
                         .ignoresSafeArea()
@@ -224,7 +241,7 @@ struct ContentView: View {
                         HStack {
                             Spacer()
                             Button(action: {
-                                showRestoringMessage = false
+                                setupFlowState = .none
                             }) {
                                 Image(systemName: "xmark.circle.fill")
                                     .font(.title2)
@@ -261,66 +278,36 @@ struct ContentView: View {
     }
 
     private func checkForCloudRestore() {
-        isCheckingForCloudData = true
+        setupFlowState = .checkingCloud
 
         Task {
-            // Check immediately first, then retry with delays if needed
-            var hasCloudData = false
-            var checkError: Error?
-            var attempts = 0
-            let maxAttempts = 3
+            debugLog("☁️ Checking for iCloud data...")
 
-            while attempts < maxAttempts && !hasCloudData && checkError == nil {
-                attempts += 1
+            do {
+                // This function waits up to 15 seconds for CloudKit sync to complete
+                let hasCloudData = try await persistenceController.hasExistingCloudDataThrowing()
 
-                debugLog("☁️ Checking for iCloud data (attempt \(attempts)/\(maxAttempts))...")
-
-                do {
-                    hasCloudData = try await persistenceController.hasExistingCloudDataThrowing()
-
+                await MainActor.run {
                     if hasCloudData {
-                        debugLog("☁️ Found iCloud data on attempt \(attempts)")
-                        break
+                        debugLog("☁️ Existing iCloud data detected, prompting user")
+                        setupFlowState = .showingRestoreChoice
+                    } else {
+                        debugLog("☁️ No iCloud data found, showing setup wizard")
+                        setupFlowState = .showingSetupWizard
                     }
-                } catch {
-                    debugLog("☁️ Error checking iCloud data: \(error.localizedDescription)")
-                    checkError = error
-                    // Don't break immediately, will handle below
                 }
-
-                // If no data found and we have more attempts, wait before next check
-                if attempts < maxAttempts && !hasCloudData && checkError == nil {
-                    // Progressive delays: 0.5s, 1s (total max 1.5s instead of 6s)
-                    let delay = UInt64(attempts * 500_000_000) // 0.5, 1.0 seconds
-                    debugLog("☁️ No data yet, checking again in \(Double(delay) / 1_000_000_000)s...")
-                    try? await Task.sleep(nanoseconds: delay)
+            } catch {
+                debugLog("☁️ Error checking iCloud data: \(error.localizedDescription)")
+                await MainActor.run {
+                    setupFlowState = .showingSetupWizard
                 }
-            }
-
-            await MainActor.run {
-                if checkError != nil {
-                    // Error occurred - show setup wizard with a warning
-                    debugLog("☁️ Failed to check iCloud after \(attempts) attempts, showing setup wizard")
-                    showDatabaseError = true
-                    showSetupWizard = true
-                } else if hasCloudData {
-                    // Data exists in iCloud, ask user what to do
-                    debugLog("☁️ Existing iCloud data detected, prompting user")
-                    showRestoreChoiceAlert = true
-                } else {
-                    // No cloud data found after all attempts, show setup wizard
-                    debugLog("☁️ No iCloud data found after \(attempts) attempts, showing setup wizard")
-                    showSetupWizard = true
-                }
-
-                isCheckingForCloudData = false
             }
         }
     }
 
     private func restoreFromiCloud() {
         debugLog("☁️ User chose to restore from iCloud")
-        showRestoringMessage = true
+        setupFlowState = .restoringFromCloud
 
         // Set reasonable defaults for settings (user can customize later)
         // Keep notifications disabled by default to respect privacy
@@ -362,7 +349,7 @@ struct ContentView: View {
         Task {
             try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
             await MainActor.run {
-                showRestoringMessage = false
+                setupFlowState = .none
             }
         }
     }

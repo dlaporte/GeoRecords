@@ -197,6 +197,8 @@ struct Provider: AppIntentTimelineProvider {
                 guard let entries = try context.fetch(request) as? [NSManagedObject] else { return }
 
                 // Get unit system from UserDefaults
+                // Key "unitSystem" is defined in main app's Constants.swift as UserDefaultsKey.unitSystem
+                // Values: "imperial" or "metric" (see UnitSystem enum in Constants.swift)
                 let sharedDefaults = UserDefaults(suiteName: "group.com.georecords.shared")
                 let unitSystemString = sharedDefaults?.string(forKey: "unitSystem") ?? "imperial"
                 let unitSystem = unitSystemString == "metric" ? "metric" : "imperial"
@@ -571,7 +573,9 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
             do {
                 guard let entries = try context.fetch(request) as? [NSManagedObject] else { return }
 
-                // Get unit system
+                // Get unit system from shared UserDefaults
+                // Key "unitSystem" is defined in main app's Constants.swift as UserDefaultsKey.unitSystem
+                // Values: "imperial" or "metric" (see UnitSystem enum in Constants.swift)
                 let sharedDefaults = UserDefaults(suiteName: "group.com.georecords.shared")
                 let unitSystemString = sharedDefaults?.string(forKey: "unitSystem") ?? "imperial"
                 let unitSystem = unitSystemString == "metric" ? "metric" : "imperial"

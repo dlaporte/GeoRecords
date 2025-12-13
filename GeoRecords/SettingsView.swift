@@ -7,7 +7,8 @@ struct SettingsView: View {
 
     // State for confirmation alerts
     @State private var showConsolidateAlert = false
-    @State private var showClearRecordsAlert = false
+    @State private var showClearRecordsSheet = false
+    @State private var deleteFromiCloud = false
     @State private var showConsolidateResult = false
     @State private var consolidateResultMessage = ""
     @State private var showImportView = false
@@ -52,112 +53,29 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                // MARK: - Notifications Section
-                Section {
-                    Toggle("Monthly Records", isOn: $settings.notifyOnMonthlyRecords)
-                        .onChange(of: settings.notifyOnMonthlyRecords) { _, _ in
-                            settings.saveSettings()
-                        }
-
-                    Toggle("Yearly Records", isOn: $settings.notifyOnYearlyRecords)
-                        .onChange(of: settings.notifyOnYearlyRecords) { _, _ in
-                            settings.saveSettings()
-                        }
-
-                    Toggle("All-Time Records", isOn: $settings.notifyOnAllTimeRecords)
-                        .onChange(of: settings.notifyOnAllTimeRecords) { _, _ in
-                            settings.saveSettings()
-                        }
-
-                    Toggle("Summary Notifications", isOn: $settings.summaryNotificationsEnabled)
-                        .onChange(of: settings.summaryNotificationsEnabled) { _, _ in
-                            settings.saveSettings()
-                            SummaryNotificationManager.shared.scheduleSummaryNotifications()
-                        }
-
-                    Toggle("Photo Prompts", isOn: $settings.photoPromptsEnabled)
-                        .onChange(of: settings.photoPromptsEnabled) { _, _ in
-                            settings.saveSettings()
-                        }
-
-                    Toggle("Inactivity Reminder", isOn: $settings.inactivityReminderEnabled)
-                        .onChange(of: settings.inactivityReminderEnabled) { _, _ in
-                            settings.saveSettings()
-                            // Reschedule or cancel the reminder
-                            Task { @MainActor in
-                                if settings.inactivityReminderEnabled {
-                                    LocationManager.shared.scheduleInactivityReminder()
+                // MARK: - Home Location Section
+                Section(header: Text("Home Location")) {
+                    NavigationLink(destination: HomePickerView()) {
+                        HStack {
+                            Text("Home")
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                if let locationName = settings.homeLocationName {
+                                    Text(locationName)
+                                        .foregroundColor(.primary)
+                                        .multilineTextAlignment(.trailing)
+                                }
+                                if let coord = settings.homeCoordinate {
+                                    Text("(\(coord.latitude, specifier: "%.4f"), \(coord.longitude, specifier: "%.4f"))")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
                                 } else {
-                                    LocationManager.shared.cancelInactivityReminder()
+                                    Text("Not set")
+                                        .foregroundColor(.secondary)
                                 }
                             }
                         }
-
-                    if settings.inactivityReminderEnabled {
-                        Picker("Remind after", selection: $settings.inactivityReminderDays) {
-                            Text("3 days").tag(3)
-                            Text("7 days").tag(7)
-                            Text("14 days").tag(14)
-                            Text("30 days").tag(30)
-                        }
-                        .pickerStyle(MenuPickerStyle())
-                        .onChange(of: settings.inactivityReminderDays) { _, _ in
-                            settings.saveSettings()
-                            // Reschedule with new interval
-                            Task { @MainActor in
-                                LocationManager.shared.scheduleInactivityReminder()
-                            }
-                        }
                     }
-                } header: {
-                    Text("Notifications")
-                } footer: {
-                    Text("Inactivity reminder sends a notification if the app hasn't tracked any locations in the selected time period.")
-                }
-
-                // MARK: - iCloud Sync Section
-                Section(header: Text("iCloud Sync")) {
-                    HStack {
-                        Image(systemName: "icloud")
-                            .foregroundColor(.blue)
-                        Text("Status")
-                        Spacer()
-                        if persistenceController.isSyncing {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                    .scaleEffect(0.8)
-                                Text("Syncing...")
-                                    .foregroundColor(.secondary)
-                                    .font(.subheadline)
-                            }
-                        } else if persistenceController.lastSyncError != nil {
-                            HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.orange)
-                                Text("Error")
-                                    .foregroundColor(.secondary)
-                                    .font(.subheadline)
-                            }
-                        } else {
-                            HStack(spacing: 8) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                                Text("Up to date")
-                                    .foregroundColor(.secondary)
-                                    .font(.subheadline)
-                            }
-                        }
-                    }
-
-                    if let error = persistenceController.lastSyncError {
-                        Text(error.localizedDescription)
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                    }
-
-                    Text("Your records automatically sync across all devices signed into the same iCloud account")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
 
                 // MARK: - Units Section
@@ -172,9 +90,9 @@ struct SettingsView: View {
                         settings.saveSettings()
                     }
                 }
-                
+
                 // MARK: - Minimum Deltas Section
-                Section(header: Text("Minimum Deltas")) {
+                Section {
                     Picker("Latitude Δ (deg)", selection: $settings.minLatitudeDelta) {
                         ForEach(deltaOptions, id: \.self) { value in
                             Text(String(format: "%.1f", value))
@@ -246,33 +164,112 @@ struct SettingsView: View {
                             settings.saveSettings()
                         }
                     }
+
+                    Button("Reset to Defaults") {
+                        settings.resetDeltasToDefaults()
+                    }
+                } header: {
+                    Text("Minimum Deltas")
                 }
-                
-                // MARK: - Home Location Section
-                Section(header: Text("Home Location")) {
-                    NavigationLink(destination: HomePickerView()) {
-                        HStack {
-                            Text("Home")
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 2) {
-                                if let locationName = settings.homeLocationName {
-                                    Text(locationName)
-                                        .foregroundColor(.primary)
-                                        .multilineTextAlignment(.trailing)
-                                }
-                                if let coord = settings.homeCoordinate {
-                                    Text("(\(coord.latitude, specifier: "%.4f"), \(coord.longitude, specifier: "%.4f"))")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
+
+                // MARK: - Record Alerts Section
+                Section {
+                    Toggle("Monthly Records", isOn: $settings.notifyOnMonthlyRecords)
+                        .onChange(of: settings.notifyOnMonthlyRecords) { _, _ in
+                            settings.saveSettings()
+                        }
+
+                    Toggle("Yearly Records", isOn: $settings.notifyOnYearlyRecords)
+                        .onChange(of: settings.notifyOnYearlyRecords) { _, _ in
+                            settings.saveSettings()
+                        }
+
+                    Toggle("All-Time Records", isOn: $settings.notifyOnAllTimeRecords)
+                        .onChange(of: settings.notifyOnAllTimeRecords) { _, _ in
+                            settings.saveSettings()
+                        }
+                } header: {
+                    Text("Record Alerts")
+                } footer: {
+                    Text("Get notified when you set a new geographical record.")
+                }
+
+                // MARK: - Reminders Section
+                Section {
+                    Toggle("Summary Notifications", isOn: $settings.summaryNotificationsEnabled)
+                        .onChange(of: settings.summaryNotificationsEnabled) { _, _ in
+                            settings.saveSettings()
+                            SummaryNotificationManager.shared.scheduleSummaryNotifications()
+                        }
+
+                    Toggle("Photo Prompts", isOn: $settings.photoPromptsEnabled)
+                        .onChange(of: settings.photoPromptsEnabled) { _, _ in
+                            settings.saveSettings()
+                        }
+
+                    Toggle("Inactivity Reminder", isOn: $settings.inactivityReminderEnabled)
+                        .onChange(of: settings.inactivityReminderEnabled) { _, _ in
+                            settings.saveSettings()
+                            // Reschedule or cancel the reminder
+                            Task { @MainActor in
+                                if settings.inactivityReminderEnabled {
+                                    LocationManager.shared.scheduleInactivityReminder()
                                 } else {
-                                    Text("Not set")
-                                        .foregroundColor(.secondary)
+                                    LocationManager.shared.cancelInactivityReminder()
                                 }
                             }
                         }
-                    }
+                } header: {
+                    Text("Reminders")
+                } footer: {
+                    Text("Photo prompts appear when you set an all-time record. Summaries notify you of your records at month/year end. Inactivity reminder fires after 3 days without tracking.")
                 }
-                
+
+                // MARK: - iCloud Sync Section
+                Section(header: Text("iCloud Sync")) {
+                    HStack {
+                        Image(systemName: "icloud")
+                            .foregroundColor(.blue)
+                        Text("Status")
+                        Spacer()
+                        if persistenceController.isSyncing {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Syncing...")
+                                    .foregroundColor(.secondary)
+                                    .font(.subheadline)
+                            }
+                        } else if persistenceController.lastSyncError != nil {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text("Error")
+                                    .foregroundColor(.secondary)
+                                    .font(.subheadline)
+                            }
+                        } else {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                Text("Up to date")
+                                    .foregroundColor(.secondary)
+                                    .font(.subheadline)
+                            }
+                        }
+                    }
+
+                    if let error = persistenceController.lastSyncError {
+                        Text(error.localizedDescription)
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+
+                    Text("Your records automatically sync across all devices signed into the same iCloud account.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 // MARK: - Import Section
                 Section(header: Text("Import")) {
                     Button(action: {
@@ -287,7 +284,7 @@ struct SettingsView: View {
                         }
                     }
 
-                    Text("Scan your photo library to discover records from past travels")
+                    Text("Scan your photo library to discover records from past travels.")
                         .font(.caption)
                         .foregroundColor(.secondary)
 
@@ -303,34 +300,27 @@ struct SettingsView: View {
                         }
                     }
 
-                    Text("Manually add a record by selecting a location and date")
+                    Text("Manually add a record by selecting a location and date.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
 
-                // MARK: - Actions Section
+                // MARK: - Data Management Section
                 Section {
-                    Button("Reset to Defaults") {
-                        settings.resetToDefaults()
-                    }
-
                     Button("Consolidate Records") {
                         showConsolidateAlert = true
                     }
                     .foregroundColor(.orange)
 
                     Button("Clear Records") {
-                        showClearRecordsAlert = true
+                        deleteFromiCloud = false  // Reset to default
+                        showClearRecordsSheet = true
                     }
                     .foregroundColor(.red)
-                }
-                header: {
-                    Text("Danger Zone")
-                }
-                footer: {
-                    Text("Consolidate keeps only the most extreme record for each type/timeframe. Clear Records permanently deletes all data locally and from iCloud.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                } header: {
+                    Text("Data Management")
+                } footer: {
+                    Text("Consolidate keeps only the most extreme record for each type/timeframe.")
                 }
             }
             .navigationTitle("Settings")
@@ -355,19 +345,28 @@ struct SettingsView: View {
             } message: {
                 Text(consolidateResultMessage)
             }
-            .alert(isPresented: $showClearRecordsAlert) {
-                Alert(
-                    title: Text("⚠️ Clear All Records"),
-                    message: Text("This will PERMANENTLY delete all your records including:\n\n• All 7 geographical records\n• Complete history log\n• All associated photos\n\nThis affects both local and iCloud data.\n\nThis action CANNOT be undone."),
-                    primaryButton: .destructive(Text("Delete Everything")) {
-                        RecordHistoryManager.shared.clearHistory()
+            .sheet(isPresented: $showClearRecordsSheet) {
+                ClearRecordsSheet(
+                    deleteFromiCloud: $deleteFromiCloud,
+                    onConfirm: {
+                        if deleteFromiCloud {
+                            // Delete from Core Data (syncs deletion to iCloud)
+                            RecordHistoryManager.shared.clearHistory()
+                        } else {
+                            // Clear local database only - iCloud data preserved
+                            RecordHistoryManager.shared.clearLocalOnly()
+                        }
                         // Reset setup flag to show wizard
                         settings.hasCompletedSetup = false
                         settings.saveSettings()
+                        showClearRecordsSheet = false
                         showSetupWizard = true
                     },
-                    secondaryButton: .cancel()
+                    onCancel: {
+                        showClearRecordsSheet = false
+                    }
                 )
+                .presentationDetents([.height(280)])
             }
             .fullScreenCover(isPresented: $showSetupWizard) {
                 SetupWizardView()
@@ -405,6 +404,67 @@ struct SettingsView: View {
             } else {
                 showPermissionAlert = true
             }
+        }
+    }
+}
+
+// MARK: - Clear Records Sheet
+
+struct ClearRecordsSheet: View {
+    @Binding var deleteFromiCloud: Bool
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            Image(systemName: "trash.circle.fill")
+                .font(.system(size: 56))
+                .foregroundColor(.red)
+
+            Text("Delete all records?")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            Toggle(isOn: $deleteFromiCloud) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Delete from iCloud")
+                        .font(.body)
+                    Text(deleteFromiCloud
+                         ? "Permanently removes records from all devices"
+                         : "Records will sync back from iCloud")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .tint(.red)
+            .padding(.horizontal, 24)
+
+            Spacer()
+
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    onCancel()
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color(UIColor.tertiarySystemFill))
+                .foregroundColor(.primary)
+                .cornerRadius(12)
+
+                Button("Delete") {
+                    onConfirm()
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color.red)
+                .foregroundColor(.white)
+                .fontWeight(.semibold)
+                .cornerRadius(12)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 16)
         }
     }
 }

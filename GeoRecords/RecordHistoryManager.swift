@@ -9,7 +9,7 @@ class RecordHistoryManager: ObservableObject {
     @Published var showError: Bool = false
 
     private var context: NSManagedObjectContext {
-        assert(Thread.isMainThread, "Core Data viewContext must be accessed from main thread")
+        dispatchPrecondition(condition: .onQueue(.main))
         return PersistenceController.shared.container.viewContext
     }
 
@@ -82,8 +82,10 @@ class RecordHistoryManager: ObservableObject {
             let results = try context.fetch(request)
             return !results.isEmpty
         } catch {
-            debugLog("Error checking for duplicate record: \(error.localizedDescription)")
-            return false  // If check fails, allow the record to be added
+            debugLog("❌ Database error checking for duplicate record: \(error.localizedDescription)")
+            debugLog("   Record type: \(recordType), timestamp: \(detail.timestamp)")
+            // If check fails, allow the record to be added rather than silently dropping it
+            return false
         }
     }
 
@@ -243,6 +245,51 @@ class RecordHistoryManager: ObservableObject {
             let message = "Failed to clear records: \(error.localizedDescription)"
             debugLog(message)
             showErrorAlert(message)
+        }
+    }
+
+    /// Clear local records only - iCloud data remains and will sync back
+    /// This deletes the local SQLite file directly to avoid CloudKit sync
+    func clearLocalOnly() {
+        // Reset in-memory records first
+        RecordManager.shared.resetRecords()
+
+        // Get the store URL
+        guard let storeDescription = PersistenceController.shared.container.persistentStoreDescriptions.first,
+              let storeURL = storeDescription.url else {
+            debugLog("⚠️ Could not find store URL for local clear")
+            return
+        }
+
+        // Remove the persistent store
+        let coordinator = PersistenceController.shared.container.persistentStoreCoordinator
+        if let store = coordinator.persistentStore(for: storeURL) {
+            do {
+                try coordinator.remove(store)
+
+                // Delete the SQLite files
+                let fileManager = FileManager.default
+                let storePath = storeURL.path
+                for suffix in ["", "-shm", "-wal"] {
+                    let filePath = storePath + suffix
+                    if fileManager.fileExists(atPath: filePath) {
+                        try fileManager.removeItem(atPath: filePath)
+                    }
+                }
+
+                debugLog("✅ Local database cleared (iCloud data preserved)")
+
+                // Reload the store - iCloud will sync data back
+                PersistenceController.shared.container.loadPersistentStores { _, error in
+                    if let error = error {
+                        debugLog("❌ Failed to reload store: \(error.localizedDescription)")
+                    } else {
+                        debugLog("✅ Store reloaded - iCloud sync will restore data")
+                    }
+                }
+            } catch {
+                debugLog("❌ Failed to clear local database: \(error.localizedDescription)")
+            }
         }
     }
 

@@ -50,11 +50,11 @@ class RecordHistoryManager: ObservableObject {
         // Define tolerance for coordinate comparison (about 1 meter)
         let coordinateTolerance = 0.00001
         let valueTolerance = 0.0001
-        let timeTolerance = 1.0 // 1 second
+        let timeTolerance: TimeInterval = 1.0 // 1 second
 
-        // Calculate ranges for comparison (since ABS is not supported in predicates)
-        let timestampMin = detail.timestamp.timeIntervalSince1970 - timeTolerance
-        let timestampMax = detail.timestamp.timeIntervalSince1970 + timeTolerance
+        // Calculate date range for comparison
+        let timestampMin = detail.timestamp.addingTimeInterval(-timeTolerance)
+        let timestampMax = detail.timestamp.addingTimeInterval(timeTolerance)
         let valueMin = detail.value - valueTolerance
         let valueMax = detail.value + valueTolerance
         let latMin = detail.coordinate.latitude - coordinateTolerance
@@ -64,11 +64,11 @@ class RecordHistoryManager: ObservableObject {
 
         // Match records with same type, timeframe, timestamp (within 1 second), and similar coordinates
         request.predicate = NSPredicate(
-            format: "recordType == %@ AND timeFrame == %@ AND timestamp.timeIntervalSince1970 >= %f AND timestamp.timeIntervalSince1970 <= %f AND value >= %f AND value <= %f AND latitude >= %f AND latitude <= %f AND longitude >= %f AND longitude <= %f",
+            format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp <= %@ AND value >= %f AND value <= %f AND latitude >= %f AND latitude <= %f AND longitude >= %f AND longitude <= %f",
             recordType,
             detail.timeFrame.rawValue,
-            timestampMin,
-            timestampMax,
+            timestampMin as NSDate,
+            timestampMax as NSDate,
             valueMin,
             valueMax,
             latMin,
@@ -154,27 +154,51 @@ class RecordHistoryManager: ObservableObject {
         }
     }
 
-    /// Consolidate records by keeping only the most extreme record for each recordType+timeFrame combination
+    /// Consolidate records by keeping only the most extreme record for each recordType+timeFrame+period combination
+    /// For Monthly records: keeps one per calendar month
+    /// For Yearly records: keeps one per calendar year
+    /// For All-Time records: keeps only the single most extreme
     /// Deletes all non-extreme records from history (both locally and iCloud)
     /// Returns the number of records removed
     @discardableResult
     func consolidateRecords() -> Int {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        let calendar = Calendar.current
 
         do {
             let allRecords = try context.fetch(request)
             var recordsRemoved = 0
 
-            // Group records by recordType + timeFrame
+            // Group records by recordType + timeFrame + actual time period
             var recordGroups: [String: [RecordHistoryEntry]] = [:]
 
             for record in allRecords {
                 guard let recordType = record.recordType,
-                      let timeFrame = record.timeFrame else {
+                      let timeFrameStr = record.timeFrame,
+                      let timestamp = record.timestamp else {
                     continue
                 }
 
-                let key = "\(recordType)|\(timeFrame)"
+                // Build grouping key based on timeframe type
+                let periodKey: String
+                switch timeFrameStr {
+                case "Monthly":
+                    // Group by year-month (keeps historical monthly records separate)
+                    let year = calendar.component(.year, from: timestamp)
+                    let month = calendar.component(.month, from: timestamp)
+                    periodKey = "\(year)-\(String(format: "%02d", month))"
+                case "Yearly":
+                    // Group by year only (keeps historical yearly records separate)
+                    let year = calendar.component(.year, from: timestamp)
+                    periodKey = "\(year)"
+                case "All-Time":
+                    // Single group for all time
+                    periodKey = "all"
+                default:
+                    periodKey = "unknown"
+                }
+
+                let key = "\(recordType)|\(timeFrameStr)|\(periodKey)"
                 if recordGroups[key] == nil {
                     recordGroups[key] = []
                 }
@@ -186,7 +210,7 @@ class RecordHistoryManager: ObservableObject {
                 guard records.count > 1 else { continue } // Skip if only one record
 
                 let components = key.split(separator: "|")
-                guard components.count == 2,
+                guard components.count >= 2,
                       let recordType = RecordType.from(string: String(components[0])) else {
                     continue
                 }
@@ -225,22 +249,27 @@ class RecordHistoryManager: ObservableObject {
     }
 
     /// Clear all records from history (both locally and iCloud)
+    /// Uses individual deletes instead of batch delete to ensure proper CloudKit sync
     func clearHistory() {
-        let fetchRequest: NSFetchRequest<NSFetchRequestResult> = RecordHistoryEntry.fetchRequest()
-        let deleteRequest = NSBatchDeleteRequest(fetchRequest: fetchRequest)
-        deleteRequest.resultType = .resultTypeObjectIDs
+        let fetchRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
         do {
-            if let result = try context.execute(deleteRequest) as? NSBatchDeleteResult,
-               let objectIDs = result.result as? [NSManagedObjectID] {
-                let changes = [NSDeletedObjectsKey: objectIDs]
-                NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: [context])
+            let allRecords = try context.fetch(fetchRequest)
+            let recordCount = allRecords.count
+
+            // Delete each record individually to ensure CloudKit tracks the deletions
+            for record in allRecords {
+                context.delete(record)
             }
+
             try context.save()
-            debugLog("✅ All records cleared (locally and from iCloud)")
+            debugLog("✅ Deleted \(recordCount) records (will sync deletion to iCloud)")
 
             // Also reset in-memory records so that Records screen updates.
             RecordManager.shared.resetRecords()
+
+            // Clear daily statistics as well
+            DailyStatisticManager.shared.clearAllStatistics()
         } catch {
             let message = "Failed to clear records: \(error.localizedDescription)"
             debugLog(message)

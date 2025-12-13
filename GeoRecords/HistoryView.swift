@@ -3,8 +3,6 @@ import CoreData
 import CoreLocation
 
 struct HistoryView: View {
-    @State private var pageSize = 50
-    @State private var isShowingAll = false
     @State private var searchText = ""
     @State private var selectedRecordTypeFilter: String? = nil
     @State private var selectedTimeFrameFilter: String? = nil
@@ -17,26 +15,7 @@ struct HistoryView: View {
     )
     private var historyEntries: FetchedResults<RecordHistoryEntry>
 
-    /// Build predicate for database-level filtering
-    private var filterPredicate: NSPredicate? {
-        var predicates: [NSPredicate] = []
-
-        if let recordType = selectedRecordTypeFilter {
-            predicates.append(NSPredicate(format: "recordType == %@", recordType))
-        }
-
-        if let timeFrame = selectedTimeFrameFilter {
-            predicates.append(NSPredicate(format: "timeFrame == %@", timeFrame))
-        }
-
-        if predicates.isEmpty {
-            return nil
-        }
-        return NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
-    }
-
     /// Pre-filtered entries using database predicate, with search applied in-memory
-    /// Note: Search is kept in-memory because CONTAINS is more flexible than database LIKE
     private var filteredEntries: [RecordHistoryEntry] {
         var entries = Array(historyEntries)
 
@@ -49,7 +28,7 @@ struct HistoryView: View {
             entries = entries.filter { $0.timeFrame == timeFrame }
         }
 
-        // Apply search filter (kept in-memory for flexibility)
+        // Apply search filter
         if !searchText.isEmpty {
             entries = entries.filter { entry in
                 let matchesRecordType = entry.recordType?.localizedCaseInsensitiveContains(searchText) ?? false
@@ -61,14 +40,6 @@ struct HistoryView: View {
         return entries
     }
 
-    private var displayedEntries: [RecordHistoryEntry] {
-        if isShowingAll {
-            return filteredEntries
-        } else {
-            return Array(filteredEntries.prefix(pageSize))
-        }
-    }
-
     private var activeFilterCount: Int {
         var count = 0
         if selectedRecordTypeFilter != nil { count += 1 }
@@ -78,48 +49,40 @@ struct HistoryView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    if historyEntries.isEmpty {
-                        Text("No history available")
+            Group {
+                if historyEntries.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 48))
                             .foregroundColor(.secondary)
-                            .padding(.top, 40)
-                    } else {
-                        if displayedEntries.isEmpty {
-                            Text("No results found")
-                                .foregroundColor(.secondary)
-                                .padding(.top, 40)
-                        } else {
-                            ForEach(displayedEntries) { entry in
-                                NavigationLink(destination: HistoryDetailView(entry: entry)) {
-                                    HistoryCard(entry: entry)
-                                }
-                            }
-
-                            // Show "Load More" button if there are more entries
-                            if !isShowingAll && filteredEntries.count > pageSize {
-                                Button(action: {
-                                    pageSize += 50
-                                    if pageSize >= filteredEntries.count {
-                                        isShowingAll = true
-                                    }
-                                }) {
-                                    HStack {
-                                        Text("Load More")
-                                        Text("(\(filteredEntries.count - pageSize) remaining)")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    .padding()
-                                    .frame(maxWidth: .infinity)
-                                    .background(Color(UIColor.secondarySystemBackground))
-                                    .cornerRadius(10)
-                                }
-                            }
-                        }
+                        Text("No History Yet")
+                            .font(.headline)
+                        Text("Your record history will appear here.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
                     }
+                    .padding(.top, 60)
+                } else if filteredEntries.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text("No Results")
+                            .font(.headline)
+                        Text("Try adjusting your search or filters.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.top, 60)
+                } else {
+                    List(Array(filteredEntries.enumerated()), id: \.element.id) { index, entry in
+                        NavigationLink(destination: HistoryDetailPager(entries: filteredEntries, initialIndex: index)) {
+                            CompactHistoryRow(entry: entry)
+                        }
+                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                    }
+                    .listStyle(.plain)
                 }
-                .padding()
             }
             .navigationTitle("History (\(filteredEntries.count))")
             .searchable(text: $searchText, prompt: "Search by type or location")
@@ -151,17 +114,32 @@ struct HistoryView: View {
     }
 }
 
-struct HistoryCard: View {
-    let entry: RecordHistoryEntry
+// MARK: - Compact History Row
 
-    private func formattedValueForEntry() -> String {
-        guard let detail = RecordDetail(from: entry) else {
-            return "—"
-        }
-        return detail.formattedValue(unitSystem: SettingsManager.shared.unitSystem)
+struct CompactHistoryRow: View {
+    let entry: RecordHistoryEntry
+    @EnvironmentObject var settings: SettingsManager
+
+    private var recordIcon: String {
+        guard let type = entry.recordType else { return "location.circle.fill" }
+        return FormatUtils.iconForRecordType(type)
     }
 
-    private func timeFrameColor() -> Color {
+    private var iconColor: Color {
+        guard let type = entry.recordType,
+              let recordType = RecordType.from(string: type) else { return .gray }
+        switch recordType {
+        case .north: return .blue
+        case .south: return .blue
+        case .east: return .orange
+        case .west: return .orange
+        case .up: return .green
+        case .down: return .green
+        case .fromHome: return .red
+        }
+    }
+
+    private var timeFrameColor: Color {
         guard let timeFrameString = entry.timeFrame,
               let timeFrame = TimeFrame(rawValue: timeFrameString) else {
             return .gray
@@ -173,71 +151,90 @@ struct HistoryCard: View {
         }
     }
 
+    private var formattedValue: String {
+        guard let detail = RecordDetail(from: entry) else { return "—" }
+        return detail.formattedValue(unitSystem: settings.unitSystem)
+    }
+
+    private var locationText: String {
+        if let name = entry.locationName, !name.isEmpty, name != "Unknown Location" {
+            return name
+        }
+        return String(format: "%.2f, %.2f", entry.latitude, entry.longitude)
+    }
+
+    private var formattedDate: String {
+        guard let timestamp = entry.timestamp else { return "—" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: timestamp)
+    }
+
+    private var formattedTime: String {
+        guard let timestamp = entry.timestamp else { return "" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: timestamp)
+    }
+
+    private var timeFrameAbbrev: String {
+        guard let tf = entry.timeFrame else { return "?" }
+        switch tf {
+        case "Monthly": return "M"
+        case "Yearly": return "Y"
+        case "All-Time": return "A"
+        default: return String(tf.prefix(1))
+        }
+    }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            // Timeframe badge
-            if let timeFrameString = entry.timeFrame {
-                Text(timeFrameString)
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(timeFrameColor().opacity(0.2))
-                    .foregroundColor(timeFrameColor())
-                    .cornerRadius(8)
-            }
+        HStack(spacing: 8) {
+            // Icon (same as Records tab)
+            Image(systemName: recordIcon)
+                .font(.system(size: 16))
+                .foregroundColor(iconColor)
+                .frame(width: 20)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.recordType ?? "Unknown")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-
-                // Location name if available
-                if let locationName = entry.locationName, !locationName.isEmpty {
-                    Text(locationName)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-
-                HStack(spacing: 8) {
-                    Text(formattedValueForEntry())
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    if let timestamp = entry.timestamp {
-                        Text("•")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text(compactDateFormatter.string(from: timestamp))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-
-            Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color(UIColor.systemBackground))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+            // Timeframe badge (styled to match icon aesthetic)
+            Text(timeFrameAbbrev)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
+                .frame(width: 18, height: 18)
+                .background(
+                    Circle()
+                        .fill(timeFrameColor)
                 )
-        )
+
+            // Date/time stacked (date on top, time below, left justified)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(formattedDate)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+                Text(formattedTime)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary.opacity(0.7))
+            }
+            .frame(width: 68, alignment: .leading)
+
+            // Location name
+            Text(locationText)
+                .font(.system(size: 12))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Value
+            Text(formattedValue)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.primary)
+                .frame(width: 70, alignment: .trailing)
+        }
+        .padding(.vertical, 2)
     }
 }
 
 // MARK: - Filter Option Button
 
-/// Reusable filter option button with checkmark indicator
 private struct FilterOptionButton: View {
     let title: String
     let isSelected: Bool

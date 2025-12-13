@@ -444,6 +444,24 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             break
         }
 
+        // Skip "Null Island" locations (0,0 with ~0 altitude) - these are placeholder values
+        let lat = location.coordinate.latitude
+        let lon = location.coordinate.longitude
+        let alt = location.altitude
+        let isNullIsland = abs(lat) < 0.01 && abs(lon) < 0.01 && abs(alt) < 1.0
+        if isNullIsland {
+            debugLog("⚠️ Skipping Null Island location - invalid GPS data")
+            return
+        }
+
+        // Skip unrealistic altitudes (likely airplane or bad GPS data)
+        // Mount Everest is 8,849m - anything above 9,000m is not a ground location
+        let maxRealisticAltitude: Double = 9000.0  // meters
+        if alt > maxRealisticAltitude {
+            debugLog("⚠️ Skipping unrealistic altitude (\(Int(alt))m) - likely airplane or bad GPS")
+            return
+        }
+
         let previousState = updateState
         updateState = .updating(pendingQueue: [])
         defer {
@@ -475,11 +493,10 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             }
             return
         }
-        
-        let lat = location.coordinate.latitude
-        let lon = location.coordinate.longitude
-        let alt = location.altitude
+
+        // Record this location for daily statistics (used for graphs)
         let settings = SettingsManager.shared
+        DailyStatisticManager.shared.recordLocation(location, homeCoordinate: settings.homeCoordinate)
 
         let latDelta = settings.minLatitudeDelta
         let lonDelta = settings.minLongitudeDelta

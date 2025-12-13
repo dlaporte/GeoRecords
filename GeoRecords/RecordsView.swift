@@ -13,7 +13,7 @@ struct RecordsView: View {
     @EnvironmentObject var deepLinkManager: DeepLinkManager
 
     @State private var navigateToDetail = false
-    @State private var selectedRecord: RecordDetail?
+    @State private var selectedRecordIndex: Int = 0
     @State private var currentRecordIndex = 0
     @State private var mapPosition: MapCameraPosition = .automatic
     @State private var selectedTimeFrame: TimeFrame = .allTime
@@ -61,7 +61,7 @@ struct RecordsView: View {
                             RecordCardView(record: record)
                                 .tag(index)
                                 .onTapGesture {
-                                    selectedRecord = record
+                                    selectedRecordIndex = index
                                     navigateToDetail = true
                                 }
                         }
@@ -106,9 +106,7 @@ struct RecordsView: View {
                 }
             }
             .navigationDestination(isPresented: $navigateToDetail) {
-                if let record = selectedRecord {
-                    RecordDetailView(record: record)
-                }
+                RecordDetailPager(records: allRecords, initialIndex: selectedRecordIndex)
             }
             .onAppear {
                 handleDeepLink()
@@ -129,16 +127,12 @@ struct RecordsView: View {
     private func handleDeepLink() {
         guard let recordType = deepLinkManager.recordType else { return }
 
-        if let record = recordForType(recordType) {
-            selectedRecord = record
+        // Deep links from notifications - find the record in allRecords
+        if let index = allRecords.firstIndex(where: { $0.recordType == recordType }) {
+            selectedRecordIndex = index
             navigateToDetail = true
             deepLinkManager.recordType = nil
         }
-    }
-
-    func recordForType(_ type: String) -> RecordDetail? {
-        // Deep links from notifications always go to all-time records
-        return recordManager.getRecord(type: type, timeFrame: .allTime)
     }
 }
 

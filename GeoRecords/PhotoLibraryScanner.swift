@@ -3,8 +3,58 @@ import Photos
 import CoreLocation
 import UIKit
 
+// MARK: - Elevation Validation Constants
+
+/// Minimum photo altitude to trigger terrain validation (3000ft in meters)
+private let elevationValidationThreshold: Double = 914.4  // 3000ft
+
+/// Maximum allowed altitude above terrain before photo is rejected (1500ft in meters)
+private let maxAltitudeAboveTerrain: Double = 457.2  // 1500ft
+
+// MARK: - Open-Elevation API
+
+/// Fetches terrain elevation for coordinates using Open-Elevation API
+private func fetchTerrainElevations(for coordinates: [(lat: Double, lon: Double)]) async -> [Double?] {
+    guard !coordinates.isEmpty else { return [] }
+
+    // Build the API request (batch up to 100 at a time)
+    let locations = coordinates.map { "{\"latitude\": \($0.lat), \"longitude\": \($0.lon)}" }.joined(separator: ",")
+    let jsonBody = "{\"locations\": [\(locations)]}"
+
+    guard let url = URL(string: "https://api.open-elevation.com/api/v1/lookup"),
+          let bodyData = jsonBody.data(using: .utf8) else {
+        return Array(repeating: nil, count: coordinates.count)
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = bodyData
+    request.timeoutInterval = 30
+
+    do {
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            debugLog("⛰️ Elevation API returned non-200 status")
+            return Array(repeating: nil, count: coordinates.count)
+        }
+
+        // Parse response: {"results": [{"latitude": x, "longitude": y, "elevation": z}, ...]}
+        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let results = json["results"] as? [[String: Any]] {
+            return results.map { $0["elevation"] as? Double }
+        }
+    } catch {
+        debugLog("⛰️ Elevation API error: \(error.localizedDescription)")
+    }
+
+    return Array(repeating: nil, count: coordinates.count)
+}
+
 // Discovered record from photo library
-struct DiscoveredRecord: Identifiable {
+struct DiscoveredRecord: Identifiable, Equatable {
     let id = UUID()
     let recordType: String
     let value: Double
@@ -15,6 +65,10 @@ struct DiscoveredRecord: Identifiable {
     var selected: Bool = true
     var beatsTimeFrames: [TimeFrame]  // Which timeframes this record beats
     var locationName: String?  // Reverse geocoded location name
+
+    static func == (lhs: DiscoveredRecord, rhs: DiscoveredRecord) -> Bool {
+        lhs.id == rhs.id
+    }
 }
 
 @MainActor
@@ -93,6 +147,9 @@ class PhotoLibraryScanner: ObservableObject {
         let batchSize = photoScanBatchSize
         let count = allPhotos.count
 
+        // Collect all locations for batch processing of daily statistics
+        var allLocationsWithDates: [(location: CLLocation, date: Date)] = []
+
         for batchStart in stride(from: 0, to: count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, count)
 
@@ -106,15 +163,26 @@ class PhotoLibraryScanner: ObservableObject {
                         self.progress = Double(index + 1) / Double(self.totalPhotos)
                     }
 
-                    guard let location = asset.location else { continue }
+                    guard let location = asset.location,
+                          let timestamp = asset.creationDate else { continue }
+
+                    let lat = location.coordinate.latitude
+                    let lon = location.coordinate.longitude
+                    let alt = location.altitude
+
+                    // Skip photos with (0, 0) coordinates and zero altitude - these are placeholder values
+                    // for photos without real GPS data
+                    let isNullIsland = abs(lat) < 0.01 && abs(lon) < 0.01 && abs(alt) < 1.0
+                    if isNullIsland {
+                        continue
+                    }
 
                     await MainActor.run {
                         self.photosWithLocation += 1
                     }
 
-                    let lat = location.coordinate.latitude
-                    let lon = location.coordinate.longitude
-                    let alt = location.altitude
+                    // Record this location for daily statistics (ALL geotagged photos)
+                    allLocationsWithDates.append((location, timestamp))
 
                     // Collect ALL candidates for each direction
                     northCandidates.append((lat, asset, location))
@@ -135,6 +203,79 @@ class PhotoLibraryScanner: ObservableObject {
             // Brief yield to UI
             try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
         }
+
+        // Validate high-altitude photos against terrain elevation
+        // This filters out airplane photos while keeping legitimate mountain/building photos
+        var invalidLocations: Set<String> = []  // Key: "lat,lon" for matching
+        let highAltitudePhotos = upCandidates.filter { $0.value > elevationValidationThreshold }
+        if !highAltitudePhotos.isEmpty {
+            debugLog("⛰️ Validating \(highAltitudePhotos.count) high-altitude photos (>\(Int(elevationValidationThreshold))m)...")
+
+            // Batch validate in groups of 100 (API limit)
+            var invalidAssetIds: Set<String> = []
+            let batchSize = 100
+
+            for batchStart in stride(from: 0, to: highAltitudePhotos.count, by: batchSize) {
+                let batchEnd = min(batchStart + batchSize, highAltitudePhotos.count)
+                let batch = Array(highAltitudePhotos[batchStart..<batchEnd])
+
+                let coordinates = batch.map { (lat: $0.location.coordinate.latitude, lon: $0.location.coordinate.longitude) }
+                let terrainElevations = await fetchTerrainElevations(for: coordinates)
+
+                for (index, photo) in batch.enumerated() {
+                    guard let terrainElevation = terrainElevations[index] else {
+                        // API failed for this coordinate - allow the photo (fail open)
+                        continue
+                    }
+
+                    let altitudeAboveTerrain = photo.value - terrainElevation
+                    if altitudeAboveTerrain > maxAltitudeAboveTerrain {
+                        // Photo is too high above terrain - likely airplane
+                        invalidAssetIds.insert(photo.asset.localIdentifier)
+                        // Track location for filtering daily statistics
+                        let locKey = String(format: "%.4f,%.4f", photo.location.coordinate.latitude, photo.location.coordinate.longitude)
+                        invalidLocations.insert(locKey)
+                        debugLog("✈️ Filtered airplane photo: \(Int(photo.value))m altitude, terrain: \(Int(terrainElevation))m, above: \(Int(altitudeAboveTerrain))m")
+                    }
+                }
+            }
+
+            if !invalidAssetIds.isEmpty {
+                debugLog("⛰️ Filtered \(invalidAssetIds.count) photos likely taken from aircraft")
+
+                // Remove invalid photos from all candidate lists
+                func filterCandidates(_ candidates: inout [(value: Double, asset: PHAsset, location: CLLocation)]) {
+                    candidates.removeAll { invalidAssetIds.contains($0.asset.localIdentifier) }
+                }
+
+                filterCandidates(&northCandidates)
+                filterCandidates(&southCandidates)
+                filterCandidates(&eastCandidates)
+                filterCandidates(&westCandidates)
+                filterCandidates(&upCandidates)
+                filterCandidates(&downCandidates)
+                filterCandidates(&fromHomeCandidates)
+            }
+        }
+
+        // Filter out airplane locations from daily statistics before recording
+        if !invalidLocations.isEmpty {
+            allLocationsWithDates.removeAll { loc in
+                let locKey = String(format: "%.4f,%.4f", loc.location.coordinate.latitude, loc.location.coordinate.longitude)
+                return invalidLocations.contains(locKey)
+            }
+        }
+
+        // Record ALL valid geotagged photos to daily statistics for accurate graphs
+        debugLog("📊 Recording \(allLocationsWithDates.count) locations for daily statistics...")
+        await MainActor.run {
+            for (location, date) in allLocationsWithDates {
+                DailyStatisticManager.shared.recordLocation(location, date: date, homeCoordinate: homeCoordinate, batchMode: true)
+            }
+            // Flush any remaining batched changes
+            DailyStatisticManager.shared.flushBatchChanges()
+        }
+        debugLog("📊 Daily statistics recording complete")
 
         // Get current month and year boundaries
         let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
@@ -306,6 +447,23 @@ class PhotoLibraryScanner: ObservableObject {
         advanceToNextRecord()
     }
 
+    /// Confirm a specific candidate by index (used by swipeable carousel)
+    func confirmCandidate(at index: Int) {
+        let candidates = currentCandidates
+        guard index >= 0, index < candidates.count else { return }
+
+        // Add the selected candidate to confirmed records
+        confirmedRecords.append(candidates[index])
+
+        // Move to next record type
+        advanceToNextRecord()
+    }
+
+    /// Skip this record type entirely (no photo selected)
+    func skipRecordType() {
+        advanceToNextRecord()
+    }
+
     func rejectCurrentRecord() {
         guard let timeFrame = currentTimeFrame,
               currentRecordTypeIndex < recordTypes.count else {
@@ -343,6 +501,16 @@ class PhotoLibraryScanner: ObservableObject {
             return nil
         }
         return discoveredRecords[0]
+    }
+
+    /// Get all candidates for the current record type and timeframe (for swipeable carousel)
+    var currentCandidates: [DiscoveredRecord] {
+        guard let timeFrame = currentTimeFrame,
+              currentRecordTypeIndex < recordTypes.count else {
+            return []
+        }
+        let recordType = recordTypes[currentRecordTypeIndex]
+        return candidatesByTimeFrame[timeFrame]?[recordType] ?? []
     }
 
     var currentTimeFrameName: String {
@@ -395,6 +563,8 @@ class PhotoLibraryScanner: ObservableObject {
                 importProgress = (index, selectedRecords.count)
             }
 
+            // Note: Daily statistics are recorded during scan, not during import
+
             // Get photo data from asset
             let photoData = await getPhotoData(from: record.photoAsset)
 
@@ -424,12 +594,28 @@ class PhotoLibraryScanner: ObservableObject {
             successCount += 1
         }
 
+        // Create historical yearly and monthly records from all scanned data
+        debugLog("📊 Creating historical yearly and monthly records...")
+        let historicalCount = await createHistoricalRecords()
+        debugLog("📊 Created \(historicalCount) historical records")
+
+        // Remove any duplicate records that may have been created
+        let duplicatesRemoved = await MainActor.run {
+            RecordHistoryManager.shared.removeDuplicates()
+        }
+
         await MainActor.run {
             importProgress = (selectedRecords.count, selectedRecords.count)
             isImporting = false
 
+            // Clear the photo import cache to free memory
+            clearPhotoImportCache()
+
             // Log summary
-            debugLog("✅ Import completed successfully. \(successCount) records imported.")
+            debugLog("✅ Import completed successfully. \(successCount) user-confirmed + \(historicalCount) historical records imported.")
+            if duplicatesRemoved > 0 {
+                debugLog("🧹 Post-import cleanup: removed \(duplicatesRemoved) duplicate records")
+            }
 
             // Unblock alerts after a delay
             Task {
@@ -441,6 +627,94 @@ class PhotoLibraryScanner: ObservableObject {
             RecordManager.shared.suppressNotificationsAfterImport(durationSeconds: postImportNotificationSuppressionSeconds)
             completion(successCount)
         }
+    }
+
+    /// Create historical records for each year and month from scanned data
+    /// This populates RecordHistoryEntry with extremes for each time period
+    /// Geocoding happens in background after records are created
+    private func createHistoricalRecords() async -> Int {
+        var recordsCreated = 0
+        let calendar = Calendar.current
+
+        // Get all candidates from the allTime bucket (contains all photos)
+        guard let allTimeCandidates = candidatesByTimeFrame[.allTime] else {
+            return 0
+        }
+
+        // Create historical records immediately (without waiting for geocoding)
+        for (recordType, candidates) in allTimeCandidates {
+            guard !candidates.isEmpty else { continue }
+
+            var byYear: [Int: [DiscoveredRecord]] = [:]
+            var byYearMonth: [String: [DiscoveredRecord]] = [:]
+
+            for candidate in candidates {
+                let year = calendar.component(.year, from: candidate.timestamp)
+                let month = calendar.component(.month, from: candidate.timestamp)
+                let yearMonthKey = "\(year)-\(String(format: "%02d", month))"
+
+                byYear[year, default: []].append(candidate)
+                byYearMonth[yearMonthKey, default: []].append(candidate)
+            }
+
+            let findExtreme: ([DiscoveredRecord]) -> DiscoveredRecord? = { records in
+                guard let type = RecordType.from(string: recordType) else {
+                    return records.first
+                }
+                return records.max { candidate1, candidate2 in
+                    type.shouldReplace(newValue: candidate2.value, oldValue: candidate1.value)
+                }
+            }
+
+            // Create yearly records
+            for (_, yearCandidates) in byYear {
+                guard let extreme = findExtreme(yearCandidates) else { continue }
+
+                let detail = RecordDetail(
+                    value: extreme.value,
+                    timestamp: extreme.timestamp,
+                    coordinate: extreme.coordinate,
+                    altitude: extreme.altitude,
+                    locationName: nil,  // Will be populated by background geocoding
+                    recordType: recordType,
+                    timeFrame: .year,
+                    photoData: nil
+                )
+
+                await MainActor.run {
+                    RecordHistoryManager.shared.addRecord(recordType: recordType, detail: detail)
+                }
+                recordsCreated += 1
+            }
+
+            // Create monthly records
+            for (_, monthCandidates) in byYearMonth {
+                guard let extreme = findExtreme(monthCandidates) else { continue }
+
+                let detail = RecordDetail(
+                    value: extreme.value,
+                    timestamp: extreme.timestamp,
+                    coordinate: extreme.coordinate,
+                    altitude: extreme.altitude,
+                    locationName: nil,  // Will be populated by background geocoding
+                    recordType: recordType,
+                    timeFrame: .month,
+                    photoData: nil
+                )
+
+                await MainActor.run {
+                    RecordHistoryManager.shared.addRecord(recordType: recordType, detail: detail)
+                }
+                recordsCreated += 1
+            }
+        }
+
+        // Spawn background geocoding task
+        Task.detached(priority: .background) {
+            await BackgroundGeocoder.shared.geocodeMissingLocations()
+        }
+
+        return recordsCreated
     }
 
     private func updateRecordManager(recordType: String, detail: RecordDetail, timeFrame: TimeFrame) {

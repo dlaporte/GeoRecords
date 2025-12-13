@@ -73,21 +73,22 @@ struct ImportPreviewView: View {
                     }
                     .padding()
                 } else if scanner.isConfirming {
-                    // Confirmation flow - show one record at a time per timeframe
-                    if let currentRecord = scanner.currentRecord {
+                    // Confirmation flow - swipeable photo carousel per record type
+                    let candidates = scanner.currentCandidates
+                    if !candidates.isEmpty {
                         let progress = scanner.currentProgress
                         RecordConfirmationView(
-                            record: currentRecord,
+                            candidates: candidates,
                             timeFrameName: scanner.currentTimeFrameName,
                             recordNumber: progress.current,
                             totalRecords: progress.total,
                             unitSystem: settings.unitSystem,
                             scanner: scanner,
-                            onConfirm: {
-                                scanner.confirmCurrentRecord()
+                            onConfirm: { selectedIndex in
+                                scanner.confirmCandidate(at: selectedIndex)
                             },
-                            onReject: {
-                                scanner.rejectCurrentRecord()
+                            onSkip: {
+                                scanner.skipRecordType()
                             }
                         )
                     }

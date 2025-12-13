@@ -69,6 +69,22 @@ struct GeoRecords: App {
 
         // Schedule summary notifications
         SummaryNotificationManager.shared.scheduleSummaryNotifications()
+
+        // Startup maintenance tasks
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)  // Wait 2 seconds after launch
+
+            // Remove any duplicate records
+            await MainActor.run {
+                let removed = RecordHistoryManager.shared.removeDuplicates()
+                if removed > 0 {
+                    debugLog("🧹 Startup cleanup: removed \(removed) duplicate records")
+                }
+            }
+
+            // Start background geocoding for any records missing location names
+            await BackgroundGeocoder.shared.geocodeMissingLocations()
+        }
     }
     
     var body: some Scene {

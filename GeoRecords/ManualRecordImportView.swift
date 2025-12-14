@@ -20,6 +20,7 @@ struct ManualRecordImportView: View {
     @State private var isGeocodingLocation = false
     @State private var altitudeText: String = ""
     @State private var selectedPhotoAssetIdentifier: String?
+    @State private var selectedPhotoCloudIdentifier: String?
     @State private var selectedPhotoImage: UIImage?
     @State private var recordTypesThatWouldBeat: [String] = []
 
@@ -465,7 +466,8 @@ struct ManualRecordImportView: View {
                 locationName: locationName,
                 recordType: selectedRecordType,
                 timeFrame: timeFrame,
-                photoAssetIdentifier: selectedPhotoAssetIdentifier
+                photoAssetIdentifier: selectedPhotoAssetIdentifier,
+                photoCloudIdentifier: selectedPhotoCloudIdentifier
             )
 
             // Update record manager (uses shared method that checks if new value is better)
@@ -537,6 +539,12 @@ struct ManualRecordImportView: View {
             // Get photo asset identifier
             let assetIdentifier = item.itemIdentifier
 
+            // Get cloud identifier for cross-device access
+            var cloudIdentifier: String?
+            if let localId = assetIdentifier {
+                cloudIdentifier = await getCloudIdentifier(for: localId)
+            }
+
             // Create a UIImage from the data for thumbnail
             let thumbnailImage = UIImage(data: data)
 
@@ -546,6 +554,7 @@ struct ManualRecordImportView: View {
                 selectedLocation = coordinate
                 selectedDate = photoDate
                 selectedPhotoAssetIdentifier = assetIdentifier
+                selectedPhotoCloudIdentifier = cloudIdentifier
                 selectedPhotoImage = thumbnailImage
                 mapPosition = .region(MKCoordinateRegion(
                     center: coordinate,
@@ -674,6 +683,24 @@ struct ManualRecordImportView: View {
         }
 
         return recordType.shouldReplace(newValue: newValue, oldValue: currentValue)
+    }
+
+    /// Get the iCloud identifier for a photo asset (for cross-device access)
+    private func getCloudIdentifier(for localIdentifier: String) async -> String? {
+        // cloudIdentifierMappings(forLocalIdentifiers:) is synchronous in iOS 16+
+        let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: [localIdentifier])
+
+        guard let mapping = mappings[localIdentifier] else {
+            return nil
+        }
+
+        switch mapping {
+        case .success(let cloudId):
+            return cloudId.stringValue
+        case .failure(let error):
+            debugLog("⚠️ Failed to get cloud identifier: \(error.localizedDescription)")
+            return nil
+        }
     }
 }
 

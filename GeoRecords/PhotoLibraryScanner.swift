@@ -576,6 +576,12 @@ class PhotoLibraryScanner: ObservableObject {
             debugLog("📸 Photo asset identifier: \(photoAssetIdentifier)")
             debugLog("📅 Photo timestamp (EXIF): \(record.timestamp)")
 
+            // Get cloud identifier for cross-device access
+            let photoCloudIdentifier = getCloudIdentifier(for: record.photoAsset)
+            if let cloudId = photoCloudIdentifier {
+                debugLog("☁️ Photo cloud identifier: \(cloudId)")
+            }
+
             // Use the timeframes that were determined during scanning
             let timeFrames = record.beatsTimeFrames
             debugLog("📅 Importing \(record.recordType) for timeframes: \(timeFrames.map { $0.rawValue }.joined(separator: ", "))")
@@ -592,7 +598,8 @@ class PhotoLibraryScanner: ObservableObject {
                     locationName: record.locationName,
                     recordType: record.recordType,
                     timeFrame: timeFrame,
-                    photoAssetIdentifier: photoAssetIdentifier
+                    photoAssetIdentifier: photoAssetIdentifier,
+                    photoCloudIdentifier: photoCloudIdentifier
                 )
 
                 // Always add to history (for stats and historical tracking)
@@ -909,5 +916,24 @@ class PhotoLibraryScanner: ObservableObject {
         wizardSelections = WizardSelection()
         currentWizardStep = .allTime
         isWizardMode = false
+    }
+
+    /// Get the iCloud identifier for a photo asset (for cross-device access)
+    /// Returns nil if the photo is not synced to iCloud or identifier cannot be retrieved
+    private func getCloudIdentifier(for asset: PHAsset) -> String? {
+        // cloudIdentifierMappings(forLocalIdentifiers:) is synchronous in iOS 16+
+        let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: [asset.localIdentifier])
+
+        guard let mapping = mappings[asset.localIdentifier] else {
+            return nil
+        }
+
+        switch mapping {
+        case .success(let cloudId):
+            return cloudId.stringValue
+        case .failure(let error):
+            debugLog("⚠️ Failed to get cloud identifier: \(error.localizedDescription)")
+            return nil
+        }
     }
 }

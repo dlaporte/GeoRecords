@@ -161,13 +161,20 @@ struct DetailContentView: View {
     }
 
     private func loadPhoto() async {
-        // Try to load from Photos library using identifier
+        // Try to load from Photos library using identifier with fallback
         if let identifier = record.photoAssetIdentifier {
-            if let photo = await PhotoReferenceManager.shared.fetchMediumPhoto(identifier: identifier) {
+            // Use fallback method that tries: local ID → cloud ID → timestamp/location
+            // This helps when restoring backups on different devices with same iCloud Photo Library
+            if let photo = await PhotoReferenceManager.shared.fetchMediumPhotoWithFallback(
+                identifier: identifier,
+                cloudIdentifier: record.photoCloudIdentifier,
+                timestamp: record.timestamp,
+                coordinate: record.coordinate
+            ) {
                 loadedPhoto = photo
                 return
             }
-            // Photo not found in library
+            // Photo not found in library even with all fallback methods
             photoNotAvailable = true
         }
 

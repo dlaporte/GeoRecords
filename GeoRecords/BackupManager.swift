@@ -24,6 +24,7 @@ class BackupManager {
         let altitude: Double
         let locationName: String?
         let photoAssetIdentifier: String?
+        let photoCloudIdentifier: String?  // For cross-device photo access via iCloud Photo Library
         let notes: String?
     }
 
@@ -69,6 +70,7 @@ class BackupManager {
                     altitude: entry.altitude,
                     locationName: entry.locationName,
                     photoAssetIdentifier: entry.photoAssetIdentifier,
+                    photoCloudIdentifier: entry.photoCloudIdentifier,
                     notes: entry.notes
                 )
             }
@@ -153,6 +155,7 @@ class BackupManager {
                     recordType: record.recordType,
                     timeFrame: timeFrame,
                     photoAssetIdentifier: record.photoAssetIdentifier,
+                    photoCloudIdentifier: record.photoCloudIdentifier,
                     notes: record.notes
                 )
 

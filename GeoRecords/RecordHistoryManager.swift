@@ -34,10 +34,14 @@ class RecordHistoryManager: ObservableObject {
         newEntry.locationName = detail.locationName
         newEntry.photoData = detail.photoData
         newEntry.photoAssetIdentifier = detail.photoAssetIdentifier
+        newEntry.photoCloudIdentifier = detail.photoCloudIdentifier
         newEntry.notes = detail.notes
 
         if let photoId = detail.photoAssetIdentifier {
             debugLog("💾 Saving record with photo: \(photoId)")
+            if let cloudId = detail.photoCloudIdentifier {
+                debugLog("☁️ Cloud identifier: \(cloudId)")
+            }
         } else {
             debugLog("⚠️ Saving record WITHOUT photo attachment")
         }

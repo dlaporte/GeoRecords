@@ -14,13 +14,14 @@ struct RecordDetail: Identifiable {
     var recordType: String
     var timeFrame: TimeFrame    // Monthly, Yearly, or All Time
     var photoData: Data?        // Legacy: JPEG photo data (for old records)
-    var photoAssetIdentifier: String?  // Reference to photo in Apple Photos library
+    var photoAssetIdentifier: String?  // Local reference to photo in Apple Photos library
+    var photoCloudIdentifier: String?  // iCloud identifier for cross-device photo access
     var notes: String?          // User-added notes/description for this record
     var dateAdded: Date?        // When record was imported/created
 
     /// Initialize with coordinate validation
     /// - Warning: Coordinates are validated and must be valid. Invalid coordinates will trigger an assertion in debug builds.
-    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, photoAssetIdentifier: String? = nil, notes: String? = nil, dateAdded: Date? = nil) {
+    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, notes: String? = nil, dateAdded: Date? = nil) {
         self.id = id
         self.value = value
         self.timestamp = timestamp
@@ -30,6 +31,7 @@ struct RecordDetail: Identifiable {
         self.timeFrame = timeFrame
         self.photoData = photoData
         self.photoAssetIdentifier = photoAssetIdentifier
+        self.photoCloudIdentifier = photoCloudIdentifier
         self.notes = notes
         self.dateAdded = dateAdded
 
@@ -77,6 +79,7 @@ struct RecordDetail: Identifiable {
             timeFrame: timeFrame,
             photoData: entry.photoData,
             photoAssetIdentifier: entry.photoAssetIdentifier,
+            photoCloudIdentifier: entry.photoCloudIdentifier,
             notes: entry.notes,
             dateAdded: entry.dateAdded
         )

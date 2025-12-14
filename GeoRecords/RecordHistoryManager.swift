@@ -428,6 +428,10 @@ class RecordHistoryManager: ObservableObject {
         // Clear daily statistics as well (even for local-only clear)
         DailyStatisticManager.shared.clearAllStatistics()
 
+        // Reset the managed object context to release all cached objects
+        // This prevents crashes when FetchRequests hold stale references
+        context.reset()
+
         // Get the store URL
         guard let storeDescription = PersistenceController.shared.container.persistentStoreDescriptions.first,
               let storeURL = storeDescription.url else {
@@ -455,10 +459,14 @@ class RecordHistoryManager: ObservableObject {
 
                 // Reload the store - iCloud will sync data back
                 PersistenceController.shared.container.loadPersistentStores { _, error in
-                    if let error = error {
-                        debugLog("❌ Failed to reload store: \(error.localizedDescription)")
-                    } else {
-                        debugLog("✅ Store reloaded - iCloud sync will restore data")
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            debugLog("❌ Failed to reload store: \(error.localizedDescription)")
+                        } else {
+                            debugLog("✅ Store reloaded - iCloud sync will restore data")
+                            // Reload records from the fresh store
+                            RecordManager.shared.loadRecordsFromHistory()
+                        }
                     }
                 }
             } catch {

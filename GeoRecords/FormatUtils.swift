@@ -15,7 +15,6 @@ enum FormatUtils {
         case .east: return "East"
         case .west: return "West"
         case .up: return "Up"
-        case .down: return "Down"
         case .fromHome: return "From Home"
         }
     }
@@ -30,7 +29,6 @@ enum FormatUtils {
         case .east: return "arrow.right.circle.fill"
         case .west: return "arrow.left.circle.fill"
         case .up: return "mountain.2.fill"
-        case .down: return "water.waves"
         case .fromHome: return "house.circle.fill"
         }
     }
@@ -44,7 +42,6 @@ enum FormatUtils {
         case .east: return "➡️"
         case .west: return "⬅️"
         case .up: return "🏔"
-        case .down: return "🏖"
         case .fromHome: return "🏠"
         }
     }
@@ -66,7 +63,6 @@ enum FormatUtils {
         case .east: return .orange
         case .west: return .purple
         case .up: return .green
-        case .down: return .brown
         case .fromHome: return .red
         }
     }
@@ -80,7 +76,7 @@ enum FormatUtils {
         case .north, .south, .east, .west:
             return String(format: "%.4f°", value)
 
-        case .up, .down:
+        case .up:
             // Value is stored in meters
             if unitSystem == .imperial {
                 let feet = value * metersToFeet
@@ -156,7 +152,7 @@ enum FormatUtils {
         case .east, .west:
             return String(format: "%.4f°", coordinate.longitude)
 
-        case .up, .down:
+        case .up:
             return "Altitude not available"
 
         case .fromHome:
@@ -179,7 +175,7 @@ enum FormatUtils {
     /// - Parameters:
     ///   - recordType: The type of record
     ///   - value: The record value (latitude, longitude, distance, etc.)
-    ///   - altitude: The altitude value (for Up/Down records)
+    ///   - altitude: The altitude value (for Up records)
     ///   - unitSystem: The unit system to use
     ///   - precision: Coordinate precision (default: 4 for record confirmation, 2 for lists)
     /// - Returns: Formatted value string
@@ -198,7 +194,7 @@ enum FormatUtils {
         case .north, .south, .east, .west:
             return String(format: "%.\(coordinatePrecision)f°", value)
 
-        case .up, .down:
+        case .up:
             if unitSystem == .imperial {
                 let feet = altitude * metersToFeet
                 return String(format: "%.0f ft", feet)

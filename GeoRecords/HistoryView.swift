@@ -134,7 +134,6 @@ struct CompactHistoryRow: View {
         case .east: return .orange
         case .west: return .orange
         case .up: return .green
-        case .down: return .green
         case .fromHome: return .red
         }
     }
@@ -160,7 +159,7 @@ struct CompactHistoryRow: View {
         if let name = entry.locationName, !name.isEmpty, name != unknownLocationString {
             return name
         }
-        return String(format: "%.2f, %.2f", entry.latitude, entry.longitude)
+        return String(format: "%.4f, %.4f", entry.latitude, entry.longitude)
     }
 
     private var formattedDate: String {

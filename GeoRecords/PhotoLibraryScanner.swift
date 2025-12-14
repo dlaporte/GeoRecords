@@ -3,47 +3,12 @@ import Photos
 import CoreLocation
 import UIKit
 
-// MARK: - Open-Elevation API
+// MARK: - Type Aliases
 
-/// Fetches terrain elevation for coordinates using Open-Elevation API
-private func fetchTerrainElevations(for coordinates: [(lat: Double, lon: Double)]) async -> [Double?] {
-    guard !coordinates.isEmpty else { return [] }
+/// Raw candidate from photo scanning before conversion to DiscoveredRecord
+typealias PhotoCandidate = (value: Double, asset: PHAsset, location: CLLocation)
 
-    // Build the API request (batch up to 100 at a time)
-    let locations = coordinates.map { "{\"latitude\": \($0.lat), \"longitude\": \($0.lon)}" }.joined(separator: ",")
-    let jsonBody = "{\"locations\": [\(locations)]}"
-
-    guard let url = URL(string: "https://api.open-elevation.com/api/v1/lookup"),
-          let bodyData = jsonBody.data(using: .utf8) else {
-        return Array(repeating: nil, count: coordinates.count)
-    }
-
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.httpBody = bodyData
-    request.timeoutInterval = 30
-
-    do {
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            debugLog("⛰️ Elevation API returned non-200 status")
-            return Array(repeating: nil, count: coordinates.count)
-        }
-
-        // Parse response: {"results": [{"latitude": x, "longitude": y, "elevation": z}, ...]}
-        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let results = json["results"] as? [[String: Any]] {
-            return results.map { $0["elevation"] as? Double }
-        }
-    } catch {
-        debugLog("⛰️ Elevation API error: \(error.localizedDescription)")
-    }
-
-    return Array(repeating: nil, count: coordinates.count)
-}
+// MARK: - Discovered Record
 
 // Discovered record from photo library
 struct DiscoveredRecord: Identifiable, Equatable {
@@ -63,6 +28,103 @@ struct DiscoveredRecord: Identifiable, Equatable {
     }
 }
 
+// MARK: - Import Wizard Data Structures
+
+/// Wizard step for photo import flow
+enum ImportWizardStep: Int, CaseIterable {
+    case allTime = 0
+    case yearly = 1
+    case monthly = 2
+
+    var title: String {
+        switch self {
+        case .allTime: return "All-Time Records"
+        case .yearly: return "Yearly Records"
+        case .monthly: return "Monthly Records"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .allTime: return "All Years"
+        case .yearly: return "Past Years"
+        case .monthly: return "This Year"
+        }
+    }
+
+    var previousStep: ImportWizardStep? {
+        switch self {
+        case .allTime: return nil
+        case .yearly: return .allTime
+        case .monthly: return .yearly
+        }
+    }
+
+    var nextStep: ImportWizardStep? {
+        switch self {
+        case .allTime: return .yearly
+        case .yearly: return .monthly
+        case .monthly: return nil
+        }
+    }
+}
+
+/// Bucket for organizing candidates by year
+struct YearBucket: Identifiable {
+    let id: Int  // The year (e.g., 2024)
+    var records: [String: [DiscoveredRecord]]  // recordType -> candidates (sorted by extremeness)
+
+    var availableRecordTypes: [String] {
+        RecordType.allTypeStrings.filter { records[$0]?.isEmpty == false }
+    }
+
+    var isEmpty: Bool {
+        availableRecordTypes.isEmpty
+    }
+}
+
+/// Bucket for organizing candidates by month (current year only)
+struct MonthBucket: Identifiable {
+    let id: Int  // 1-12 (January-December)
+    let year: Int
+    var records: [String: [DiscoveredRecord]]  // recordType -> candidates (sorted by extremeness)
+
+    var displayName: String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "MMMM"
+        var components = DateComponents()
+        components.month = id
+        if let date = Calendar.current.date(from: components) {
+            return dateFormatter.string(from: date)
+        }
+        return "Month \(id)"
+    }
+
+    var availableRecordTypes: [String] {
+        RecordType.allTypeStrings.filter { records[$0]?.isEmpty == false }
+    }
+
+    var isEmpty: Bool {
+        availableRecordTypes.isEmpty
+    }
+}
+
+/// Tracks user selections across all wizard steps
+struct WizardSelection {
+    // All-time: recordType -> selectedIndex (0-based into candidates array)
+    var allTime: [String: Int] = [:]
+
+    // Yearly: year -> recordType -> selectedIndex
+    var yearly: [Int: [String: Int]] = [:]
+
+    // Monthly: "year-month" -> recordType -> selectedIndex
+    var monthly: [String: [String: Int]] = [:]
+
+    static func monthKey(year: Int, month: Int) -> String {
+        return "\(year)-\(String(format: "%02d", month))"
+    }
+}
+
 @MainActor
 class PhotoLibraryScanner: ObservableObject {
     @Published var isScanning = false
@@ -77,7 +139,7 @@ class PhotoLibraryScanner: ObservableObject {
     @Published var isImporting = false
     @Published var importProgress: (current: Int, total: Int) = (0, 0)
 
-    // Three-phase confirmation flow
+    // Three-phase confirmation flow (legacy - kept for compatibility during transition)
     @Published var currentTimeFrame: TimeFrame? = nil  // Current phase: month, year, or allTime
     @Published var currentRecordTypeIndex = 0  // Index into recordTypes array
     @Published var isConfirming = false
@@ -89,9 +151,25 @@ class PhotoLibraryScanner: ObservableObject {
     private var currentCandidateIndices: [String: Int] = [:]  // Key format: "timeFrame_recordType"
     var confirmedRecords: [DiscoveredRecord] = []  // All confirmed records for import
 
+    // MARK: - Import Wizard State
+
+    /// Reorganized candidate storage for wizard
+    @Published var allTimeCandidates: [String: [DiscoveredRecord]] = [:]  // recordType -> sorted candidates
+    @Published var yearlyBuckets: [YearBucket] = []  // Sorted descending by year
+    @Published var monthlyBuckets: [MonthBucket] = []  // Current year only, sorted by month
+
+    /// Selection state for wizard
+    @Published var wizardSelections = WizardSelection()
+
+    /// Current wizard step
+    @Published var currentWizardStep: ImportWizardStep = .allTime
+
+    /// Whether wizard mode is active (vs legacy confirmation flow)
+    @Published var isWizardMode = false
+
     func requestPhotoLibraryAccess(completion: @escaping (Bool) -> Void) {
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
-            Task { @MainActor in
+            _ = Task { @MainActor in
                 completion(status == .authorized)
             }
         }
@@ -113,6 +191,9 @@ class PhotoLibraryScanner: ObservableObject {
         currentCandidateIndices = [:]
         confirmedRecords = []
 
+        // Reset wizard state
+        resetWizardState()
+
         // Fetch all photos (can't filter by location in predicate)
         let fetchOptions = PHFetchOptions()
         fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
@@ -127,20 +208,16 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         // Collect ALL candidates (not just extremes)
-        var northCandidates: [(value: Double, asset: PHAsset, location: CLLocation)] = []
-        var southCandidates: [(value: Double, asset: PHAsset, location: CLLocation)] = []
-        var eastCandidates: [(value: Double, asset: PHAsset, location: CLLocation)] = []
-        var westCandidates: [(value: Double, asset: PHAsset, location: CLLocation)] = []
-        var upCandidates: [(value: Double, asset: PHAsset, location: CLLocation)] = []
-        var downCandidates: [(value: Double, asset: PHAsset, location: CLLocation)] = []
-        var fromHomeCandidates: [(value: Double, asset: PHAsset, location: CLLocation)] = []
+        var northCandidates: [PhotoCandidate] = []
+        var southCandidates: [PhotoCandidate] = []
+        var eastCandidates: [PhotoCandidate] = []
+        var westCandidates: [PhotoCandidate] = []
+        var upCandidates: [PhotoCandidate] = []
+        var fromHomeCandidates: [PhotoCandidate] = []
 
         // Scan all photos asynchronously in batches
         let batchSize = photoScanBatchSize
         let count = allPhotos.count
-
-        // Collect all locations for batch processing of daily statistics
-        var allLocationsWithDates: [(location: CLLocation, date: Date)] = []
 
         for batchStart in stride(from: 0, to: count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, count)
@@ -156,7 +233,7 @@ class PhotoLibraryScanner: ObservableObject {
                     }
 
                     guard let location = asset.location,
-                          let timestamp = asset.creationDate else { continue }
+                          asset.creationDate != nil else { continue }
 
                     let lat = location.coordinate.latitude
                     let lon = location.coordinate.longitude
@@ -173,16 +250,12 @@ class PhotoLibraryScanner: ObservableObject {
                         self.photosWithLocation += 1
                     }
 
-                    // Record this location for daily statistics (ALL geotagged photos)
-                    allLocationsWithDates.append((location, timestamp))
-
                     // Collect ALL candidates for each direction
                     northCandidates.append((lat, asset, location))
                     southCandidates.append((lat, asset, location))
                     eastCandidates.append((lon, asset, location))
                     westCandidates.append((lon, asset, location))
                     upCandidates.append((alt, asset, location))
-                    downCandidates.append((alt, asset, location))
 
                     // Distance from home
                     if let homeCoord = homeCoordinate {
@@ -196,78 +269,8 @@ class PhotoLibraryScanner: ObservableObject {
             try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
         }
 
-        // Validate high-altitude photos against terrain elevation
-        // This filters out airplane photos while keeping legitimate mountain/building photos
-        var invalidLocations: Set<String> = []  // Key: "lat,lon" for matching
-        let highAltitudePhotos = upCandidates.filter { $0.value > terrainValidationAltitudeThreshold }
-        if !highAltitudePhotos.isEmpty {
-            debugLog("⛰️ Validating \(highAltitudePhotos.count) high-altitude photos (>\(Int(terrainValidationAltitudeThreshold))m)...")
-
-            // Batch validate in groups of 100 (API limit)
-            var invalidAssetIds: Set<String> = []
-            let batchSize = 100
-
-            for batchStart in stride(from: 0, to: highAltitudePhotos.count, by: batchSize) {
-                let batchEnd = min(batchStart + batchSize, highAltitudePhotos.count)
-                let batch = Array(highAltitudePhotos[batchStart..<batchEnd])
-
-                let coordinates = batch.map { (lat: $0.location.coordinate.latitude, lon: $0.location.coordinate.longitude) }
-                let terrainElevations = await fetchTerrainElevations(for: coordinates)
-
-                for (index, photo) in batch.enumerated() {
-                    guard let terrainElevation = terrainElevations[index] else {
-                        // API failed for this coordinate - allow the photo (fail open)
-                        continue
-                    }
-
-                    let altitudeAboveTerrain = photo.value - terrainElevation
-                    if altitudeAboveTerrain > maxAltitudeAboveTerrainMeters {
-                        // Photo is too high above terrain - likely airplane
-                        invalidAssetIds.insert(photo.asset.localIdentifier)
-                        // Track location for filtering daily statistics
-                        let locKey = String(format: coordinatePairFormat, photo.location.coordinate.latitude, photo.location.coordinate.longitude)
-                        invalidLocations.insert(locKey)
-                        debugLog("✈️ Filtered airplane photo: \(Int(photo.value))m altitude, terrain: \(Int(terrainElevation))m, above: \(Int(altitudeAboveTerrain))m")
-                    }
-                }
-            }
-
-            if !invalidAssetIds.isEmpty {
-                debugLog("⛰️ Filtered \(invalidAssetIds.count) photos likely taken from aircraft")
-
-                // Remove invalid photos from all candidate lists
-                func filterCandidates(_ candidates: inout [(value: Double, asset: PHAsset, location: CLLocation)]) {
-                    candidates.removeAll { invalidAssetIds.contains($0.asset.localIdentifier) }
-                }
-
-                filterCandidates(&northCandidates)
-                filterCandidates(&southCandidates)
-                filterCandidates(&eastCandidates)
-                filterCandidates(&westCandidates)
-                filterCandidates(&upCandidates)
-                filterCandidates(&downCandidates)
-                filterCandidates(&fromHomeCandidates)
-            }
-        }
-
-        // Filter out airplane locations from daily statistics before recording
-        if !invalidLocations.isEmpty {
-            allLocationsWithDates.removeAll { loc in
-                let locKey = String(format: coordinatePairFormat, loc.location.coordinate.latitude, loc.location.coordinate.longitude)
-                return invalidLocations.contains(locKey)
-            }
-        }
-
-        // Record ALL valid geotagged photos to daily statistics for accurate graphs
-        debugLog("📊 Recording \(allLocationsWithDates.count) locations for daily statistics...")
-        await MainActor.run {
-            for (location, date) in allLocationsWithDates {
-                DailyStatisticManager.shared.recordLocation(location, date: date, homeCoordinate: homeCoordinate, batchMode: true)
-            }
-            // Flush any remaining batched changes
-            DailyStatisticManager.shared.flushBatchChanges()
-        }
-        debugLog("📊 Daily statistics recording complete")
+        // Daily statistics are recorded during import (not scan)
+        // This ensures only user-selected records affect the charts
 
         // Get current month and year boundaries
         let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
@@ -278,12 +281,11 @@ class PhotoLibraryScanner: ObservableObject {
         eastCandidates.sort { $0.value > $1.value }  // Highest longitude first
         westCandidates.sort { $0.value < $1.value }  // Lowest longitude first
         upCandidates.sort { $0.value > $1.value }  // Highest altitude first
-        downCandidates.sort { $0.value < $1.value }  // Lowest altitude first
         fromHomeCandidates.sort { $0.value > $1.value }  // Furthest distance first
 
         // Convert and filter candidates by timeframe
         func buildCandidatesForTimeframe(
-            _ candidates: [(value: Double, asset: PHAsset, location: CLLocation)],
+            _ candidates: [PhotoCandidate],
             recordType: String,
             timeFrame: TimeFrame,
             valueTransform: ((Double) -> Double)? = nil
@@ -320,14 +322,13 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         // Organize candidates by timeframe and record type
-        let candidateSets: [(name: String, candidates: [(value: Double, asset: PHAsset, location: CLLocation)], transform: ((Double) -> Double)?)] = [
-            ("Furthest North", northCandidates, nil),
-            ("Furthest South", southCandidates, nil),
-            ("Furthest East", eastCandidates, nil),
-            ("Furthest West", westCandidates, nil),
-            ("Furthest Up", upCandidates, nil),
-            ("Furthest Down", downCandidates, nil),
-            ("Furthest from Home", fromHomeCandidates, nil)  // Store in meters (consistent with altitude)
+        let candidateSets: [(name: String, candidates: [PhotoCandidate], transform: ((Double) -> Double)?)] = [
+            (RecordType.north.rawValue, northCandidates, nil),
+            (RecordType.south.rawValue, southCandidates, nil),
+            (RecordType.east.rawValue, eastCandidates, nil),
+            (RecordType.west.rawValue, westCandidates, nil),
+            (RecordType.up.rawValue, upCandidates, nil),
+            (RecordType.fromHome.rawValue, fromHomeCandidates, nil)  // Store in meters (consistent with altitude)
         ]
 
         candidatesByTimeFrame = [
@@ -371,11 +372,11 @@ class PhotoLibraryScanner: ObservableObject {
                 errorMessage = "No records found that would beat your current records"
             }
         } else {
-            // Start confirmation flow with monthly records first
-            currentTimeFrame = .month
-            currentRecordTypeIndex = 0
-            isConfirming = true
-            updateCurrentRecord()
+            // Organize into wizard buckets and start wizard mode
+            organizeIntoTimeBuckets()
+            currentWizardStep = .allTime
+            isWizardMode = true
+            isConfirming = true  // Keep for compatibility with ImportPreviewView
         }
     }
 
@@ -555,16 +556,33 @@ class PhotoLibraryScanner: ObservableObject {
                 importProgress = (index, selectedRecords.count)
             }
 
-            // Note: Daily statistics are recorded during scan, not during import
+            // Record daily statistics ONLY for this specific record type
+            // This prevents a "Furthest North" import from also recording its altitude
+            let location = CLLocation(latitude: record.coordinate.latitude, longitude: record.coordinate.longitude)
+            await MainActor.run {
+                let homeCoord = SettingsManager.shared.homeCoordinate
+                DailyStatisticManager.shared.recordForRecordType(
+                    record.recordType,
+                    location: location,
+                    altitude: record.altitude,
+                    date: record.timestamp,
+                    homeCoordinate: homeCoord,
+                    batchMode: true
+                )
+            }
 
-            // Get photo data from asset
-            let photoData = await getPhotoData(from: record.photoAsset)
+            // Get photo asset identifier (reference to Apple Photos library)
+            let photoAssetIdentifier = record.photoAsset.localIdentifier
+            debugLog("📸 Photo asset identifier: \(photoAssetIdentifier)")
+            debugLog("📅 Photo timestamp (EXIF): \(record.timestamp)")
 
             // Use the timeframes that were determined during scanning
             let timeFrames = record.beatsTimeFrames
             debugLog("📅 Importing \(record.recordType) for timeframes: \(timeFrames.map { $0.rawValue }.joined(separator: ", "))")
 
             // Create records for each applicable timeframe
+            let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
+
             for timeFrame in timeFrames {
                 let detail = RecordDetail(
                     value: record.value,
@@ -574,43 +592,48 @@ class PhotoLibraryScanner: ObservableObject {
                     locationName: record.locationName,
                     recordType: record.recordType,
                     timeFrame: timeFrame,
-                    photoData: photoData
+                    photoAssetIdentifier: photoAssetIdentifier
                 )
 
-                // Add to record manager and history
+                // Always add to history (for stats and historical tracking)
                 await MainActor.run {
-                    updateRecordManager(recordType: record.recordType, detail: detail, timeFrame: timeFrame)
                     RecordHistoryManager.shared.addRecord(recordType: record.recordType, detail: detail)
+                }
+
+                // Only update RecordManager if record belongs to CURRENT timeframe period
+                // RecordManager tracks current records, not historical ones
+                let shouldUpdateRecordManager: Bool
+                switch timeFrame {
+                case .allTime:
+                    shouldUpdateRecordManager = true
+                case .year:
+                    shouldUpdateRecordManager = record.timestamp >= startOfYear
+                case .month:
+                    shouldUpdateRecordManager = record.timestamp >= startOfMonth
+                }
+
+                if shouldUpdateRecordManager {
+                    _ = await MainActor.run {
+                        RecordManager.shared.updateRecordIfBetter(recordType: record.recordType, detail: detail, timeFrame: timeFrame)
+                    }
                 }
             }
             successCount += 1
         }
 
-        // Create historical yearly and monthly records from all scanned data
-        debugLog("📊 Creating historical yearly and monthly records...")
-        let historicalCount = await createHistoricalRecords()
-        debugLog("📊 Created \(historicalCount) historical records")
-
-        // Remove any duplicate records that may have been created
-        let duplicatesRemoved = await MainActor.run {
-            RecordHistoryManager.shared.removeDuplicates()
-        }
-
         await MainActor.run {
+            // Flush batched daily statistics
+            DailyStatisticManager.shared.flushBatchChanges()
+            debugLog("📊 Daily statistics recorded for \(successCount) imported records")
+
             importProgress = (selectedRecords.count, selectedRecords.count)
             isImporting = false
 
-            // Clear the photo import cache to free memory
-            clearPhotoImportCache()
-
             // Log summary
-            debugLog("✅ Import completed successfully. \(successCount) user-confirmed + \(historicalCount) historical records imported.")
-            if duplicatesRemoved > 0 {
-                debugLog("🧹 Post-import cleanup: removed \(duplicatesRemoved) duplicate records")
-            }
+            debugLog("✅ Import completed successfully. \(successCount) records imported.")
 
             // Unblock alerts after a delay
-            Task {
+            _ = Task {
                 try? await Task.sleep(nanoseconds: postImportNotificationSuppressionNanoseconds)
                 RecordManager.shared.blockAlertsDuringImport(block: false)
             }
@@ -618,134 +641,273 @@ class PhotoLibraryScanner: ObservableObject {
             // Also use the time-based suppression system as backup
             RecordManager.shared.suppressNotificationsAfterImport(durationSeconds: postImportNotificationSuppressionSeconds)
             completion(successCount)
+
+            // Start background geocoding for any imported records missing location names
+            Task {
+                await BackgroundGeocoder.shared.geocodeMissingLocations()
+            }
         }
     }
 
-    /// Create historical records for each year and month from scanned data
-    /// This populates RecordHistoryEntry with extremes for each time period
-    /// Geocoding happens in background after records are created
-    private func createHistoricalRecords() async -> Int {
-        var recordsCreated = 0
-        let calendar = Calendar.current
+    // MARK: - Import Wizard Methods
 
-        // Get all candidates from the allTime bucket (contains all photos)
-        guard let allTimeCandidates = candidatesByTimeFrame[.allTime] else {
-            return 0
+    /// Reorganize scanned candidates into year/month buckets for wizard display
+    func organizeIntoTimeBuckets() {
+        let calendar = Calendar.current
+        let currentYear = calendar.component(.year, from: Date())
+
+        // Use the existing allTime candidates as the source
+        guard let allTimeData = candidatesByTimeFrame[.allTime] else {
+            debugLog("⚠️ No allTime candidates to organize into buckets")
+            return
         }
 
-        // Create historical records immediately (without waiting for geocoding)
-        for (recordType, candidates) in allTimeCandidates {
-            guard !candidates.isEmpty else { continue }
+        // Filter out invalid records (Null Island, zero coordinates, etc.)
+        var filteredAllTimeData: [String: [DiscoveredRecord]] = [:]
+        for (recordType, candidates) in allTimeData {
+            let validCandidates = candidates.filter { candidate in
+                isValidCandidate(candidate, recordType: recordType)
+            }
+            if !validCandidates.isEmpty {
+                filteredAllTimeData[recordType] = validCandidates
+            }
+        }
 
-            var byYear: [Int: [DiscoveredRecord]] = [:]
-            var byYearMonth: [String: [DiscoveredRecord]] = [:]
+        // Copy to wizard's allTimeCandidates
+        allTimeCandidates = filteredAllTimeData
 
+        // Build yearly buckets from filtered candidates
+        var yearDict: [Int: [String: [DiscoveredRecord]]] = [:]
+
+        for (recordType, candidates) in filteredAllTimeData {
             for candidate in candidates {
                 let year = calendar.component(.year, from: candidate.timestamp)
+                yearDict[year, default: [:]][recordType, default: []].append(candidate)
+            }
+        }
+
+        // Sort each year's candidates by extremeness and create buckets
+        yearlyBuckets = yearDict.keys.sorted(by: >).compactMap { year in
+            guard let yearData = yearDict[year] else { return nil }
+            var records: [String: [DiscoveredRecord]] = [:]
+            for (recordType, candidates) in yearData {
+                records[recordType] = sortByExtremeness(candidates, recordType: recordType)
+            }
+            let bucket = YearBucket(id: year, records: records)
+            return bucket.isEmpty ? nil : bucket
+        }
+
+        // Build monthly buckets (CURRENT YEAR ONLY)
+        var monthDict: [Int: [String: [DiscoveredRecord]]] = [:]
+
+        for (recordType, candidates) in filteredAllTimeData {
+            for candidate in candidates {
+                let year = calendar.component(.year, from: candidate.timestamp)
+                guard year == currentYear else { continue }
+
                 let month = calendar.component(.month, from: candidate.timestamp)
-                let yearMonthKey = "\(year)-\(String(format: "%02d", month))"
-
-                byYear[year, default: []].append(candidate)
-                byYearMonth[yearMonthKey, default: []].append(candidate)
-            }
-
-            let findExtreme: ([DiscoveredRecord]) -> DiscoveredRecord? = { records in
-                guard let type = RecordType.from(string: recordType) else {
-                    return records.first
-                }
-                return records.max { candidate1, candidate2 in
-                    type.shouldReplace(newValue: candidate2.value, oldValue: candidate1.value)
-                }
-            }
-
-            // Create yearly records
-            for (_, yearCandidates) in byYear {
-                guard let extreme = findExtreme(yearCandidates) else { continue }
-
-                let detail = RecordDetail(
-                    value: extreme.value,
-                    timestamp: extreme.timestamp,
-                    coordinate: extreme.coordinate,
-                    altitude: extreme.altitude,
-                    locationName: nil,  // Will be populated by background geocoding
-                    recordType: recordType,
-                    timeFrame: .year,
-                    photoData: nil
-                )
-
-                await MainActor.run {
-                    RecordHistoryManager.shared.addRecord(recordType: recordType, detail: detail)
-                }
-                recordsCreated += 1
-            }
-
-            // Create monthly records
-            for (_, monthCandidates) in byYearMonth {
-                guard let extreme = findExtreme(monthCandidates) else { continue }
-
-                let detail = RecordDetail(
-                    value: extreme.value,
-                    timestamp: extreme.timestamp,
-                    coordinate: extreme.coordinate,
-                    altitude: extreme.altitude,
-                    locationName: nil,  // Will be populated by background geocoding
-                    recordType: recordType,
-                    timeFrame: .month,
-                    photoData: nil
-                )
-
-                await MainActor.run {
-                    RecordHistoryManager.shared.addRecord(recordType: recordType, detail: detail)
-                }
-                recordsCreated += 1
+                monthDict[month, default: [:]][recordType, default: []].append(candidate)
             }
         }
 
-        // Spawn background geocoding task
-        Task.detached(priority: .background) {
-            await BackgroundGeocoder.shared.geocodeMissingLocations()
+        // Sort and create month buckets (1-12 order)
+        monthlyBuckets = (1...12).compactMap { month in
+            guard let monthData = monthDict[month] else { return nil }
+            var sortedRecords: [String: [DiscoveredRecord]] = [:]
+            for (recordType, candidates) in monthData {
+                sortedRecords[recordType] = sortByExtremeness(candidates, recordType: recordType)
+            }
+            let bucket = MonthBucket(id: month, year: currentYear, records: sortedRecords)
+            return bucket.isEmpty ? nil : bucket
         }
 
-        return recordsCreated
+        // Initialize default selections
+        initializeDefaultSelections()
     }
 
-    private func updateRecordManager(recordType: String, detail: RecordDetail, timeFrame: TimeFrame) {
-        let recordManager = RecordManager.shared
-        let existing = recordManager.getRecord(type: recordType, timeFrame: timeFrame)
+    /// Sort candidates by extremeness for a given record type
+    /// Favorites within threshold of the best value are prioritized to the front
+    private func sortByExtremeness(_ candidates: [DiscoveredRecord], recordType: String) -> [DiscoveredRecord] {
+        guard let type = RecordType.from(string: recordType) else { return candidates }
 
-        // Determine if this record should replace the existing one
-        let shouldUpdate: Bool
-        if let existing = existing,
-           let type = RecordType.from(string: recordType) {
-            shouldUpdate = type.shouldReplace(newValue: detail.value, oldValue: existing.value)
-            debugLog("🔄 \(recordType) (\(timeFrame.rawValue)): new=\(detail.value) vs existing=\(existing.value), updating=\(shouldUpdate)")
-        } else {
-            shouldUpdate = true  // No existing record, so set it
-            debugLog("🆕 \(recordType) (\(timeFrame.rawValue)): No existing record, setting new one with value=\(detail.value)")
+        // First, sort by extremeness
+        let sorted = candidates.sorted { c1, c2 in
+            type.shouldReplace(newValue: c1.value, oldValue: c2.value)
         }
 
-        if shouldUpdate {
-            recordManager.setRecord(type: recordType, timeFrame: timeFrame, record: detail)
-            debugLog("✅ Updated \(recordType) (\(timeFrame.rawValue)) to \(detail.value)")
+        guard let bestValue = sorted.first?.value else { return sorted }
+
+        // Get threshold for this record type
+        let threshold = getThresholdForFavorites(recordType: recordType)
+
+        // Partition into favorites-within-threshold and others
+        var favoritesInThreshold: [DiscoveredRecord] = []
+        var others: [DiscoveredRecord] = []
+
+        for candidate in sorted {
+            let isWithinThreshold = abs(candidate.value - bestValue) <= threshold
+            if candidate.photoAsset.isFavorite && isWithinThreshold {
+                favoritesInThreshold.append(candidate)
+            } else {
+                others.append(candidate)
+            }
+        }
+
+        // Return favorites first (maintaining their relative order), then others
+        return favoritesInThreshold + others
+    }
+
+    /// Get the threshold for prioritizing favorites for a given record type
+    private func getThresholdForFavorites(recordType: String) -> Double {
+        let settings = SettingsManager.shared
+
+        switch recordType {
+        case RecordType.north.rawValue, RecordType.south.rawValue:
+            return settings.minLatitudeDelta
+        case RecordType.east.rawValue, RecordType.west.rawValue:
+            return settings.minLongitudeDelta
+        case RecordType.up.rawValue:
+            // 50 feet in meters
+            return 50.0 * 0.3048
+        case RecordType.fromHome.rawValue:
+            return settings.minDistanceDeltaMeters
+        default:
+            return 0
         }
     }
 
-    private func getPhotoData(from asset: PHAsset) async -> Data? {
-        await withCheckedContinuation { continuation in
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.isSynchronous = true
+    /// Check if a candidate has valid location data (filters Null Island and unrealistic altitudes)
+    private func isValidCandidate(_ candidate: DiscoveredRecord, recordType: String) -> Bool {
+        let lat = candidate.coordinate.latitude
+        let lon = candidate.coordinate.longitude
+        let alt = candidate.altitude
 
-            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
-                // Compress photo data to ensure it's not too large for Core Data
-                guard let imageData = data,
-                      let uiImage = UIImage(data: imageData),
-                      let compressedData = uiImage.jpegData(compressionQuality: 0.7) else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                continuation.resume(returning: compressedData)
+        // Use shared validation that checks Null Island (with altitude if available)
+        // and unrealistic altitude values
+        let validationResult = validateLocation(latitude: lat, longitude: lon, altitude: alt)
+
+        switch validationResult {
+        case .valid:
+            return true
+        case .nullIsland:
+            debugLog("⚠️ Filtering Null Island candidate for \(recordType)")
+            return false
+        case .unrealisticAltitude(let meters):
+            debugLog("⚠️ Filtering unrealistic altitude (\(meters)m) candidate for \(recordType)")
+            return false
+        }
+    }
+
+    /// Initialize default selections (index 0 = most extreme for all)
+    private func initializeDefaultSelections() {
+        wizardSelections = WizardSelection()
+
+        // All-time: select index 0 for each record type that has candidates
+        for recordType in allTimeCandidates.keys {
+            if let candidates = allTimeCandidates[recordType], !candidates.isEmpty {
+                wizardSelections.allTime[recordType] = 0
             }
         }
+
+        // Yearly: select index 0 for each year/recordType with candidates
+        for bucket in yearlyBuckets {
+            var yearSelections: [String: Int] = [:]
+            for recordType in bucket.availableRecordTypes {
+                yearSelections[recordType] = 0
+            }
+            wizardSelections.yearly[bucket.id] = yearSelections
+        }
+
+        // Monthly: select index 0 for each month/recordType with candidates
+        for bucket in monthlyBuckets {
+            let key = WizardSelection.monthKey(year: bucket.year, month: bucket.id)
+            var monthSelections: [String: Int] = [:]
+            for recordType in bucket.availableRecordTypes {
+                monthSelections[recordType] = 0
+            }
+            wizardSelections.monthly[key] = monthSelections
+        }
+
+    }
+
+    /// Update selection for all-time record
+    func updateAllTimeSelection(recordType: String, index: Int) {
+        objectWillChange.send()
+        wizardSelections.allTime[recordType] = index
+    }
+
+    /// Update selection for yearly record
+    func updateYearlySelection(year: Int, recordType: String, index: Int) {
+        objectWillChange.send()
+        wizardSelections.yearly[year, default: [:]][recordType] = index
+    }
+
+    /// Update selection for monthly record
+    func updateMonthlySelection(year: Int, month: Int, recordType: String, index: Int) {
+        objectWillChange.send()
+        let key = WizardSelection.monthKey(year: year, month: month)
+        wizardSelections.monthly[key, default: [:]][recordType] = index
+    }
+
+    /// Build confirmed records from wizard selections for import
+    /// Skipped records (index >= available candidates) are not included
+    func buildConfirmedRecordsFromSelections() {
+        confirmedRecords = []
+
+        // All-time selections
+        for (recordType, index) in wizardSelections.allTime {
+            guard let candidates = allTimeCandidates[recordType] else { continue }
+            // Skip if index equals candidates.count (skip position) or is invalid
+            guard index >= 0 && index < candidates.count else { continue }
+            var record = candidates[index]
+            record.beatsTimeFrames = [.allTime]
+            confirmedRecords.append(record)
+        }
+
+        // Yearly selections
+        for (year, selections) in wizardSelections.yearly {
+            guard let bucket = yearlyBuckets.first(where: { $0.id == year }) else { continue }
+
+            for (recordType, index) in selections {
+                guard let candidates = bucket.records[recordType] else { continue }
+                // Skip if index equals candidates.count (skip position) or is invalid
+                guard index >= 0 && index < candidates.count else { continue }
+                var record = candidates[index]
+                record.beatsTimeFrames = [.year]
+                confirmedRecords.append(record)
+            }
+        }
+
+        // Monthly selections
+        for (monthKey, selections) in wizardSelections.monthly {
+            let components = monthKey.split(separator: "-")
+            guard components.count == 2,
+                  let month = Int(components[1]),
+                  let bucket = monthlyBuckets.first(where: { $0.id == month }) else { continue }
+
+            for (recordType, index) in selections {
+                guard let candidates = bucket.records[recordType] else { continue }
+                // Skip if index equals candidates.count (skip position) or is invalid
+                guard index >= 0 && index < candidates.count else { continue }
+                var record = candidates[index]
+                record.beatsTimeFrames = [.month]
+                confirmedRecords.append(record)
+            }
+        }
+    }
+
+    /// Check if wizard has any records to display
+    var hasWizardRecords: Bool {
+        !allTimeCandidates.isEmpty || !yearlyBuckets.isEmpty || !monthlyBuckets.isEmpty
+    }
+
+    /// Reset wizard state
+    func resetWizardState() {
+        allTimeCandidates = [:]
+        yearlyBuckets = []
+        monthlyBuckets = []
+        wizardSelections = WizardSelection()
+        currentWizardStep = .allTime
+        isWizardMode = false
     }
 }

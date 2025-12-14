@@ -109,6 +109,59 @@ class DailyStatisticManager: ObservableObject {
         statisticCache.removeAll()
     }
 
+    /// Record stats for a specific record type only (used during photo import)
+    /// This prevents importing a "Furthest North" photo from also recording its altitude
+    func recordForRecordType(_ recordType: String, location: CLLocation, altitude: Double, date: Date, homeCoordinate: CLLocationCoordinate2D?, batchMode: Bool = false) {
+        guard let type = RecordType.from(string: recordType) else { return }
+
+        let dayStart = Calendar.current.startOfDay(for: date)
+        let statistic = getOrCreateStatistic(for: dayStart)
+
+        switch type {
+        case .north:
+            if statistic.maxNorth == 0 || location.coordinate.latitude > statistic.maxNorth {
+                statistic.maxNorth = location.coordinate.latitude
+            }
+        case .south:
+            if statistic.maxSouth == 0 || location.coordinate.latitude < statistic.maxSouth {
+                statistic.maxSouth = location.coordinate.latitude
+            }
+        case .east:
+            if statistic.maxEast == 0 || location.coordinate.longitude > statistic.maxEast {
+                statistic.maxEast = location.coordinate.longitude
+            }
+        case .west:
+            if statistic.maxWest == 0 || location.coordinate.longitude < statistic.maxWest {
+                statistic.maxWest = location.coordinate.longitude
+            }
+        case .up:
+            // Validate altitude before recording
+            if altitude <= maxRealisticAltitudeMeters {
+                if statistic.maxUp == 0 || altitude > statistic.maxUp {
+                    statistic.maxUp = altitude
+                }
+            }
+        case .fromHome:
+            if let home = homeCoordinate {
+                let homeLocation = CLLocation(latitude: home.latitude, longitude: home.longitude)
+                let distance = location.distance(from: homeLocation)
+                if distance > statistic.maxDistanceFromHome {
+                    statistic.maxDistanceFromHome = distance
+                }
+            }
+        }
+
+        if batchMode {
+            pendingChanges += 1
+            if pendingChanges >= batchSaveThreshold {
+                saveContext()
+                pendingChanges = 0
+            }
+        } else {
+            saveContext()
+        }
+    }
+
     /// Get or create a DailyStatistic for a specific day
     private func getOrCreateStatistic(for dayStart: Date) -> DailyStatistic {
         // Check cache first
@@ -151,6 +204,101 @@ class DailyStatisticManager: ObservableObject {
             try context.save()
         } catch {
             debugLog("Error saving DailyStatistic: \(error.localizedDescription)")
+        }
+    }
+
+    /// Recalculate daily statistics for a specific day based on remaining records
+    /// Call this after deleting records to update the graph data
+    func recalculateStatisticsForDay(_ date: Date) {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: date)
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
+
+        // Fetch all records for this day
+        let recordRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        recordRequest.predicate = NSPredicate(
+            format: "timestamp >= %@ AND timestamp < %@",
+            dayStart as NSDate,
+            dayEnd as NSDate
+        )
+
+        do {
+            let records = try context.fetch(recordRequest)
+
+            if records.isEmpty {
+                // No records for this day - delete the statistic entry
+                let statRequest: NSFetchRequest<DailyStatistic> = DailyStatistic.fetchRequest()
+                statRequest.predicate = NSPredicate(format: "date == %@", dayStart as NSDate)
+                if let stat = try context.fetch(statRequest).first {
+                    context.delete(stat)
+                    try context.save()
+                    statisticCache.removeValue(forKey: dayStart)
+                }
+                return
+            }
+
+            // Get or create statistic for this day
+            let statistic = getOrCreateStatistic(for: dayStart)
+
+            // Reset all values
+            statistic.maxNorth = 0
+            statistic.maxSouth = 0
+            statistic.maxEast = 0
+            statistic.maxWest = 0
+            statistic.maxUp = 0
+            statistic.maxDown = 0
+            statistic.maxDistanceFromHome = 0
+
+            // Recalculate from records
+            let homeCoordinate = SettingsManager.shared.homeCoordinate
+
+            for record in records {
+                let lat = record.latitude
+                let lon = record.longitude
+                let alt = record.altitude
+
+                // Skip invalid coordinates
+                guard abs(lat) > 0.0001 || abs(lon) > 0.0001 else { continue }
+
+                // Update directional extremes
+                if statistic.maxNorth == 0 || lat > statistic.maxNorth {
+                    statistic.maxNorth = lat
+                }
+                if statistic.maxSouth == 0 || lat < statistic.maxSouth {
+                    statistic.maxSouth = lat
+                }
+                if statistic.maxEast == 0 || lon > statistic.maxEast {
+                    statistic.maxEast = lon
+                }
+                if statistic.maxWest == 0 || lon < statistic.maxWest {
+                    statistic.maxWest = lon
+                }
+
+                // Update altitude extremes (skip unrealistic values)
+                if alt <= maxRealisticAltitudeMeters {
+                    if statistic.maxUp == 0 || alt > statistic.maxUp {
+                        statistic.maxUp = alt
+                    }
+                    if statistic.maxDown == 0 || alt < statistic.maxDown {
+                        statistic.maxDown = alt
+                    }
+                }
+
+                // Update distance from home
+                if let home = homeCoordinate {
+                    let homeLocation = CLLocation(latitude: home.latitude, longitude: home.longitude)
+                    let recordLocation = CLLocation(latitude: lat, longitude: lon)
+                    let distance = recordLocation.distance(from: homeLocation)
+                    if distance > statistic.maxDistanceFromHome {
+                        statistic.maxDistanceFromHome = distance
+                    }
+                }
+            }
+
+            try context.save()
+            statisticCache[dayStart] = statistic
+        } catch {
+            debugLog("Error recalculating daily statistics: \(error.localizedDescription)")
         }
     }
 
@@ -261,6 +409,9 @@ class DailyStatisticManager: ObservableObject {
     /// Clear all daily statistics (used when clearing all records)
     /// Uses individual deletes instead of batch delete to ensure proper CloudKit sync
     func clearAllStatistics() {
+        // Clear in-memory cache first
+        statisticCache.removeAll()
+
         let fetchRequest: NSFetchRequest<DailyStatistic> = DailyStatistic.fetchRequest()
 
         do {
@@ -276,6 +427,92 @@ class DailyStatisticManager: ObservableObject {
             debugLog("✅ Cleared \(statCount) daily statistics (will sync deletion to iCloud)")
         } catch {
             debugLog("Error clearing daily statistics: \(error.localizedDescription)")
+        }
+    }
+
+    /// Regenerate all daily statistics from record history
+    /// Call this after importing a backup to rebuild graph data
+    func regenerateAllStatistics() {
+        // Clear existing statistics first
+        clearAllStatistics()
+
+        // Fetch all record history entries
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        do {
+            let records = try context.fetch(request)
+
+            if records.isEmpty {
+                debugLog("📊 No records to regenerate statistics from")
+                return
+            }
+
+            // Group records by day
+            let calendar = Calendar.current
+            var recordsByDay: [Date: [RecordHistoryEntry]] = [:]
+
+            for record in records {
+                guard let timestamp = record.timestamp else { continue }
+                let dayStart = calendar.startOfDay(for: timestamp)
+                recordsByDay[dayStart, default: []].append(record)
+            }
+
+            let homeCoordinate = SettingsManager.shared.homeCoordinate
+
+            // Calculate statistics for each day
+            for (dayStart, dayRecords) in recordsByDay {
+                let statistic = getOrCreateStatistic(for: dayStart)
+
+                for record in dayRecords {
+                    let lat = record.latitude
+                    let lon = record.longitude
+                    let alt = record.altitude
+
+                    // Skip invalid coordinates
+                    guard abs(lat) > 0.0001 || abs(lon) > 0.0001 else { continue }
+
+                    // Update directional extremes
+                    if statistic.maxNorth == 0 || lat > statistic.maxNorth {
+                        statistic.maxNorth = lat
+                    }
+                    if statistic.maxSouth == 0 || lat < statistic.maxSouth {
+                        statistic.maxSouth = lat
+                    }
+                    if statistic.maxEast == 0 || lon > statistic.maxEast {
+                        statistic.maxEast = lon
+                    }
+                    if statistic.maxWest == 0 || lon < statistic.maxWest {
+                        statistic.maxWest = lon
+                    }
+
+                    // Update altitude extremes
+                    if alt <= maxRealisticAltitudeMeters {
+                        if statistic.maxUp == 0 || alt > statistic.maxUp {
+                            statistic.maxUp = alt
+                        }
+                        if statistic.maxDown == 0 || alt < statistic.maxDown {
+                            statistic.maxDown = alt
+                        }
+                    }
+
+                    // Update distance from home
+                    if let home = homeCoordinate {
+                        let homeLocation = CLLocation(latitude: home.latitude, longitude: home.longitude)
+                        let recordLocation = CLLocation(latitude: lat, longitude: lon)
+                        let distance = recordLocation.distance(from: homeLocation)
+                        if distance > statistic.maxDistanceFromHome {
+                            statistic.maxDistanceFromHome = distance
+                        }
+                    }
+                }
+            }
+
+            try context.save()
+            statisticCache.removeAll()
+            debugLog("📊 Regenerated statistics for \(recordsByDay.count) days from \(records.count) records")
+
+        } catch {
+            debugLog("Error regenerating statistics: \(error.localizedDescription)")
         }
     }
 }

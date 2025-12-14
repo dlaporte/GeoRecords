@@ -13,12 +13,14 @@ struct RecordDetail: Identifiable {
     var locationName: String?
     var recordType: String
     var timeFrame: TimeFrame    // Monthly, Yearly, or All Time
-    var photoData: Data?        // JPEG photo data captured when record was set
+    var photoData: Data?        // Legacy: JPEG photo data (for old records)
+    var photoAssetIdentifier: String?  // Reference to photo in Apple Photos library
     var notes: String?          // User-added notes/description for this record
+    var dateAdded: Date?        // When record was imported/created
 
     /// Initialize with coordinate validation
     /// - Warning: Coordinates are validated and must be valid. Invalid coordinates will trigger an assertion in debug builds.
-    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, notes: String? = nil) {
+    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, photoAssetIdentifier: String? = nil, notes: String? = nil, dateAdded: Date? = nil) {
         self.id = id
         self.value = value
         self.timestamp = timestamp
@@ -27,7 +29,9 @@ struct RecordDetail: Identifiable {
         self.recordType = recordType
         self.timeFrame = timeFrame
         self.photoData = photoData
+        self.photoAssetIdentifier = photoAssetIdentifier
         self.notes = notes
+        self.dateAdded = dateAdded
 
         // Validate coordinate
         if CLLocationCoordinate2DIsValid(coordinate) {
@@ -72,7 +76,9 @@ struct RecordDetail: Identifiable {
             recordType: entry.recordType ?? unknownValueString,
             timeFrame: timeFrame,
             photoData: entry.photoData,
-            notes: entry.notes
+            photoAssetIdentifier: entry.photoAssetIdentifier,
+            notes: entry.notes,
+            dateAdded: entry.dateAdded
         )
     }
 }
@@ -160,6 +166,31 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         records[type]?[timeFrame] = record
     }
 
+    /// Conditionally updates a record if the new value is better than the existing one
+    /// - Parameters:
+    ///   - recordType: The type of record (e.g., "Furthest North")
+    ///   - detail: The new record details
+    ///   - timeFrame: The time frame for the record
+    /// - Returns: True if the record was updated, false otherwise
+    @discardableResult
+    func updateRecordIfBetter(recordType: String, detail: RecordDetail, timeFrame: TimeFrame) -> Bool {
+        let existing = getRecord(type: recordType, timeFrame: timeFrame)
+
+        let shouldUpdate: Bool
+        if let existing = existing,
+           let type = RecordType.from(string: recordType) {
+            shouldUpdate = type.shouldReplace(newValue: detail.value, oldValue: existing.value)
+        } else {
+            shouldUpdate = true
+        }
+
+        if shouldUpdate {
+            setRecord(type: recordType, timeFrame: timeFrame, record: detail)
+        }
+
+        return shouldUpdate
+    }
+
     /// Block all alerts during photo import
     func blockAlertsDuringImport(block: Bool) {
         if block {
@@ -230,22 +261,15 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                     entry.recordType ?? unknownValueString
                 }
 
-                // Process each record type
-                let recordTypes = [
-                    ("Furthest North", false),
-                    ("Furthest South", true),
-                    ("Furthest East", false),
-                    ("Furthest West", true),
-                    ("Furthest Up", false),
-                    ("Furthest Down", true),
-                    ("Furthest from Home", false)
-                ]
-
-                for (type, ascending) in recordTypes {
-                    if let typeEntries = grouped[type], let entry = findExtreme(in: typeEntries, ascending: ascending) {
+                // Process each record type using RecordType enum
+                for recordType in RecordType.allCases {
+                    // ascending=true means "lower is better", which is the opposite of isAscending
+                    let ascending = !recordType.isAscending
+                    if let typeEntries = grouped[recordType.rawValue],
+                       let entry = findExtreme(in: typeEntries, ascending: ascending) {
                         if var record = makeRecordDetail(from: entry) {
                             record.timeFrame = timeFrame
-                            setRecord(type: type, timeFrame: timeFrame, record: record)
+                            setRecord(type: recordType.rawValue, timeFrame: timeFrame, record: record)
                         }
                     }
                 }
@@ -286,8 +310,6 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             // Calculate delta based on comparison direction
             let delta = compareAscending ? (current.value - newValue) : (newValue - current.value)
 
-            debugLog("\(type) (\(timeFrame.rawValue)): new=\(newValue), current=\(current.value), delta=\(delta)")
-
             if delta > threshold {
                 let newRecord = RecordDetail(
                     value: newValue,
@@ -325,7 +347,6 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             }
         } else {
             // Set initial record for this timeframe
-            debugLog("Setting initial \(type) (\(timeFrame.rawValue)) to \(newValue)")
             let newRecord = RecordDetail(
                 value: newValue,
                 timestamp: now,
@@ -352,20 +373,17 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
         // Check cache first
         if let cachedName = await sharedGeocodingCache.getCachedName(for: location.coordinate) {
-            debugLog("📍 Using cached location for (\(lat), \(lon)): \(cachedName)")
             return cachedName
         }
 
         // Check if geocoding is already in progress
         if isGeocodingInProgress {
-            debugLog("Geocoding already in progress, skipping request")
             return ""
         }
 
         // Throttle geocoding to avoid rate limits
         let now = Date()
         if let lastTime = lastGeocodingTime, now.timeIntervalSince(lastTime) < geocodingThrottleInterval {
-            debugLog("Throttling geocoding request")
             return ""
         }
 
@@ -502,14 +520,11 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
         let distanceMeters = distanceFromHome(location: location, settings: settings)
 
-        debugLog(">> updateRecords called")
-        debugLog("Location: lat=\(lat), lon=\(lon), alt=\(alt)")
-
         // Check all timeframes for each record type
         for timeFrame in TimeFrame.allCases {
             // Furthest North (higher latitude is better)
             checkAndUpdateRecord(
-                type: "Furthest North",
+                type: RecordType.north.rawValue,
                 newValue: lat,
                 threshold: latDelta,
                 compareAscending: false,
@@ -520,7 +535,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
             // Furthest South (lower latitude is better)
             checkAndUpdateRecord(
-                type: "Furthest South",
+                type: RecordType.south.rawValue,
                 newValue: lat,
                 threshold: latDelta,
                 compareAscending: true,
@@ -531,7 +546,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
             // Furthest East (higher longitude is better)
             checkAndUpdateRecord(
-                type: "Furthest East",
+                type: RecordType.east.rawValue,
                 newValue: lon,
                 threshold: lonDelta,
                 compareAscending: false,
@@ -542,7 +557,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
             // Furthest West (lower longitude is better)
             checkAndUpdateRecord(
-                type: "Furthest West",
+                type: RecordType.west.rawValue,
                 newValue: lon,
                 threshold: lonDelta,
                 compareAscending: true,
@@ -553,7 +568,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
             // Furthest Up (higher altitude is better)
             checkAndUpdateRecord(
-                type: "Furthest Up",
+                type: RecordType.up.rawValue,
                 newValue: alt,
                 threshold: altDeltaMeters,
                 compareAscending: false,
@@ -562,21 +577,10 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                 timeFrame: timeFrame
             )
 
-            // Furthest Down (lower altitude is better)
-            checkAndUpdateRecord(
-                type: "Furthest Down",
-                newValue: alt,
-                threshold: altDeltaMeters,
-                compareAscending: true,
-                location: location,
-                reverseGeocodedName: reverseGeocodedName,
-                timeFrame: timeFrame
-            )
-
             // Furthest from Home (greater distance is better)
             if let distance = distanceMeters {
                 checkAndUpdateRecord(
-                    type: "Furthest from Home",
+                    type: RecordType.fromHome.rawValue,
                     newValue: distance,  // Store in meters (consistent with altitude)
                     threshold: distanceDeltaMeters,
                     compareAscending: false,

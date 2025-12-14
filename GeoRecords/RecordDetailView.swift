@@ -4,17 +4,35 @@ import MapKit
 
 // MARK: - Shared Record Operations
 
-/// Deletes a record from Core Data and clears it from in-memory storage
+/// Deletes a record and all related records (same photo/timestamp) from Core Data
+/// Also updates daily statistics for the affected day
 /// - Parameters:
 ///   - record: The record to delete
 ///   - recordManager: The record manager to update
 @MainActor
 func deleteRecordFromStorage(_ record: RecordDetail, recordManager: RecordManager) {
-    // Delete from Core Data history
-    RecordHistoryManager.shared.deleteRecord(recordId: record.id)
+    // Delete this record and all related records with the same timestamp
+    // (Records from the same photo have the same timestamp)
+    let deletedCount = RecordHistoryManager.shared.deleteRelatedRecords(
+        recordType: record.recordType,
+        timestamp: record.timestamp,
+        coordinate: record.coordinate
+    )
 
-    // Clear from RecordManager in-memory
-    recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: nil)
+    if deletedCount > 1 {
+        debugLog("🗑️ Deleted \(deletedCount) related records (same photo)")
+    }
+
+    // Clear from RecordManager in-memory for all timeframes
+    for timeFrame in TimeFrame.allCases {
+        if let existing = recordManager.getRecord(type: record.recordType, timeFrame: timeFrame),
+           existing.timestamp == record.timestamp {
+            recordManager.setRecord(type: record.recordType, timeFrame: timeFrame, record: nil)
+        }
+    }
+
+    // Recalculate daily statistics for the affected day
+    DailyStatisticManager.shared.recalculateStatisticsForDay(record.timestamp)
 
     // Reload records from history to get the next best record
     recordManager.loadRecordsFromHistory()
@@ -109,7 +127,7 @@ private struct RecordDetailContent: View {
     @State private var showDeleteAlert = false
 
     var body: some View {
-        DetailContentView(record: record, onSaveNotes: saveNotes)
+        DetailContentView(record: record, onSaveNotes: saveNotes, onSaveLocationName: saveLocationName)
             .alert("Delete Record?", isPresented: $showDeleteAlert) {
                 Button("Cancel", role: .cancel) {}
                 Button("Delete", role: .destructive) {
@@ -122,6 +140,15 @@ private struct RecordDetailContent: View {
 
     private func saveNotes(_ notes: String?) {
         updateRecordNotes(for: record, notes: notes, recordManager: recordManager)
+    }
+
+    private func saveLocationName(_ locationName: String?) {
+        // Update all records at the same coordinates
+        RecordHistoryManager.shared.updateLocationNameForCoordinates(
+            latitude: record.coordinate.latitude,
+            longitude: record.coordinate.longitude,
+            locationName: locationName
+        )
     }
 }
 
@@ -136,7 +163,7 @@ struct RecordDetailView: View {
     @State private var showDeleteAlert = false
 
     var body: some View {
-        DetailContentView(record: record, onSaveNotes: saveNotes)
+        DetailContentView(record: record, onSaveNotes: saveNotes, onSaveLocationName: saveLocationName)
             .navigationTitle(record.recordType)
             .toolbar {
                 ToolbarItem(placement: .destructiveAction) {
@@ -159,6 +186,14 @@ struct RecordDetailView: View {
 
     private func saveNotes(_ notes: String?) {
         updateRecordNotes(for: record, notes: notes, recordManager: recordManager)
+    }
+
+    private func saveLocationName(_ locationName: String?) {
+        RecordHistoryManager.shared.updateLocationNameForCoordinates(
+            latitude: record.coordinate.latitude,
+            longitude: record.coordinate.longitude,
+            locationName: locationName
+        )
     }
 
     private func deleteRecord() {

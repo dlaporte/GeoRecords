@@ -7,13 +7,19 @@ import MapKit
 struct DetailContentView: View {
     let record: RecordDetail
     let onSaveNotes: (String?) -> Void
+    let onSaveLocationName: (String?) -> Void
 
     @EnvironmentObject var settings: SettingsManager
-    @Environment(\.openURL) var openURL
 
     @State private var isEditingNotes = false
     @State private var notesText: String = ""
     @State private var showFullScreenPhoto = false
+    @State private var loadedPhoto: UIImage?
+    @State private var photoNotAvailable = false
+    @State private var isEditingLocationName = false
+    @State private var locationNameText: String = ""
+    @State private var displayedLocationName: String?
+    @State private var showMapOptions = false
 
     // MARK: - Computed Properties
 
@@ -26,7 +32,7 @@ struct DetailContentView: View {
         switch recordType {
         case .north, .south: return .blue
         case .east, .west: return .orange
-        case .up, .down: return .green
+        case .up: return .green
         case .fromHome: return .red
         }
     }
@@ -65,6 +71,13 @@ struct DetailContentView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
         return formatter.string(from: record.timestamp)
+    }
+
+    private var formattedDateAdded: String? {
+        guard let dateAdded = record.dateAdded else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy 'at' h:mm a"
+        return formatter.string(from: dateAdded)
     }
 
     private var formattedAltitude: String {
@@ -126,11 +139,95 @@ struct DetailContentView: View {
         .background(Color(UIColor.systemGroupedBackground))
         .onAppear {
             notesText = record.notes ?? ""
+            locationNameText = record.locationName ?? ""
+            displayedLocationName = record.locationName
+        }
+        .task {
+            await loadPhoto()
+            await prioritizeGeocoding()
         }
         .fullScreenCover(isPresented: $showFullScreenPhoto) {
-            if let photoData = record.photoData, let uiImage = UIImage(data: photoData) {
-                FullScreenPhotoView(image: uiImage, isPresented: $showFullScreenPhoto)
+            if let image = loadedPhoto {
+                FullScreenPhotoView(image: image, isPresented: $showFullScreenPhoto)
             }
+        }
+    }
+
+    // MARK: - Photo Loading
+
+    /// Whether this record has a photo (either identifier or legacy data)
+    private var hasPhoto: Bool {
+        record.photoAssetIdentifier != nil || record.photoData != nil
+    }
+
+    private func loadPhoto() async {
+        // Try to load from Photos library using identifier
+        if let identifier = record.photoAssetIdentifier {
+            if let photo = await PhotoReferenceManager.shared.fetchMediumPhoto(identifier: identifier) {
+                loadedPhoto = photo
+                return
+            }
+            // Photo not found in library
+            photoNotAvailable = true
+        }
+
+        // Fallback to legacy embedded photo data
+        if let data = record.photoData, let image = UIImage(data: data) {
+            loadedPhoto = image
+            return
+        }
+    }
+
+    /// Prioritize geocoding for this record if it doesn't have a location name
+    /// First checks local records for an existing name, then falls back to Apple geocoder
+    private func prioritizeGeocoding() async {
+        // Skip if already has a location name
+        guard record.locationName == nil || record.locationName?.isEmpty == true else { return }
+
+        let lat = record.coordinate.latitude
+        let lon = record.coordinate.longitude
+
+        // First, check if any existing record nearby has a location name
+        if let existingName = await MainActor.run(body: {
+            RecordHistoryManager.shared.lookupLocationName(latitude: lat, longitude: lon)
+        }) {
+            // Found existing name - use it and propagate to this record
+            await MainActor.run {
+                RecordHistoryManager.shared.updateLocationNameForCoordinates(
+                    latitude: lat,
+                    longitude: lon,
+                    locationName: existingName
+                )
+                displayedLocationName = existingName
+                locationNameText = existingName
+            }
+            debugLog("📍 Used existing location name: \(existingName)")
+            return
+        }
+
+        // No existing name found - fall back to Apple geocoder
+        let location = CLLocation(latitude: lat, longitude: lon)
+        let geocoder = CLGeocoder()
+
+        do {
+            let placemarks = try await geocoder.reverseGeocodeLocation(location)
+            if let placemark = placemarks.first {
+                let name = FormatUtils.formatPlacemarkName(placemark)
+
+                // Update all records at this location
+                await MainActor.run {
+                    RecordHistoryManager.shared.updateLocationNameForCoordinates(
+                        latitude: lat,
+                        longitude: lon,
+                        locationName: name
+                    )
+                    displayedLocationName = name
+                    locationNameText = name
+                }
+                debugLog("📍 Geocoded from API: \(name)")
+            }
+        } catch {
+            debugLog("📍 Geocoding failed: \(error.localizedDescription)")
         }
     }
 
@@ -168,12 +265,26 @@ struct DetailContentView: View {
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
 
-                // Location name
-                if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
-                    Text(name)
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
+                // Location name with edit button
+                Button(action: {
+                    locationNameText = displayedLocationName ?? ""
+                    isEditingLocationName = true
+                }) {
+                    HStack(spacing: 4) {
+                        if let name = displayedLocationName, !name.isEmpty, name != unknownLocationString {
+                            Text(name)
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        } else {
+                            Text("Add location name")
+                                .font(.subheadline)
+                                .foregroundColor(.blue)
+                        }
+                        Image(systemName: "pencil")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                    }
                 }
             }
         }
@@ -183,16 +294,32 @@ struct DetailContentView: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color(UIColor.secondarySystemGroupedBackground))
         )
+        .sheet(isPresented: $isEditingLocationName) {
+            LocationNameEditor(
+                locationName: $locationNameText,
+                onSave: {
+                    let trimmedName = locationNameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let newName = trimmedName.isEmpty ? nil : trimmedName
+                    displayedLocationName = newName
+                    onSaveLocationName(newName)
+                    isEditingLocationName = false
+                },
+                onCancel: {
+                    isEditingLocationName = false
+                }
+            )
+            .presentationDetents([.height(200)])
+        }
     }
 
     // MARK: - Media Section
 
     private var mediaSection: some View {
         Group {
-            if let photoData = record.photoData, let uiImage = UIImage(data: photoData) {
-                // Photo
+            if let image = loadedPhoto {
+                // Photo loaded successfully
                 Button(action: { showFullScreenPhoto = true }) {
-                    Image(uiImage: uiImage)
+                    Image(uiImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .frame(height: 220)
@@ -213,8 +340,31 @@ struct DetailContentView: View {
                         )
                 }
                 .buttonStyle(.plain)
+            } else if hasPhoto && !photoNotAvailable {
+                // Photo is loading
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color(UIColor.secondarySystemGroupedBackground))
+                    .frame(height: 220)
+                    .overlay(
+                        ProgressView()
+                    )
+            } else if photoNotAvailable {
+                // Photo reference exists but photo not found in library
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color(UIColor.secondarySystemGroupedBackground))
+                    .frame(height: 180)
+                    .overlay(
+                        VStack(spacing: 8) {
+                            Image(systemName: "photo")
+                                .font(.largeTitle)
+                                .foregroundColor(.secondary)
+                            Text("Photo not in library")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    )
             } else {
-                // Map
+                // No photo - show map
                 Map(position: .constant(mapPosition)) {
                     Marker(record.recordType, coordinate: record.coordinate)
                         .tint(iconColor)
@@ -271,6 +421,17 @@ struct DetailContentView: View {
                     value: distance
                 )
             }
+
+            if let dateAdded = formattedDateAdded {
+                Divider().padding(.leading, 44)
+
+                DetailRow(
+                    icon: "plus.circle",
+                    iconColor: .gray,
+                    label: "Imported",
+                    value: dateAdded
+                )
+            }
         }
         .background(
             RoundedRectangle(cornerRadius: 16)
@@ -281,7 +442,7 @@ struct DetailContentView: View {
     private var shouldShowAltitude: Bool {
         // Show altitude for elevation records or if altitude is significant
         let type = record.recordType.lowercased()
-        return type.contains("up") || type.contains("down") || abs(record.altitude) > altitudeDisplayThreshold
+        return type.contains("up") || abs(record.altitude) > altitudeDisplayThreshold
     }
 
     // MARK: - Location Card
@@ -304,7 +465,7 @@ struct DetailContentView: View {
                         .foregroundColor(.blue)
                         .frame(width: 28)
 
-                    Text("Open in Apple Maps")
+                    Text("Open in Maps")
                         .font(.subheadline)
                         .foregroundColor(.blue)
 
@@ -316,6 +477,25 @@ struct DetailContentView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
+            }
+            .confirmationDialog("Open in Maps", isPresented: $showMapOptions, titleVisibility: .visible) {
+                Button("Apple Maps") {
+                    openInAppleMaps()
+                }
+
+                if canOpenGoogleMaps {
+                    Button("Google Maps") {
+                        openInGoogleMaps()
+                    }
+                }
+
+                if canOpenWaze {
+                    Button("Waze") {
+                        openInWaze()
+                    }
+                }
+
+                Button("Cancel", role: .cancel) { }
             }
         }
         .background(
@@ -398,13 +578,52 @@ struct DetailContentView: View {
         )
     }
 
+    // MARK: - Map App Detection
+
+    private var canOpenGoogleMaps: Bool {
+        guard let url = URL(string: "comgooglemaps://") else { return false }
+        return UIApplication.shared.canOpenURL(url)
+    }
+
+    private var canOpenWaze: Bool {
+        guard let url = URL(string: "waze://") else { return false }
+        return UIApplication.shared.canOpenURL(url)
+    }
+
+    private var hasMultipleMapApps: Bool {
+        canOpenGoogleMaps || canOpenWaze
+    }
+
     // MARK: - Actions
 
     private func openInMaps() {
+        if hasMultipleMapApps {
+            showMapOptions = true
+        } else {
+            openInAppleMaps()
+        }
+    }
+
+    private func openInAppleMaps() {
+        let placemark = MKPlacemark(coordinate: record.coordinate)
+        let mapItem = MKMapItem(placemark: placemark)
+        mapItem.name = displayedLocationName ?? record.recordType
+        mapItem.openInMaps(launchOptions: nil)
+    }
+
+    private func openInGoogleMaps() {
         let lat = record.coordinate.latitude
         let lon = record.coordinate.longitude
-        if let url = URL(string: "https://maps.apple.com/?ll=\(lat),\(lon)&q=\(record.recordType.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Location")") {
-            openURL(url)
+        if let url = URL(string: "comgooglemaps://?q=\(lat),\(lon)") {
+            UIApplication.shared.open(url)
+        }
+    }
+
+    private func openInWaze() {
+        let lat = record.coordinate.latitude
+        let lon = record.coordinate.longitude
+        if let url = URL(string: "waze://?ll=\(lat),\(lon)&navigate=yes") {
+            UIApplication.shared.open(url)
         }
     }
 
@@ -500,5 +719,55 @@ private struct FullScreenPhotoView: View {
             alignment: .topTrailing
         )
         .statusBar(hidden: true)
+    }
+}
+
+// MARK: - Location Name Editor
+
+private struct LocationNameEditor: View {
+    @Binding var locationName: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("Edit Location Name")
+                .font(.headline)
+                .padding(.top, 20)
+
+            TextField("Location name", text: $locationName)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+                .padding(.horizontal)
+
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    onCancel()
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Color(UIColor.tertiarySystemFill))
+                .foregroundColor(.primary)
+                .cornerRadius(10)
+
+                Button("Save") {
+                    onSave()
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Color.blue)
+                .foregroundColor(.white)
+                .fontWeight(.semibold)
+                .cornerRadius(10)
+            }
+            .padding(.horizontal)
+
+            Spacer()
+        }
+        .onAppear {
+            isFocused = true
+        }
     }
 }

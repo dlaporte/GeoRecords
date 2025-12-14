@@ -1,4 +1,12 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+// Custom UTType for GeoRecords backup files
+extension UTType {
+    static var georecordsBackup: UTType {
+        UTType(exportedAs: "com.georecords.backup")
+    }
+}
 
 struct SettingsView: View {
     @EnvironmentObject var settings: SettingsManager
@@ -6,16 +14,20 @@ struct SettingsView: View {
     @ObservedObject private var persistenceController = PersistenceController.shared
 
     // State for confirmation alerts
-    @State private var showConsolidateAlert = false
     @State private var showClearRecordsSheet = false
     @State private var deleteFromiCloud = false
-    @State private var showConsolidateResult = false
-    @State private var consolidateResultMessage = ""
     @State private var showImportView = false
     @State private var showPermissionAlert = false
     @State private var showManualImport = false
     @State private var showSetupWizard = false
-    
+    @State private var showBackupShareSheet = false
+    @State private var backupURL: URL?
+    @State private var showBackupError = false
+    @State private var showImportFilePicker = false
+    @State private var showImportResult = false
+    @State private var importResultMessage = ""
+    @State private var isExporting = false
+
     // Available options for Latitude/Longitude deltas.
     let deltaOptions: [Double] = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
@@ -270,13 +282,13 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
-                // MARK: - Import Section
-                Section(header: Text("Import")) {
+                // MARK: - Import Records Section
+                Section {
                     Button(action: {
                         requestPhotoAccess()
                     }) {
                         HStack {
-                            Label("Import from Photos", systemImage: "photo.on.rectangle.angled")
+                            Label("Import Photos", systemImage: "photo.on.rectangle.angled")
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption)
@@ -284,67 +296,85 @@ struct SettingsView: View {
                         }
                     }
 
-                    Text("Scan your photo library to discover records from past travels.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    Button(action: {
+                        showImportFilePicker = true
+                    }) {
+                        HStack {
+                            Label("Import Backup", systemImage: "square.and.arrow.down")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
 
                     Button(action: {
                         showManualImport = true
                     }) {
                         HStack {
-                            Label("Add Record Manually", systemImage: "plus.circle")
+                            Label("Add Individual Record", systemImage: "plus.circle")
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
+                } header: {
+                    Text("Import Records")
+                } footer: {
+                    Text("Import records from your photo library, a backup file, or add them manually.")
+                }
 
-                    Text("Manually add a record by selecting a location and date.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                // MARK: - Export Section
+                Section {
+                    Button(action: {
+                        Task {
+                            isExporting = true
+                            if let url = await BackupManager.shared.exportBackup() {
+                                backupURL = url
+                                showBackupShareSheet = true
+                            } else {
+                                showBackupError = true
+                            }
+                            isExporting = false
+                        }
+                    }) {
+                        HStack {
+                            Label("Export Backup", systemImage: "square.and.arrow.up")
+                            Spacer()
+                            if isExporting {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            } else {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .disabled(isExporting)
+                } header: {
+                    Text("Export Records")
+                } footer: {
+                    Text("Save your records to a backup file. Photos are stored as references to your Photos library.")
                 }
 
                 // MARK: - Data Management Section
                 Section {
-                    Button("Consolidate Records") {
-                        showConsolidateAlert = true
-                    }
-                    .foregroundColor(.orange)
-
-                    Button("Clear Records") {
+                    Button(role: .destructive) {
                         deleteFromiCloud = false  // Reset to default
                         showClearRecordsSheet = true
+                    } label: {
+                        Label("Clear All Records", systemImage: "trash")
+                            .foregroundColor(.red)
                     }
-                    .foregroundColor(.red)
                 } header: {
                     Text("Data Management")
                 } footer: {
-                    Text("Consolidate keeps only the most extreme record for each type/timeframe.")
+                    Text("Permanently delete all records from this device and optionally from iCloud.")
                 }
             }
             .navigationTitle("Settings")
-            .alert(isPresented: $showConsolidateAlert) {
-                Alert(
-                    title: Text("Consolidate Records?"),
-                    message: Text("This will remove all non-extreme records from your history, keeping only the best record for each type/timeframe combination.\n\nFor example, if you reached 42.5° North, then 42.6°, then 42.4°, only the 42.6° record will be kept.\n\nThis affects both local and iCloud data."),
-                    primaryButton: .default(Text("Consolidate")) {
-                        let removed = RecordHistoryManager.shared.consolidateRecords()
-                        if removed > 0 {
-                            consolidateResultMessage = "Successfully removed \(removed) non-extreme record\(removed == 1 ? "" : "s") from history."
-                        } else {
-                            consolidateResultMessage = "No records needed consolidation. All records are already extreme values!"
-                        }
-                        showConsolidateResult = true
-                    },
-                    secondaryButton: .cancel()
-                )
-            }
-            .alert("Consolidation Complete", isPresented: $showConsolidateResult) {
-                Button("OK") {}
-            } message: {
-                Text(consolidateResultMessage)
-            }
             .sheet(isPresented: $showClearRecordsSheet) {
                 ClearRecordsSheet(
                     deleteFromiCloud: $deleteFromiCloud,
@@ -390,6 +420,51 @@ struct SettingsView: View {
             .sheet(isPresented: $showManualImport) {
                 ManualRecordImportView()
                     .environmentObject(settings)
+            }
+            .sheet(isPresented: $showBackupShareSheet) {
+                if let url = backupURL {
+                    ShareSheet(activityItems: [url])
+                }
+            }
+            .fileImporter(
+                isPresented: $showImportFilePicker,
+                allowedContentTypes: [.georecordsBackup, .json],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+
+                    // Need to access security-scoped resource
+                    guard url.startAccessingSecurityScopedResource() else {
+                        importResultMessage = "Could not access the selected file."
+                        showImportResult = true
+                        return
+                    }
+                    defer { url.stopAccessingSecurityScopedResource() }
+
+                    Task {
+                        if let count = await BackupManager.shared.importBackup(from: url) {
+                            importResultMessage = "Successfully imported \(count) records from backup."
+                        } else {
+                            importResultMessage = "Failed to import backup. The file may be corrupted or incompatible."
+                        }
+                        showImportResult = true
+                    }
+                case .failure(let error):
+                    importResultMessage = "Error selecting file: \(error.localizedDescription)"
+                    showImportResult = true
+                }
+            }
+            .alert("Backup Error", isPresented: $showBackupError) {
+                Button("OK") {}
+            } message: {
+                Text("Failed to create backup. Please try again.")
+            }
+            .alert("Import Complete", isPresented: $showImportResult) {
+                Button("OK") {}
+            } message: {
+                Text(importResultMessage)
             }
         }
     }
@@ -467,4 +542,22 @@ struct ClearRecordsSheet: View {
             .padding(.bottom, 16)
         }
     }
+}
+
+// MARK: - Share Sheet
+
+import UIKit
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    var applicationActivities: [UIActivity]? = nil
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(
+            activityItems: activityItems,
+            applicationActivities: applicationActivities
+        )
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

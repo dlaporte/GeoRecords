@@ -16,6 +16,15 @@ enum TimeFrame: String, CaseIterable {
     case month = "Monthly"
     case year = "Yearly"
     case allTime = "All Time"
+
+    /// Display name for picker UI (e.g., "This Month" instead of "Monthly")
+    var displayName: String {
+        switch self {
+        case .month: return "This Month"
+        case .year: return "This Year"
+        case .allTime: return "All Years"
+        }
+    }
 }
 
 /// Record type enum for type safety and comparison logic
@@ -25,7 +34,6 @@ enum RecordType: String, CaseIterable {
     case east = "Furthest East"
     case west = "Furthest West"
     case up = "Furthest Up"
-    case down = "Furthest Down"
     case fromHome = "Furthest from Home"
 
     /// Whether this record type uses ascending comparison (higher is better)
@@ -33,7 +41,7 @@ enum RecordType: String, CaseIterable {
         switch self {
         case .north, .east, .up, .fromHome:
             return true  // Higher values are better
-        case .south, .west, .down:
+        case .south, .west:
             return false  // Lower values are better
         }
     }
@@ -196,12 +204,6 @@ let nullIslandAltitudeThreshold = 1.0
 /// Maximum realistic altitude on Earth (meters) - Mount Everest is 8,849m
 let maxRealisticAltitudeMeters = 9000.0
 
-/// Minimum altitude to trigger terrain validation during photo import (3000ft in meters)
-let terrainValidationAltitudeThreshold = 914.4
-
-/// Maximum allowed altitude above terrain before rejecting (1500ft in meters)
-let maxAltitudeAboveTerrainMeters = 457.2
-
 /// Coordinate tolerance for duplicate detection (approximately 1 meter)
 let duplicateCoordinateTolerance = 0.00001
 
@@ -210,6 +212,11 @@ let duplicateValueTolerance = 0.0001
 
 /// Time tolerance for duplicate detection (in seconds)
 let duplicateTimeTolerance: TimeInterval = 1.0
+
+/// Coordinate tolerance for location name matching (approximately 11 meters)
+/// Used for both looking up existing location names and propagating name changes
+/// to all records at the "same" location
+let locationNameCoordinateTolerance = 0.0001
 
 // MARK: - Location Validation Utilities
 
@@ -284,6 +291,10 @@ let altitudeDisplayThreshold: Double = 100
 /// Batch size for processing photos during library scan
 let photoScanBatchSize = 100
 
+/// Maximum number of photo candidates to display per record type in wizard
+/// (limits UI rendering for performance with large photo libraries)
+let wizardMaxCandidatesPerType = 50
+
 /// Duration to suppress notifications after photo import (in seconds)
 let postImportNotificationSuppressionSeconds: TimeInterval = 180
 
@@ -301,7 +312,20 @@ enum NotificationIdentifier {
 
     /// Creates a notification identifier for a new record notification
     /// Using a consistent ID per record type allows deduplication
+    /// - Parameter recordType: The RecordType enum case
+    /// - Returns: A kebab-case identifier for the notification
+    static func newRecord(for recordType: RecordType) -> String {
+        return "new-record-\(recordType.rawValue.lowercased().replacingOccurrences(of: " ", with: "-"))"
+    }
+
+    /// Creates a notification identifier from a type string (for backward compatibility)
+    /// - Parameter type: The record type string (e.g., "Furthest North")
+    /// - Returns: A kebab-case identifier for the notification
     static func newRecord(type: String) -> String {
+        if let recordType = RecordType.from(string: type) {
+            return newRecord(for: recordType)
+        }
+        // Fallback for unknown types
         return "new-record-\(type.lowercased().replacingOccurrences(of: " ", with: "-"))"
     }
 }

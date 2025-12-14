@@ -6,6 +6,7 @@ class DeepLinkManager: ObservableObject {
     static let shared = DeepLinkManager()
     @Published var recordType: String? = nil
     @Published var navigateToStats = false
+    @Published var pendingBackupURL: URL? = nil  // For incoming backup files
 }
 
 // Notification delegate that handles incoming notifications.
@@ -103,8 +104,19 @@ struct GeoRecords: App {
         }
     }
 
-    // Handle deep links from widgets and other sources
+    // Handle deep links from widgets and other sources, and backup file imports
     private func handleDeepLink(_ url: URL) {
+        // Handle file URLs (backup imports via Share/Open In)
+        if url.isFileURL {
+            let fileExtension = url.pathExtension.lowercased()
+            if fileExtension == "georecords" || fileExtension == "json" {
+                debugLog("📥 Received backup file: \(url.lastPathComponent)")
+                DeepLinkManager.shared.pendingBackupURL = url
+            }
+            return
+        }
+
+        // Handle custom scheme URLs (from widgets)
         guard url.scheme == "georecords" else { return }
 
         switch url.host {

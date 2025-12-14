@@ -40,21 +40,31 @@ class BackgroundGeocoder {
             }
 
             for record in records {
-                // Rate limit: wait 1.5 seconds between requests (~40/minute)
-                if geocodedCount > 0 || errorCount > 0 {
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                }
-
                 let coordinate = CLLocationCoordinate2D(latitude: record.latitude, longitude: record.longitude)
 
-                // Check cache first
+                // 1. Check in-memory cache first
                 if let cachedName = await sharedGeocodingCache.getCachedName(for: coordinate) {
                     updateRecordLocationName(record: record, locationName: cachedName)
                     geocodedCount += 1
                     continue
                 }
 
-                // Geocode
+                // 2. Check database for existing record with location name nearby
+                if let existingName = await MainActor.run(body: {
+                    RecordHistoryManager.shared.lookupLocationName(latitude: record.latitude, longitude: record.longitude)
+                }) {
+                    await sharedGeocodingCache.setCachedName(existingName, for: coordinate)
+                    updateRecordLocationName(record: record, locationName: existingName)
+                    geocodedCount += 1
+                    continue
+                }
+
+                // 3. Fall back to Apple geocoder (rate limited)
+                // Rate limit: wait 1.5 seconds between API requests (~40/minute)
+                if geocodedCount > 0 || errorCount > 0 {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                }
+
                 let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
                 do {
                     let placemarks = try await geocoder.reverseGeocodeLocation(location)
@@ -99,6 +109,11 @@ class BackgroundGeocoder {
 
     /// Update a record with its geocoded location name
     private func updateRecordLocationName(record: RecordHistoryEntry, locationName: String) {
+        // Check if record was deleted while we were geocoding
+        guard !record.isDeleted, record.managedObjectContext != nil else {
+            return
+        }
+
         record.locationName = locationName
         do {
             try context.save()

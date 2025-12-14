@@ -1,4 +1,5 @@
 import CoreData
+import CoreLocation
 import SwiftUI
 
 @MainActor
@@ -23,6 +24,7 @@ class RecordHistoryManager: ObservableObject {
         let newEntry = RecordHistoryEntry(context: context)
         newEntry.id = detail.id
         newEntry.timestamp = detail.timestamp  // timestamp is non-optional Date
+        newEntry.dateAdded = Date()  // Track when record was imported
         newEntry.recordType = recordType
         newEntry.timeFrame = detail.timeFrame.rawValue
         newEntry.value = detail.value
@@ -31,11 +33,17 @@ class RecordHistoryManager: ObservableObject {
         newEntry.altitude = detail.altitude
         newEntry.locationName = detail.locationName
         newEntry.photoData = detail.photoData
+        newEntry.photoAssetIdentifier = detail.photoAssetIdentifier
         newEntry.notes = detail.notes
+
+        if let photoId = detail.photoAssetIdentifier {
+            debugLog("💾 Saving record with photo: \(photoId)")
+        } else {
+            debugLog("⚠️ Saving record WITHOUT photo attachment")
+        }
 
         do {
             try context.save()
-            debugLog("Record saved: \(recordType) (\(detail.timeFrame.rawValue)) with value: \(detail.value)")
         } catch {
             let message = "Failed to save record: \(error.localizedDescription)"
             debugLog(message)
@@ -99,7 +107,6 @@ class RecordHistoryManager: ObservableObject {
             if let entry = results.first {
                 entry.photoData = photoData
                 try context.save()
-                debugLog("Photo updated for record \(recordId)")
             }
         } catch {
             let message = "Failed to update photo: \(error.localizedDescription)"
@@ -118,12 +125,109 @@ class RecordHistoryManager: ObservableObject {
             if let entry = results.first {
                 entry.notes = notes
                 try context.save()
-                debugLog("Notes updated for record \(recordId)")
             }
         } catch {
             let message = "Failed to update notes: \(error.localizedDescription)"
             debugLog(message)
             showErrorAlert(message)
+        }
+    }
+
+    /// Update the location name for a specific record
+    func updateRecordLocationName(recordId: UUID, locationName: String?) {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "id == %@", recordId as CVarArg)
+        request.fetchLimit = 1
+
+        do {
+            let results = try context.fetch(request)
+            if let entry = results.first {
+                entry.locationName = locationName
+                try context.save()
+            }
+        } catch {
+            let message = "Failed to update location name: \(error.localizedDescription)"
+            debugLog(message)
+            showErrorAlert(message)
+        }
+    }
+
+    /// Look up an existing location name for nearby coordinates
+    /// Checks if any existing record has a location name within the tolerance distance
+    /// - Parameters:
+    ///   - latitude: The latitude to search near
+    ///   - longitude: The longitude to search near
+    /// - Returns: The location name if found, nil otherwise
+    func lookupLocationName(latitude: Double, longitude: Double) -> String? {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        let latMin = latitude - locationNameCoordinateTolerance
+        let latMax = latitude + locationNameCoordinateTolerance
+        let lonMin = longitude - locationNameCoordinateTolerance
+        let lonMax = longitude + locationNameCoordinateTolerance
+
+        // Only fetch records that have a location name
+        request.predicate = NSPredicate(
+            format: "latitude >= %f AND latitude <= %f AND longitude >= %f AND longitude <= %f AND locationName != nil AND locationName != %@",
+            latMin, latMax, lonMin, lonMax, ""
+        )
+        request.fetchLimit = 1
+
+        do {
+            let results = try context.fetch(request)
+            if let existingName = results.first?.locationName {
+                debugLog("📍 Found existing location name: \(existingName)")
+                return existingName
+            }
+        } catch {
+            debugLog("❌ Failed to lookup location name: \(error.localizedDescription)")
+        }
+
+        return nil
+    }
+
+    /// Update location name for all records at the same coordinates
+    /// This ensures records at the same location (e.g., yearly and all-time) share the same name
+    /// - Parameters:
+    ///   - latitude: The latitude to match
+    ///   - longitude: The longitude to match
+    ///   - locationName: The new location name
+    /// - Returns: Number of records updated
+    @discardableResult
+    func updateLocationNameForCoordinates(latitude: Double, longitude: Double, locationName: String?) -> Int {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        let latMin = latitude - locationNameCoordinateTolerance
+        let latMax = latitude + locationNameCoordinateTolerance
+        let lonMin = longitude - locationNameCoordinateTolerance
+        let lonMax = longitude + locationNameCoordinateTolerance
+
+        request.predicate = NSPredicate(
+            format: "latitude >= %f AND latitude <= %f AND longitude >= %f AND longitude <= %f",
+            latMin, latMax, lonMin, lonMax
+        )
+
+        do {
+            let results = try context.fetch(request)
+            var updatedCount = 0
+
+            for entry in results {
+                entry.locationName = locationName
+                updatedCount += 1
+            }
+
+            if updatedCount > 0 {
+                try context.save()
+                debugLog("📍 Updated location name for \(updatedCount) record(s) at (\(latitude), \(longitude)): \(locationName ?? "nil")")
+
+                // Reload in-memory records to reflect changes
+                RecordManager.shared.loadRecordsFromHistory()
+            }
+
+            return updatedCount
+        } catch {
+            debugLog("❌ Failed to update location names: \(error.localizedDescription)")
+            return 0
         }
     }
 
@@ -135,17 +239,60 @@ class RecordHistoryManager: ObservableObject {
         do {
             let results = try context.fetch(request)
             if let entry = results.first {
-                let recordType = entry.recordType ?? unknownValueString
                 context.delete(entry)
                 try context.save()
-                debugLog("Deleted record: \(recordType) with id: \(recordId)")
-            } else {
-                debugLog("Record not found for deletion: \(recordId)")
             }
         } catch {
             let message = "Failed to delete record: \(error.localizedDescription)"
             debugLog(message)
             showErrorAlert(message)
+        }
+    }
+
+    /// Delete all records with the same recordType, timestamp, and approximate coordinates
+    /// This handles deleting all timeframe variants of the same photo import
+    /// - Returns: Number of records deleted
+    @discardableResult
+    func deleteRelatedRecords(recordType: String, timestamp: Date, coordinate: CLLocationCoordinate2D) -> Int {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        // Match by recordType and timestamp (same photo = same timestamp)
+        // Use a small time window (1 second) to account for any rounding
+        let timeWindow: TimeInterval = 1.0
+        let startTime = timestamp.addingTimeInterval(-timeWindow)
+        let endTime = timestamp.addingTimeInterval(timeWindow)
+
+        request.predicate = NSPredicate(
+            format: "recordType == %@ AND timestamp >= %@ AND timestamp <= %@",
+            recordType,
+            startTime as NSDate,
+            endTime as NSDate
+        )
+
+        do {
+            let results = try context.fetch(request)
+
+            // Filter to only records at the same coordinates (within tolerance)
+            let tolerance = 0.0001 // ~11 meters
+            let matchingRecords = results.filter { entry in
+                abs(entry.latitude - coordinate.latitude) < tolerance &&
+                abs(entry.longitude - coordinate.longitude) < tolerance
+            }
+
+            for entry in matchingRecords {
+                context.delete(entry)
+            }
+
+            if !matchingRecords.isEmpty {
+                try context.save()
+            }
+
+            return matchingRecords.count
+        } catch {
+            let message = "Failed to delete related records: \(error.localizedDescription)"
+            debugLog(message)
+            showErrorAlert(message)
+            return 0
         }
     }
 
@@ -277,6 +424,9 @@ class RecordHistoryManager: ObservableObject {
     func clearLocalOnly() {
         // Reset in-memory records first
         RecordManager.shared.resetRecords()
+
+        // Clear daily statistics as well (even for local-only clear)
+        DailyStatisticManager.shared.clearAllStatistics()
 
         // Get the store URL
         guard let storeDescription = PersistenceController.shared.container.persistentStoreDescriptions.first,

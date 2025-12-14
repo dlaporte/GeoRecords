@@ -65,7 +65,7 @@ struct DiscoveredRecordRow: View {
             value: record.value,
             altitude: record.altitude,
             unitSystem: unitSystem,
-            coordinatePrecision: 2
+            coordinatePrecision: 4
         )
     }
 

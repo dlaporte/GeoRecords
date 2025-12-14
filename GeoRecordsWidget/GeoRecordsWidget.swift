@@ -11,18 +11,105 @@ import CoreData
 import AppIntents
 import ImageIO
 
-// MARK: - Standard Record Order
+// MARK: - Constants
 
-/// Canonical order for displaying records throughout the app
-let standardRecordOrder = [
-    "Furthest North",
-    "Furthest South",
-    "Furthest East",
-    "Furthest West",
-    "Furthest Up",
-    "Furthest Down",
-    "Furthest from Home"
-]
+/// Conversion constants for unit display
+private enum UnitConversion {
+    static let metersToFeet = 3.28084
+    static let metersToMiles = 1.0 / 1609.344
+    static let metersToKilometers = 1.0 / 1000.0
+}
+
+/// Shared value formatter for widget display
+private func formatRecordValue(_ value: Double, recordType: String, unitSystem: String) -> String {
+    guard let type = WidgetRecordType.from(string: recordType) else {
+        return "\(value)"
+    }
+
+    switch type {
+    case .north, .south, .east, .west:
+        return String(format: "%.4f°", value)
+    case .up:
+        if unitSystem == "imperial" {
+            return String(format: "%.0f ft", value * UnitConversion.metersToFeet)
+        } else {
+            return String(format: "%.0f m", value)
+        }
+    case .fromHome:
+        if unitSystem == "imperial" {
+            return String(format: "%.2f mi", value * UnitConversion.metersToMiles)
+        } else {
+            return String(format: "%.2f km", value * UnitConversion.metersToKilometers)
+        }
+    }
+}
+
+// MARK: - Shared Constants
+
+/// App group identifier for shared data access
+private let appGroupIdentifier = "group.com.georecords.shared"
+
+/// Widget refresh interval in hours
+private let widgetRefreshIntervalHours = 1
+
+/// Standard record order using WidgetRecordType enum
+let standardRecordOrder = WidgetRecordType.allCases.map { $0.rawValue }
+
+// MARK: - Shared Core Data Access
+
+/// Creates and configures a Core Data container for widget read-only access
+/// - Parameter completion: Called with the loaded context or nil on error
+private func loadWidgetCoreData(completion: @escaping (NSManagedObjectContext?) -> Void) {
+    guard let appGroupURL = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: appGroupIdentifier
+    ) else {
+        completion(nil)
+        return
+    }
+
+    let storeURL = appGroupURL.appendingPathComponent("GeoRecordsModel.sqlite")
+    let container = NSPersistentContainer(name: "GeoRecordsModel")
+    let storeDescription = NSPersistentStoreDescription(url: storeURL)
+
+    // Must match main app's settings to avoid read-only mode
+    storeDescription.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
+    storeDescription.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+    storeDescription.isReadOnly = true  // Widget only reads data
+
+    container.persistentStoreDescriptions = [storeDescription]
+
+    container.loadPersistentStores { _, error in
+        if let error = error {
+            print("Widget: Failed to load Core Data: \(error)")
+            completion(nil)
+            return
+        }
+        completion(container.viewContext)
+    }
+}
+
+/// Gets the user's unit system preference from shared UserDefaults
+private func getUnitSystem() -> String {
+    let sharedDefaults = UserDefaults(suiteName: appGroupIdentifier)
+    let unitSystemString = sharedDefaults?.string(forKey: "unitSystem") ?? "imperial"
+    return unitSystemString == "metric" ? "metric" : "imperial"
+}
+
+/// Calculates the start date for a given time frame
+/// - Parameter timeFrame: The time frame to get the start date for
+/// - Returns: The start date for filtering records
+private func timeFrameStartDate(for timeFrame: WidgetTimeFrame) -> Date {
+    let calendar = Calendar.current
+    let now = Date()
+    switch timeFrame {
+    case .allTime:
+        return Date.distantPast
+    case .year:
+        return calendar.dateInterval(of: .year, for: now)?.start ?? now
+    case .month:
+        return calendar.dateInterval(of: .month, for: now)?.start ?? now
+    }
+}
 
 // MARK: - App Intent Configuration
 
@@ -32,7 +119,6 @@ enum WidgetRecordType: String, CaseIterable, AppEnum {
     case east = "Furthest East"
     case west = "Furthest West"
     case up = "Furthest Up"
-    case down = "Furthest Down"
     case fromHome = "Furthest from Home"
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "Record Type"
@@ -43,7 +129,6 @@ enum WidgetRecordType: String, CaseIterable, AppEnum {
         .east: DisplayRepresentation(title: "East", image: .init(systemName: "arrow.right.circle.fill")),
         .west: DisplayRepresentation(title: "West", image: .init(systemName: "arrow.left.circle.fill")),
         .up: DisplayRepresentation(title: "Up (Altitude)", image: .init(systemName: "mountain.2.fill")),
-        .down: DisplayRepresentation(title: "Down (Altitude)", image: .init(systemName: "water.waves")),
         .fromHome: DisplayRepresentation(title: "From Home", image: .init(systemName: "house.circle.fill"))
     ]
 
@@ -55,8 +140,56 @@ enum WidgetRecordType: String, CaseIterable, AppEnum {
         case .east: return 2
         case .west: return 3
         case .up: return 4
-        case .down: return 5
-        case .fromHome: return 6
+        case .fromHome: return 5
+        }
+    }
+
+    /// Whether higher values are better (true) or lower values are better (false)
+    var isAscending: Bool {
+        switch self {
+        case .north, .east, .up, .fromHome: return true
+        case .south, .west: return false
+        }
+    }
+
+    /// Get record type from string
+    static func from(string: String) -> WidgetRecordType? {
+        return WidgetRecordType.allCases.first { $0.rawValue == string }
+    }
+
+    /// Short display name
+    var shortName: String {
+        switch self {
+        case .north: return "North"
+        case .south: return "South"
+        case .east: return "East"
+        case .west: return "West"
+        case .up: return "Up"
+        case .fromHome: return "From Home"
+        }
+    }
+
+    /// SF Symbol icon name
+    var iconName: String {
+        switch self {
+        case .north: return "arrow.up.circle.fill"
+        case .south: return "arrow.down.circle.fill"
+        case .east: return "arrow.right.circle.fill"
+        case .west: return "arrow.left.circle.fill"
+        case .up: return "mountain.2.fill"
+        case .fromHome: return "house.circle.fill"
+        }
+    }
+
+    /// Display color
+    var color: Color {
+        switch self {
+        case .north: return .blue
+        case .south: return .cyan
+        case .east: return .orange
+        case .west: return .purple
+        case .up: return .green
+        case .fromHome: return .red
         }
     }
 }
@@ -79,7 +212,7 @@ struct GeoRecordsWidgetIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Configure Widget"
     static var description: IntentDescription = "Choose which records to display"
 
-    @Parameter(title: "Records to Show", default: [.north, .south, .east, .west, .up, .down, .fromHome])
+    @Parameter(title: "Records to Show", default: [.north, .south, .east, .west, .up, .fromHome])
     var selectedRecords: [WidgetRecordType]
 
     @Parameter(title: "Time Frame", default: .allTime)
@@ -149,7 +282,8 @@ struct Provider: AppIntentTimelineProvider {
         let entry = RecordsEntry(date: currentDate, records: records, configuration: configuration)
 
         // Refresh every hour
-        let nextUpdate = Calendar.current.date(byAdding: .hour, value: 1, to: currentDate)!
+        let nextUpdate = Calendar.current.date(byAdding: .hour, value: widgetRefreshIntervalHours, to: currentDate)
+            ?? currentDate.addingTimeInterval(3600)  // Fallback: 1 hour from now
         return Timeline(entries: [entry], policy: .after(nextUpdate))
     }
 
@@ -158,63 +292,23 @@ struct Provider: AppIntentTimelineProvider {
     private func fetchRecords(for configuration: GeoRecordsWidgetIntent) -> [WidgetRecordData] {
         let selectedTypes = Set(configuration.selectedRecords.map { $0.rawValue })
         let timeFrame = configuration.timeFrame
-        // Access shared Core Data container
-        guard let appGroupURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: "group.com.georecords.shared"
-        ) else {
-            return [WidgetRecordData.placeholder]
-        }
-
-        let storeURL = appGroupURL.appendingPathComponent("GeoRecordsModel.sqlite")
-
-        // Create persistent container with same options as main app
-        let container = NSPersistentContainer(name: "GeoRecordsModel")
-        let storeDescription = NSPersistentStoreDescription(url: storeURL)
-
-        // Must match main app's settings to avoid read-only mode
-        storeDescription.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
-        storeDescription.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
-        storeDescription.isReadOnly = true  // Widget only reads data
-
-        container.persistentStoreDescriptions = [storeDescription]
 
         var records: [WidgetRecordData] = []
         let semaphore = DispatchSemaphore(value: 0)
 
-        container.loadPersistentStores { _, error in
+        loadWidgetCoreData { context in
             defer { semaphore.signal() }
 
-            if let error = error {
-                print("Widget: Failed to load Core Data: \(error)")
-                return
-            }
+            guard let context = context else { return }
 
-            let context = container.viewContext
             let request = NSFetchRequest<NSFetchRequestResult>(entityName: "RecordHistoryEntry")
             request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: false)]
 
             do {
                 guard let entries = try context.fetch(request) as? [NSManagedObject] else { return }
 
-                // Get unit system from UserDefaults
-                // Key "unitSystem" is defined in main app's Constants.swift as UserDefaultsKey.unitSystem
-                // Values: "imperial" or "metric" (see UnitSystem enum in Constants.swift)
-                let sharedDefaults = UserDefaults(suiteName: "group.com.georecords.shared")
-                let unitSystemString = sharedDefaults?.string(forKey: "unitSystem") ?? "imperial"
-                let unitSystem = unitSystemString == "metric" ? "metric" : "imperial"
-
-                // Calculate time frame boundaries
-                let calendar = Calendar.current
-                let now = Date()
-                let timeFrameStart: Date
-                switch timeFrame {
-                case .allTime:
-                    timeFrameStart = Date.distantPast
-                case .year:
-                    timeFrameStart = calendar.dateInterval(of: .year, for: now)?.start ?? now
-                case .month:
-                    timeFrameStart = calendar.dateInterval(of: .month, for: now)?.start ?? now
-                }
+                let unitSystem = getUnitSystem()
+                let timeFrameStart = timeFrameStartDate(for: timeFrame)
 
                 // Filter entries by time frame
                 let filteredEntries = entries.filter { entry in
@@ -237,12 +331,9 @@ struct Provider: AppIntentTimelineProvider {
                        let newValue = entry.value(forKey: "value") as? Double {
 
                         let shouldReplace: Bool
-                        switch type {
-                        case "Furthest North", "Furthest East", "Furthest Up", "Furthest from Home":
-                            shouldReplace = newValue > existingValue
-                        case "Furthest South", "Furthest West", "Furthest Down":
-                            shouldReplace = newValue < existingValue
-                        default:
+                        if let widgetType = WidgetRecordType.from(string: type) {
+                            shouldReplace = widgetType.isAscending ? newValue > existingValue : newValue < existingValue
+                        } else {
                             shouldReplace = false
                         }
 
@@ -263,7 +354,7 @@ struct Provider: AppIntentTimelineProvider {
                     }
 
                     let location = entry.value(forKey: "locationName") as? String ?? "Unknown"
-                    let formattedValue = formatValue(value: value, recordType: type, unitSystem: unitSystem)
+                    let formattedValue = formatRecordValue(value, recordType: type, unitSystem: unitSystem)
 
                     return WidgetRecordData(
                         type: type,
@@ -281,33 +372,6 @@ struct Provider: AppIntentTimelineProvider {
         semaphore.wait()
 
         return records.isEmpty ? [WidgetRecordData.placeholder] : records
-    }
-
-    private func formatValue(value: Double, recordType: String, unitSystem: String) -> String {
-        switch recordType {
-        case "Furthest North", "Furthest South", "Furthest East", "Furthest West":
-            return String(format: "%.4f°", value)
-
-        case "Furthest Up", "Furthest Down":
-            if unitSystem == "imperial" {
-                let feet = value * 3.28084
-                return String(format: "%.0f ft", feet)
-            } else {
-                return String(format: "%.0f m", value)
-            }
-
-        case "Furthest from Home":
-            if unitSystem == "imperial" {
-                let miles = value / 1609.344
-                return String(format: "%.2f mi", miles)
-            } else {
-                let km = value / 1000.0
-                return String(format: "%.2f km", km)
-            }
-
-        default:
-            return "\(value)"
-        }
     }
 }
 
@@ -371,15 +435,19 @@ struct GeoRecordsWidgetEntryView : View {
 struct CompactRecordRowView: View {
     let record: WidgetRecordData
 
+    private var recordType: WidgetRecordType? {
+        WidgetRecordType.from(string: record.type)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 4) {
-                Image(systemName: iconForType(record.type))
+                Image(systemName: recordType?.iconName ?? "location.circle.fill")
                     .font(.system(size: 11))
-                    .foregroundColor(colorForType(record.type))
+                    .foregroundColor(recordType?.color ?? .gray)
                     .frame(width: 14)
 
-                Text(shortName(for: record.type))
+                Text(recordType?.shortName ?? record.type)
                     .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
 
@@ -395,45 +463,6 @@ struct CompactRecordRowView: View {
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .padding(.leading, 18)
-        }
-    }
-
-    private func shortName(for type: String) -> String {
-        switch type {
-        case "Furthest North": return "North"
-        case "Furthest South": return "South"
-        case "Furthest East": return "East"
-        case "Furthest West": return "West"
-        case "Furthest Up": return "Up"
-        case "Furthest Down": return "Down"
-        case "Furthest from Home": return "From Home"
-        default: return type
-        }
-    }
-
-    private func iconForType(_ type: String) -> String {
-        switch type {
-        case "Furthest North": return "arrow.up.circle.fill"
-        case "Furthest South": return "arrow.down.circle.fill"
-        case "Furthest East": return "arrow.right.circle.fill"
-        case "Furthest West": return "arrow.left.circle.fill"
-        case "Furthest Up": return "mountain.2.fill"
-        case "Furthest Down": return "water.waves"
-        case "Furthest from Home": return "house.circle.fill"
-        default: return "location.circle.fill"
-        }
-    }
-
-    private func colorForType(_ type: String) -> Color {
-        switch type {
-        case "Furthest North": return .blue
-        case "Furthest South": return .cyan
-        case "Furthest East": return .orange
-        case "Furthest West": return .purple
-        case "Furthest Up": return .green
-        case "Furthest Down": return .brown
-        case "Furthest from Home": return .red
-        default: return .gray
         }
     }
 }
@@ -527,7 +556,8 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
         let currentDate = Date()
         let record = fetchRecord(for: configuration)
         let entry = SingleRecordEntry(date: currentDate, record: record, configuration: configuration)
-        let nextUpdate = Calendar.current.date(byAdding: .hour, value: 1, to: currentDate)!
+        let nextUpdate = Calendar.current.date(byAdding: .hour, value: widgetRefreshIntervalHours, to: currentDate)
+            ?? currentDate.addingTimeInterval(3600)  // Fallback: 1 hour from now
         return Timeline(entries: [entry], policy: .after(nextUpdate))
     }
 
@@ -535,37 +565,14 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
         let recordType = configuration.selectedRecord.rawValue
         let timeFrame = configuration.timeFrame
 
-        guard let appGroupURL = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: "group.com.georecords.shared"
-        ) else {
-            return SingleRecordData.placeholder
-        }
-
-        let storeURL = appGroupURL.appendingPathComponent("GeoRecordsModel.sqlite")
-
-        // Create persistent container with same options as main app
-        let container = NSPersistentContainer(name: "GeoRecordsModel")
-        let storeDescription = NSPersistentStoreDescription(url: storeURL)
-
-        // Must match main app's settings to avoid read-only mode
-        storeDescription.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
-        storeDescription.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
-        storeDescription.isReadOnly = true  // Widget only reads data
-
-        container.persistentStoreDescriptions = [storeDescription]
-
         var result: SingleRecordData = SingleRecordData.placeholder
         let semaphore = DispatchSemaphore(value: 0)
 
-        container.loadPersistentStores { _, error in
+        loadWidgetCoreData { context in
             defer { semaphore.signal() }
 
-            if let error = error {
-                print("Widget: Failed to load Core Data: \(error)")
-                return
-            }
+            guard let context = context else { return }
 
-            let context = container.viewContext
             let request = NSFetchRequest<NSFetchRequestResult>(entityName: "RecordHistoryEntry")
             request.predicate = NSPredicate(format: "recordType == %@", recordType)
             request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: false)]
@@ -573,25 +580,8 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
             do {
                 guard let entries = try context.fetch(request) as? [NSManagedObject] else { return }
 
-                // Get unit system from shared UserDefaults
-                // Key "unitSystem" is defined in main app's Constants.swift as UserDefaultsKey.unitSystem
-                // Values: "imperial" or "metric" (see UnitSystem enum in Constants.swift)
-                let sharedDefaults = UserDefaults(suiteName: "group.com.georecords.shared")
-                let unitSystemString = sharedDefaults?.string(forKey: "unitSystem") ?? "imperial"
-                let unitSystem = unitSystemString == "metric" ? "metric" : "imperial"
-
-                // Calculate time frame boundaries
-                let calendar = Calendar.current
-                let now = Date()
-                let timeFrameStart: Date
-                switch timeFrame {
-                case .allTime:
-                    timeFrameStart = Date.distantPast
-                case .year:
-                    timeFrameStart = calendar.dateInterval(of: .year, for: now)?.start ?? now
-                case .month:
-                    timeFrameStart = calendar.dateInterval(of: .month, for: now)?.start ?? now
-                }
+                let unitSystem = getUnitSystem()
+                let timeFrameStart = timeFrameStartDate(for: timeFrame)
 
                 // Filter by time frame and find most extreme
                 let filteredEntries = entries.filter { entry in
@@ -606,12 +596,9 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
                     if let existing = bestEntry,
                        let existingValue = existing.value(forKey: "value") as? Double {
                         let shouldReplace: Bool
-                        switch recordType {
-                        case "Furthest North", "Furthest East", "Furthest Up", "Furthest from Home":
-                            shouldReplace = newValue > existingValue
-                        case "Furthest South", "Furthest West", "Furthest Down":
-                            shouldReplace = newValue < existingValue
-                        default:
+                        if let widgetType = WidgetRecordType.from(string: recordType) {
+                            shouldReplace = widgetType.isAscending ? newValue > existingValue : newValue < existingValue
+                        } else {
                             shouldReplace = false
                         }
                         if shouldReplace {
@@ -627,7 +614,7 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
                    let timestamp = entry.value(forKey: "timestamp") as? Date {
 
                     let location = entry.value(forKey: "locationName") as? String ?? "Unknown"
-                    let formattedValue = formatValue(value: value, recordType: recordType, unitSystem: unitSystem)
+                    let formattedValue = formatRecordValue(value, recordType: recordType, unitSystem: unitSystem)
 
                     // Create thumbnail using ImageIO to avoid loading full image into memory
                     var thumbnail: UIImage?
@@ -651,27 +638,6 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
 
         semaphore.wait()
         return result
-    }
-
-    private func formatValue(value: Double, recordType: String, unitSystem: String) -> String {
-        switch recordType {
-        case "Furthest North", "Furthest South", "Furthest East", "Furthest West":
-            return String(format: "%.4f°", value)
-        case "Furthest Up", "Furthest Down":
-            if unitSystem == "imperial" {
-                return String(format: "%.0f ft", value * 3.28084)
-            } else {
-                return String(format: "%.0f m", value)
-            }
-        case "Furthest from Home":
-            if unitSystem == "imperial" {
-                return String(format: "%.2f mi", value / 1609.344)
-            } else {
-                return String(format: "%.2f km", value / 1000.0)
-            }
-        default:
-            return "\(value)"
-        }
     }
 
     /// Create a small thumbnail using ImageIO - much more memory efficient
@@ -701,6 +667,10 @@ struct SingleRecordWidgetView: View {
         entry.record.thumbnailImage != nil
     }
 
+    private var recordType: WidgetRecordType? {
+        WidgetRecordType.from(string: entry.record.type)
+    }
+
     var body: some View {
         let record = entry.record
 
@@ -726,11 +696,11 @@ struct SingleRecordWidgetView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     // Header with icon and type
                     HStack(spacing: 6) {
-                        Image(systemName: iconForType(record.type))
+                        Image(systemName: recordType?.iconName ?? "location.circle.fill")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(hasPhoto ? .white : colorForType(record.type))
+                            .foregroundColor(hasPhoto ? .white : (recordType?.color ?? .gray))
 
-                        Text(shortName(for: record.type))
+                        Text(recordType?.shortName ?? record.type)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(hasPhoto ? .white : .primary)
 
@@ -742,7 +712,7 @@ struct SingleRecordWidgetView: View {
                     // Value
                     Text(record.value)
                         .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundColor(hasPhoto ? .white : colorForType(record.type))
+                        .foregroundColor(hasPhoto ? .white : (recordType?.color ?? .gray))
                         .minimumScaleFactor(0.6)
                         .lineLimit(1)
 
@@ -754,45 +724,6 @@ struct SingleRecordWidgetView: View {
                 }
                 .padding(12)
             }
-        }
-    }
-
-    private func shortName(for type: String) -> String {
-        switch type {
-        case "Furthest North": return "North"
-        case "Furthest South": return "South"
-        case "Furthest East": return "East"
-        case "Furthest West": return "West"
-        case "Furthest Up": return "Up"
-        case "Furthest Down": return "Down"
-        case "Furthest from Home": return "From Home"
-        default: return type
-        }
-    }
-
-    private func iconForType(_ type: String) -> String {
-        switch type {
-        case "Furthest North": return "arrow.up.circle.fill"
-        case "Furthest South": return "arrow.down.circle.fill"
-        case "Furthest East": return "arrow.right.circle.fill"
-        case "Furthest West": return "arrow.left.circle.fill"
-        case "Furthest Up": return "mountain.2.fill"
-        case "Furthest Down": return "water.waves"
-        case "Furthest from Home": return "house.circle.fill"
-        default: return "location.circle.fill"
-        }
-    }
-
-    private func colorForType(_ type: String) -> Color {
-        switch type {
-        case "Furthest North": return .blue
-        case "Furthest South": return .cyan
-        case "Furthest East": return .orange
-        case "Furthest West": return .purple
-        case "Furthest Up": return .green
-        case "Furthest Down": return .brown
-        case "Furthest from Home": return .red
-        default: return .gray
         }
     }
 }
@@ -845,8 +776,7 @@ struct SingleRecordWidget: Widget {
             WidgetRecordData(type: "Furthest South", value: "25.7617°", location: "Miami, FL", timestamp: .now),
             WidgetRecordData(type: "Furthest East", value: "122.6765°", location: "Seattle, WA", timestamp: .now),
             WidgetRecordData(type: "Furthest West", value: "158.0001°", location: "Honolulu, HI", timestamp: .now),
-            WidgetRecordData(type: "Furthest Up", value: "14,505 ft", location: "Mt. Whitney, CA", timestamp: .now),
-            WidgetRecordData(type: "Furthest Down", value: "282 ft", location: "Death Valley, CA", timestamp: .now)
+            WidgetRecordData(type: "Furthest Up", value: "14,505 ft", location: "Mt. Whitney, CA", timestamp: .now)
         ],
         configuration: GeoRecordsWidgetIntent()
     )

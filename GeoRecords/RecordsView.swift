@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import CoreData
 
 // MARK: - Layout Constants
 
@@ -17,10 +18,18 @@ struct RecordsView: View {
     @State private var currentRecordIndex = 0
     @State private var mapPosition: MapCameraPosition = .automatic
     @State private var selectedTimeFrame: TimeFrame = .allTime
+    @State private var selectedYear: Int?
+    @State private var availableYears: [Int] = []
 
     // Computed property to get all non-nil records in order for the selected timeframe
     private var allRecords: [RecordDetail] {
-        RecordType.allCases.compactMap { type in
+        // For All Time mode with a specific year selected, fetch best records from that year
+        if selectedTimeFrame == .allTime, let year = selectedYear {
+            return fetchRecordsForYear(year)
+        }
+
+        // Otherwise show current timeframe records
+        return RecordType.allCases.compactMap { type in
             recordManager.getRecord(type: type.rawValue, timeFrame: selectedTimeFrame)
         }
     }
@@ -87,16 +96,50 @@ struct RecordsView: View {
                 ToolbarItem(placement: .principal) {
                     Picker("Time Frame", selection: $selectedTimeFrame) {
                         ForEach(TimeFrame.allCases, id: \.self) { timeFrame in
-                            Text(timeFrame.rawValue).tag(timeFrame)
+                            Text(timeFrameLabel(for: timeFrame)).tag(timeFrame)
                         }
                     }
                     .pickerStyle(.segmented)
                     .frame(width: pickerWidth)
+                    .contextMenu {
+                        if selectedTimeFrame == .allTime && !availableYears.isEmpty {
+                            Button {
+                                selectedYear = nil
+                            } label: {
+                                Label("All Years", systemImage: selectedYear == nil ? "checkmark" : "calendar")
+                            }
+                            Divider()
+                            ForEach(availableYears, id: \.self) { year in
+                                Button {
+                                    selectedYear = year
+                                } label: {
+                                    Label(yearString(year), systemImage: selectedYear == year ? "checkmark" : "calendar")
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            .onChange(of: selectedTimeFrame) { _, _ in
+            .onChange(of: selectedTimeFrame) { _, newValue in
+                // Reset year selection when switching away from All Time
+                if newValue != .allTime {
+                    selectedYear = nil
+                }
+
                 // Update map when timeframe changes
                 if let record = allRecords[safe: currentRecordIndex] {
+                    withAnimation {
+                        mapPosition = .region(MKCoordinateRegion(
+                            center: record.coordinate,
+                            span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
+                        ))
+                    }
+                }
+            }
+            .onChange(of: selectedYear) { _, _ in
+                // Update map when year changes
+                currentRecordIndex = 0
+                if let record = allRecords.first {
                     withAnimation {
                         mapPosition = .region(MKCoordinateRegion(
                             center: record.coordinate,
@@ -109,6 +152,7 @@ struct RecordsView: View {
                 RecordDetailPager(records: allRecords, initialIndex: selectedRecordIndex)
             }
             .onAppear {
+                loadAvailableYears()
                 handleDeepLink()
                 // Initialize map to first record
                 if let firstRecord = allRecords.first {
@@ -133,6 +177,78 @@ struct RecordsView: View {
             navigateToDetail = true
             deepLinkManager.recordType = nil
         }
+    }
+
+    private func loadAvailableYears() {
+        let context = PersistenceController.shared.container.viewContext
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: false)]
+
+        do {
+            let entries = try context.fetch(request)
+            let years = Set(entries.compactMap { entry -> Int? in
+                guard let timestamp = entry.timestamp else { return nil }
+                return Calendar.current.component(.year, from: timestamp)
+            })
+            availableYears = years.sorted(by: >)  // Most recent first
+        } catch {
+            debugLog("Failed to load available years: \(error.localizedDescription)")
+        }
+    }
+
+    /// Format year as plain string without locale-specific formatting (no commas)
+    private func yearString(_ year: Int) -> String {
+        return String(format: "%d", year)
+    }
+
+    /// Get label for timeframe, showing selected year if applicable
+    private func timeFrameLabel(for timeFrame: TimeFrame) -> String {
+        if timeFrame == .allTime, let year = selectedYear {
+            return yearString(year)
+        }
+        return timeFrame.displayName
+    }
+
+    /// Fetch the best records for a specific year from Core Data history
+    private func fetchRecordsForYear(_ year: Int) -> [RecordDetail] {
+        let context = PersistenceController.shared.container.viewContext
+        let calendar = Calendar.current
+
+        // Get the date range for this year
+        guard let startOfYear = calendar.date(from: DateComponents(year: year, month: 1, day: 1)),
+              let endOfYear = calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1)) else {
+            return []
+        }
+
+        var yearRecords: [RecordDetail] = []
+
+        // For each record type, find the most extreme record from that year
+        for recordType in RecordType.allCases {
+            let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+                recordType.rawValue,
+                startOfYear as NSDate,
+                endOfYear as NSDate
+            )
+
+            // Sort to get the most extreme
+            let ascending = !recordType.isAscending
+            request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
+            request.fetchLimit = 1
+
+            do {
+                if let entry = try context.fetch(request).first,
+                   var record = RecordDetail(from: entry) {
+                    record.timeFrame = .allTime  // Display as all-time records
+                    yearRecords.append(record)
+                }
+            } catch {
+                debugLog("Failed to fetch record for \(recordType.rawValue) in year \(year): \(error.localizedDescription)")
+            }
+        }
+
+        return yearRecords
     }
 }
 
@@ -212,16 +328,47 @@ private struct RecordValueDisplay: View {
 // MARK: - Record Photo Thumbnail
 
 private struct RecordPhotoThumbnail: View {
-    let photoData: Data
+    let photoAssetIdentifier: String?
+    let photoData: Data?  // Legacy fallback
     let sizing: CardSizing
 
+    @State private var loadedImage: UIImage?
+
     var body: some View {
-        if let uiImage = UIImage(data: photoData) {
-            Image(uiImage: uiImage)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: sizing.photoSize, height: sizing.photoSize)
-                .clipShape(RoundedRectangle(cornerRadius: sizing.isCompact ? 8 : 12))
+        Group {
+            if let image = loadedImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: sizing.photoSize, height: sizing.photoSize)
+                    .clipShape(RoundedRectangle(cornerRadius: sizing.isCompact ? 8 : 12))
+            } else {
+                RoundedRectangle(cornerRadius: sizing.isCompact ? 8 : 12)
+                    .fill(Color(UIColor.tertiarySystemGroupedBackground))
+                    .frame(width: sizing.photoSize, height: sizing.photoSize)
+                    .overlay(
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    )
+            }
+        }
+        .task {
+            await loadThumbnail()
+        }
+    }
+
+    private func loadThumbnail() async {
+        // Try to load from Photos library using identifier
+        if let identifier = photoAssetIdentifier {
+            if let photo = await PhotoReferenceManager.shared.fetchThumbnail(identifier: identifier) {
+                loadedImage = photo
+                return
+            }
+        }
+
+        // Fallback to legacy embedded photo data
+        if let data = photoData, let image = UIImage(data: data) {
+            loadedImage = image
         }
     }
 }
@@ -282,8 +429,12 @@ struct RecordCardView: View {
                 }
 
                 // Right side - photo thumbnail
-                if let photoData = record.photoData {
-                    RecordPhotoThumbnail(photoData: photoData, sizing: sizing)
+                if record.photoAssetIdentifier != nil || record.photoData != nil {
+                    RecordPhotoThumbnail(
+                        photoAssetIdentifier: record.photoAssetIdentifier,
+                        photoData: record.photoData,
+                        sizing: sizing
+                    )
                 }
             }
 

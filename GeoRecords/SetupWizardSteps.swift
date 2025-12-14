@@ -412,7 +412,7 @@ struct PhotoImportStepView: View {
                 .foregroundColor(.blue)
 
             VStack(spacing: 12) {
-                Text("Import from Photos")
+                Text("Import Records from Photos")
                     .font(.system(size: 28, weight: .bold))
 
                 Text("Scan your photo library to find records from past travels")

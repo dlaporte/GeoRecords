@@ -50,8 +50,8 @@ struct ImportPreviewView: View {
                         .padding()
                     }
                     .padding()
-                } else if scanner.discoveredRecords.isEmpty {
-                    // No records found
+                } else if !scanner.isConfirming && scanner.discoveredRecords.isEmpty && !scanner.hasWizardRecords {
+                    // No records found (neither legacy nor wizard mode has records)
                     VStack(spacing: 20) {
                         Image(systemName: "photo.on.rectangle.angled")
                             .font(.system(size: 60))
@@ -73,25 +73,14 @@ struct ImportPreviewView: View {
                     }
                     .padding()
                 } else if scanner.isConfirming {
-                    // Confirmation flow - swipeable photo carousel per record type
-                    let candidates = scanner.currentCandidates
-                    if !candidates.isEmpty {
-                        let progress = scanner.currentProgress
-                        RecordConfirmationView(
-                            candidates: candidates,
-                            timeFrameName: scanner.currentTimeFrameName,
-                            recordNumber: progress.current,
-                            totalRecords: progress.total,
-                            unitSystem: settings.unitSystem,
-                            scanner: scanner,
-                            onConfirm: { selectedIndex in
-                                scanner.confirmCandidate(at: selectedIndex)
-                            },
-                            onSkip: {
-                                scanner.skipRecordType()
-                            }
-                        )
-                    }
+                    // Wizard-based confirmation flow
+                    ImportWizardView(
+                        scanner: scanner,
+                        onImport: {
+                            importRecords()
+                        }
+                    )
+                    .environmentObject(settings)
                 } else {
                     // Confirmation complete - show summary and import button
                     VStack(spacing: 20) {
@@ -136,15 +125,18 @@ struct ImportPreviewView: View {
                     }
                 }
             }
-            .navigationTitle("Import from Photos")
+            .navigationTitle(scanner.isWizardMode ? "" : "Import Records from Photos")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
+                    if !scanner.isWizardMode || !scanner.isImporting {
+                        Button("Cancel") {
+                            dismiss()
+                        }
                     }
                 }
             }
+            .toolbarBackground(scanner.isWizardMode ? .hidden : .visible, for: .navigationBar)
             .alert("Success!", isPresented: $showSuccess) {
                 Button("View Records") {
                     dismiss()

@@ -9,36 +9,83 @@ struct ManualRecordImportView: View {
     @Environment(\.dismiss) var dismiss
 
     @State private var selectedLocation: CLLocationCoordinate2D?
-    @State private var selectedRecordType: String = "Furthest North"
+    @State private var selectedRecordType: String = RecordType.north.rawValue
     @State private var selectedDate = Date()
     @State private var mapPosition: MapCameraPosition = .automatic
     @State private var showConfirmation = false
     @State private var showPhotoPicker = false
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var showNoLocationAlert = false
+    @State private var locationName: String?
+    @State private var isGeocodingLocation = false
+    @State private var altitudeText: String = ""
+    @State private var selectedPhotoAssetIdentifier: String?
+    @State private var selectedPhotoImage: UIImage?
+    @State private var recordTypesThatWouldBeat: [String] = []
 
-    let recordTypes = RecordType.allTypeStrings
+    private var recordTypes: [String] {
+        // If we have a location and filtered types, show only those
+        if selectedLocation != nil && !recordTypesThatWouldBeat.isEmpty {
+            return recordTypesThatWouldBeat
+        }
+        // Otherwise show all types
+        return RecordType.allTypeStrings
+    }
+
+    private var isAltitudeRecord: Bool {
+        selectedRecordType == RecordType.up.rawValue
+    }
+
+    private var confirmButtonTitle: String {
+        recordsToReplace.isEmpty ? "Add Record" : "Replace Record"
+    }
+
+    private var confirmationMessage: String {
+        guard let location = selectedLocation else { return "" }
+
+        if recordsToReplace.isEmpty {
+            return "Add \(selectedRecordType) record at \(previewValue(for: selectedRecordType, location: location))?"
+        } else {
+            let timeFramesText = recordsToReplace.map { $0.0.rawValue }.joined(separator: ", ")
+            guard let oldestRecord = recordsToReplace.last?.1 else { return "" }
+            let dateText = mediumDateFormatter.string(from: oldestRecord.timestamp)
+            return "This will replace your \(selectedRecordType) record(s) for: \(timeFramesText).\n\nCurrent record from \(dateText) will be moved to history."
+        }
+    }
+
+    private var altitudeUnitLabel: String {
+        settings.unitSystem == .imperial ? "ft" : "m"
+    }
+
+    private var parsedAltitude: Double? {
+        guard let altitude = Double(altitudeText) else { return nil }
+        // Convert to meters for storage if imperial
+        if settings.unitSystem == .imperial {
+            return altitude / metersToFeet
+        }
+        return altitude
+    }
 
     // Check which existing records will be replaced
     private var recordsToReplace: [(TimeFrame, RecordDetail)] {
-        guard let location = selectedLocation else { return [] }
+        guard let location = selectedLocation,
+              let recordType = RecordType.from(string: selectedRecordType) else { return [] }
 
         let value: Double
-        switch selectedRecordType {
-        case "Furthest North", "Furthest South":
+        switch recordType {
+        case .north, .south:
             value = location.latitude
-        case "Furthest East", "Furthest West":
+        case .east, .west:
             value = location.longitude
-        case "Furthest Up", "Furthest Down":
-            return [] // Can't manually enter altitude
-        case "Furthest from Home":
+        case .up:
+            guard let altitude = parsedAltitude else { return [] }
+            value = altitude
+        case .fromHome:
             guard let homeCoord = settings.homeCoordinate else { return [] }
             let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
             let recordLocation = CLLocation(latitude: location.latitude, longitude: location.longitude)
             let distanceMeters = recordLocation.distance(from: homeLocation)
-            value = distanceMeters * metersToFeet // Convert to feet for storage
-        default:
-            return []
+            value = distanceMeters  // Store in meters (converted to display units in UI)
         }
 
         // Get current month and year boundaries
@@ -57,8 +104,7 @@ struct ManualRecordImportView: View {
         // Check which existing records would be replaced
         var replacements: [(TimeFrame, RecordDetail)] = []
         for timeFrame in timeFrames {
-            if let existing = recordManager.getRecord(type: selectedRecordType, timeFrame: timeFrame),
-               let recordType = RecordType.from(string: selectedRecordType) {
+            if let existing = recordManager.getRecord(type: selectedRecordType, timeFrame: timeFrame) {
                 let wouldReplace = recordType.shouldReplace(newValue: value, oldValue: existing.value)
                 if wouldReplace {
                     replacements.append((timeFrame, existing))
@@ -71,146 +117,296 @@ struct ManualRecordImportView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // Map
-                MapReader { reader in
-                    Map(position: $mapPosition) {
-                        if let location = selectedLocation {
-                            Marker("Selected Location", coordinate: location)
-                                .tint(.blue)
-                        }
-                    }
-                    .frame(height: 300)
-                    .onTapGesture { position in
-                        if let coordinate = reader.convert(position, from: .local) {
-                            withAnimation {
-                                selectedLocation = coordinate
-                            }
-                        }
-                    }
-                }
-                .overlay(alignment: .topTrailing) {
-                    VStack(spacing: 8) {
-                        Button(action: {
-                            if let userLocation = LocationManager.shared.currentLocation {
-                                selectedLocation = userLocation.coordinate
-                                mapPosition = .region(MKCoordinateRegion(
-                                    center: userLocation.coordinate,
-                                    span: MKCoordinateSpan(latitudeDelta: defaultMapLatDelta, longitudeDelta: defaultMapLonDelta)
-                                ))
-                            }
-                        }) {
-                            Image(systemName: "location.fill")
-                                .padding(12)
-                                .background(Color(UIColor.systemBackground))
-                                .clipShape(Circle())
-                                .shadow(radius: 2)
-                        }
-                    }
-                    .padding()
-                }
+            contentView
+        }
+    }
 
-                // Form
-                Form {
-                    Section(header: Text("Location")) {
-                        if let location = selectedLocation {
-                            HStack {
-                                Text("Latitude:")
-                                Spacer()
-                                Text(String(format: "%.6f°", location.latitude))
-                                    .foregroundColor(.secondary)
-                            }
-                            HStack {
-                                Text("Longitude:")
-                                Spacer()
-                                Text(String(format: "%.6f°", location.longitude))
-                                    .foregroundColor(.secondary)
-                            }
-                        } else {
-                            Text("Tap the map above to select a location")
-                                .foregroundColor(.secondary)
-                                .font(.caption)
-                        }
-
-                        Button("Import Location from Photo") {
-                            showPhotoPicker = true
-                        }
-
-                        NavigationLink(destination: CoordinatePickerView(coordinate: $selectedLocation, mapPosition: $mapPosition)) {
-                            Text("Enter Location Manually")
-                        }
-                    }
-
-                    Section(header: Text("Record Details")) {
-                        Picker("Record Type", selection: $selectedRecordType) {
-                            ForEach(recordTypes, id: \.self) { type in
-                                Text(type).tag(type)
-                            }
-                        }
-
-                        DatePicker("Date", selection: $selectedDate, displayedComponents: [.date, .hourAndMinute])
-                    }
-
-                    Section(header: Text("Preview")) {
-                        if let location = selectedLocation {
-                            HStack {
-                                Text("Value:")
-                                Spacer()
-                                Text(formatValue(for: selectedRecordType, location: location))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Add Record Manually")
+    private var contentView: some View {
+        mainContent
+            .navigationTitle("Add Individual Record")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        showConfirmation = true
-                    }
-                    .disabled(selectedLocation == nil)
-                }
-            }
-            .alert("Add Record?", isPresented: $showConfirmation) {
-                Button("Cancel", role: .cancel) {}
-                Button(recordsToReplace.isEmpty ? "Add Record" : "Replace Record") {
-                    addRecord()
-                }
-            } message: {
-                if let location = selectedLocation {
-                    if recordsToReplace.isEmpty {
-                        Text("Add \(selectedRecordType) record at \(formatValue(for: selectedRecordType, location: location))?")
-                    } else {
-                        let timeFramesText = recordsToReplace.map { $0.0.rawValue }.joined(separator: ", ")
-                        let oldestRecord = recordsToReplace.last!.1
-                        let dateText = mediumDateFormatter.string(from: oldestRecord.timestamp)
+            .toolbar { toolbarContent }
+            .modifier(alertsModifier)
+            .modifier(photoPickerModifier)
+            .modifier(locationChangeModifier)
+    }
 
-                        Text("This will replace your \(selectedRecordType) record(s) for: \(timeFramesText).\n\nCurrent record from \(dateText) will be moved to history.")
+    private var alertsModifier: some ViewModifier {
+        AlertsModifier(
+            showConfirmation: $showConfirmation,
+            showNoLocationAlert: $showNoLocationAlert,
+            confirmButtonTitle: confirmButtonTitle,
+            confirmationMessage: confirmationMessage,
+            addRecord: addRecord
+        )
+    }
+
+    private var photoPickerModifier: some ViewModifier {
+        PhotoPickerModifier(
+            showPhotoPicker: $showPhotoPicker,
+            selectedPhotoItem: $selectedPhotoItem,
+            onPhotoSelected: {
+                Task { await loadPhotoLocation() }
+            }
+        )
+    }
+
+    private var locationChangeModifier: some ViewModifier {
+        LocationChangeModifier(
+            selectedLocation: $selectedLocation,
+            altitudeText: $altitudeText,
+            locationName: locationName,
+            isGeocodingLocation: isGeocodingLocation,
+            onLocationChange: { coord in
+                if locationName == nil && !isGeocodingLocation {
+                    geocodeLocation(coord)
+                }
+                checkRecordsThatWouldBeat(location: coord)
+            },
+            onLocationCleared: {
+                recordTypesThatWouldBeat = []
+            },
+            onAltitudeChange: {
+                if let location = selectedLocation {
+                    checkRecordsThatWouldBeat(location: location)
+                }
+            }
+        )
+    }
+
+    private var mainContent: some View {
+        VStack(spacing: 0) {
+            mapSection
+            formSection
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("Cancel") { dismiss() }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Add") { showConfirmation = true }
+                .disabled(selectedLocation == nil || (isAltitudeRecord && parsedAltitude == nil))
+        }
+    }
+
+    @ViewBuilder
+    private var confirmationAlertButtons: some View {
+        Button("Cancel", role: .cancel) {}
+        Button(confirmButtonTitle) { addRecord() }
+    }
+
+    // MARK: - View Sections
+
+    private var mapSection: some View {
+        MapReader { reader in
+            Map(position: $mapPosition) {
+                if let location = selectedLocation {
+                    Marker("Selected Location", coordinate: location)
+                        .tint(.blue)
+                }
+            }
+            .frame(height: 300)
+            .onTapGesture { position in
+                if let coordinate = reader.convert(position, from: .local) {
+                    locationName = nil
+                    withAnimation {
+                        selectedLocation = coordinate
                     }
                 }
             }
-            .alert("No Location Data", isPresented: $showNoLocationAlert) {
-                Button("OK") {}
-            } message: {
-                Text("The selected photo does not contain GPS location information.")
+        }
+        .overlay(alignment: .topTrailing) {
+            Button(action: useCurrentLocation) {
+                Image(systemName: "location.fill")
+                    .padding(12)
+                    .background(Color(UIColor.systemBackground))
+                    .clipShape(Circle())
+                    .shadow(radius: 2)
             }
-            .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItem, matching: .images)
-            .onChange(of: selectedPhotoItem) { oldValue, newValue in
-                Task {
-                    await loadPhotoLocation()
-                }
+            .padding()
+        }
+    }
+
+    private var formSection: some View {
+        Form {
+            locationSection
+            altitudeSectionIfNeeded
+            recordDetailsSection
+            previewSection
+        }
+    }
+
+    @ViewBuilder
+    private var altitudeSectionIfNeeded: some View {
+        if isAltitudeRecord {
+            altitudeSection
+        }
+    }
+
+    private var locationSection: some View {
+        Section(header: Text("Location")) {
+            locationDetails
+            Button("Import from Photo") {
+                showPhotoPicker = true
+            }
+            NavigationLink(destination: CoordinatePickerView(coordinate: $selectedLocation, mapPosition: $mapPosition)) {
+                Text("Enter Location Manually")
             }
         }
     }
 
-    private func formatValue(for recordType: String, location: CLLocationCoordinate2D) -> String {
+    @ViewBuilder
+    private var locationDetails: some View {
+        if let location = selectedLocation {
+            locationNameRow
+            latitudeRow(location)
+            longitudeRow(location)
+        } else {
+            Text("Tap the map above to select a location")
+                .foregroundColor(.secondary)
+                .font(.caption)
+        }
+    }
+
+    private var locationNameRow: some View {
+        HStack {
+            Text("Location:")
+            Spacer()
+            locationNameValue
+        }
+    }
+
+    @ViewBuilder
+    private var locationNameValue: some View {
+        if isGeocodingLocation {
+            ProgressView()
+                .scaleEffect(0.8)
+        } else {
+            Text(locationName ?? "Unknown")
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private func latitudeRow(_ location: CLLocationCoordinate2D) -> some View {
+        HStack {
+            Text("Latitude:")
+            Spacer()
+            Text(String(format: "%.6f°", location.latitude))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private func longitudeRow(_ location: CLLocationCoordinate2D) -> some View {
+        HStack {
+            Text("Longitude:")
+            Spacer()
+            Text(String(format: "%.6f°", location.longitude))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var altitudeSection: some View {
+        Section(header: Text("Altitude")) {
+            HStack {
+                TextField("Enter altitude", text: $altitudeText)
+                    .keyboardType(.decimalPad)
+                Text(altitudeUnitLabel)
+                    .foregroundColor(.secondary)
+            }
+            Text("Enter the altitude in \(settings.unitSystem == .imperial ? "feet" : "meters")")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var recordDetailsSection: some View {
+        Section(header: Text("Record Details")) {
+            Picker("Record Type", selection: $selectedRecordType) {
+                ForEach(recordTypes, id: \.self) { type in
+                    Text(type).tag(type)
+                }
+            }
+
+            DatePicker("Date", selection: $selectedDate, displayedComponents: [.date, .hourAndMinute])
+        }
+    }
+
+    private var previewSection: some View {
+        Section(header: Text("Preview")) {
+            previewContent
+        }
+    }
+
+    @ViewBuilder
+    private var previewContent: some View {
+        if let location = selectedLocation {
+            // Photo thumbnail if available
+            if let photo = selectedPhotoImage {
+                HStack {
+                    Text("Photo:")
+                    Spacer()
+                    Image(uiImage: photo)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 60, height: 60)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+
+            // Show warning if no records would be beaten
+            if recordTypesThatWouldBeat.isEmpty {
+                HStack {
+                    Image(systemName: "info.circle")
+                        .foregroundColor(.orange)
+                    Text("This location doesn't beat any current records")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            }
+
+            HStack {
+                Text("Value:")
+                Spacer()
+                Text(previewValue(for: selectedRecordType, location: location))
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Helper Functions
+
+    private func useCurrentLocation() {
+        if let userLocation = LocationManager.shared.currentLocation {
+            locationName = nil
+            selectedLocation = userLocation.coordinate
+            mapPosition = .region(MKCoordinateRegion(
+                center: userLocation.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: defaultMapLatDelta, longitudeDelta: defaultMapLonDelta)
+            ))
+        }
+    }
+
+    private func previewValue(for recordType: String, location: CLLocationCoordinate2D) -> String {
+        // Handle altitude records with user input
+        if recordType == RecordType.up.rawValue {
+            if let altitude = parsedAltitude {
+                // Display in user's preferred units
+                if settings.unitSystem == .imperial {
+                    let feet = altitude * metersToFeet
+                    return String(format: "%.0f ft", feet)
+                } else {
+                    return String(format: "%.0f m", altitude)
+                }
+            } else {
+                return "Enter altitude above"
+            }
+        }
+
+        // Use standard formatting for other record types
         return FormatUtils.formatRecordValue(
             for: recordType,
             at: location,
@@ -220,30 +416,30 @@ struct ManualRecordImportView: View {
     }
 
     private func addRecord() {
-        guard let location = selectedLocation else { return }
+        guard let location = selectedLocation,
+              let recordType = RecordType.from(string: selectedRecordType) else { return }
 
         let value: Double
-        let altitude: Double = 0 // Manual entry doesn't include altitude
+        let altitude: Double
 
-        switch selectedRecordType {
-        case "Furthest North", "Furthest South":
+        switch recordType {
+        case .north, .south:
             value = location.latitude
-        case "Furthest East", "Furthest West":
+            altitude = 0
+        case .east, .west:
             value = location.longitude
-        case "Furthest Up", "Furthest Down":
-            value = 0 // Can't manually enter altitude
-            return // Skip altitude records for manual entry
-        case "Furthest from Home":
-            if let homeCoord = settings.homeCoordinate {
-                let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
-                let recordLocation = CLLocation(latitude: location.latitude, longitude: location.longitude)
-                let distanceMeters = recordLocation.distance(from: homeLocation)
-                value = distanceMeters * metersToFeet // Convert to feet for storage
-            } else {
-                return // No home location set
-            }
-        default:
-            return
+            altitude = 0
+        case .up:
+            guard let manualAltitude = parsedAltitude else { return }
+            value = manualAltitude  // Already in meters
+            altitude = manualAltitude
+        case .fromHome:
+            guard let homeCoord = settings.homeCoordinate else { return }
+            let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
+            let recordLocation = CLLocation(latitude: location.latitude, longitude: location.longitude)
+            let distanceMeters = recordLocation.distance(from: homeLocation)
+            value = distanceMeters  // Store in meters
+            altitude = 0
         }
 
         // Get current month and year boundaries
@@ -266,38 +462,20 @@ struct ManualRecordImportView: View {
                 timestamp: selectedDate,
                 coordinate: location,
                 altitude: altitude,
-                locationName: nil,
+                locationName: locationName,
                 recordType: selectedRecordType,
                 timeFrame: timeFrame,
-                photoData: nil
+                photoAssetIdentifier: selectedPhotoAssetIdentifier
             )
 
-            // Update record manager
-            updateRecordManager(recordType: selectedRecordType, detail: detail, timeFrame: timeFrame)
+            // Update record manager (uses shared method that checks if new value is better)
+            RecordManager.shared.updateRecordIfBetter(recordType: selectedRecordType, detail: detail, timeFrame: timeFrame)
 
             // Save to Core Data
             RecordHistoryManager.shared.addRecord(recordType: selectedRecordType, detail: detail)
         }
 
         dismiss()
-    }
-
-    private func updateRecordManager(recordType: String, detail: RecordDetail, timeFrame: TimeFrame) {
-        let recordManager = RecordManager.shared
-        let existing = recordManager.getRecord(type: recordType, timeFrame: timeFrame)
-
-        // Determine if this record should replace the existing one
-        let shouldUpdate: Bool
-        if let existing = existing,
-           let type = RecordType.from(string: recordType) {
-            shouldUpdate = type.shouldReplace(newValue: detail.value, oldValue: existing.value)
-        } else {
-            shouldUpdate = true  // No existing record, so set it
-        }
-
-        if shouldUpdate {
-            recordManager.setRecord(type: recordType, timeFrame: timeFrame, record: detail)
-        }
     }
 
     private func loadPhotoLocation() async {
@@ -356,10 +534,19 @@ struct ManualRecordImportView: View {
                 }
             }
 
+            // Get photo asset identifier
+            let assetIdentifier = item.itemIdentifier
+
+            // Create a UIImage from the data for thumbnail
+            let thumbnailImage = UIImage(data: data)
+
             // Update UI on main thread
             await MainActor.run {
+                locationName = nil  // Reset so onChange triggers geocoding
                 selectedLocation = coordinate
                 selectedDate = photoDate
+                selectedPhotoAssetIdentifier = assetIdentifier
+                selectedPhotoImage = thumbnailImage
                 mapPosition = .region(MKCoordinateRegion(
                     center: coordinate,
                     span: MKCoordinateSpan(latitudeDelta: defaultMapLatDelta, longitudeDelta: defaultMapLonDelta)
@@ -369,6 +556,197 @@ struct ManualRecordImportView: View {
             await MainActor.run {
                 showNoLocationAlert = true
             }
+        }
+    }
+
+    private func geocodeLocation(_ coordinate: CLLocationCoordinate2D) {
+        // Reset location name and start loading
+        locationName = nil
+        isGeocodingLocation = true
+
+        // First check if we have a cached name for nearby coordinates
+        if let cachedName = RecordHistoryManager.shared.lookupLocationName(
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude
+        ) {
+            locationName = cachedName
+            isGeocodingLocation = false
+            return
+        }
+
+        // Otherwise, use Apple's geocoder
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let geocoder = CLGeocoder()
+
+        geocoder.reverseGeocodeLocation(location) { placemarks, error in
+            DispatchQueue.main.async {
+                isGeocodingLocation = false
+
+                if let error = error {
+                    debugLog("Geocoding error: \(error.localizedDescription)")
+                    locationName = unknownLocationString
+                } else if let placemark = placemarks?.first {
+                    locationName = FormatUtils.formatPlacemarkName(placemark)
+                } else {
+                    locationName = unknownLocationString
+                }
+            }
+        }
+    }
+
+    private func checkRecordsThatWouldBeat(location: CLLocationCoordinate2D) {
+        var wouldBeat: [String] = []
+
+        // Get current month and year boundaries
+        let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
+
+        // Determine which timeframes apply to the selected date
+        let appliesToAllTime = true
+        let appliesToYear = selectedDate >= startOfYear
+        let appliesToMonth = selectedDate >= startOfMonth
+
+        // Check each record type
+        for recordType in RecordType.allCases {
+            let typeString = recordType.rawValue
+            var beatsAny = false
+
+            // Check if it beats all-time
+            if appliesToAllTime, let currentRecord = recordManager.getRecord(type: typeString, timeFrame: .allTime) {
+                if wouldBeatRecord(newLocation: location, recordType: recordType, currentValue: currentRecord.value) {
+                    beatsAny = true
+                }
+            } else if appliesToAllTime && recordManager.getRecord(type: typeString, timeFrame: .allTime) == nil {
+                // No record exists yet
+                beatsAny = true
+            }
+
+            // Check if it beats yearly
+            if !beatsAny && appliesToYear, let currentRecord = recordManager.getRecord(type: typeString, timeFrame: .year) {
+                if wouldBeatRecord(newLocation: location, recordType: recordType, currentValue: currentRecord.value) {
+                    beatsAny = true
+                }
+            } else if !beatsAny && appliesToYear && recordManager.getRecord(type: typeString, timeFrame: .year) == nil {
+                beatsAny = true
+            }
+
+            // Check if it beats monthly
+            if !beatsAny && appliesToMonth, let currentRecord = recordManager.getRecord(type: typeString, timeFrame: .month) {
+                if wouldBeatRecord(newLocation: location, recordType: recordType, currentValue: currentRecord.value) {
+                    beatsAny = true
+                }
+            } else if !beatsAny && appliesToMonth && recordManager.getRecord(type: typeString, timeFrame: .month) == nil {
+                beatsAny = true
+            }
+
+            if beatsAny {
+                wouldBeat.append(typeString)
+            }
+        }
+
+        recordTypesThatWouldBeat = wouldBeat
+
+        // Auto-select the first one if we have any
+        if !wouldBeat.isEmpty && !wouldBeat.contains(selectedRecordType) {
+            selectedRecordType = wouldBeat[0]
+        }
+    }
+
+    private func wouldBeatRecord(newLocation: CLLocationCoordinate2D, recordType: RecordType, currentValue: Double) -> Bool {
+        let newValue: Double
+
+        switch recordType {
+        case .north:
+            newValue = newLocation.latitude
+        case .south:
+            newValue = newLocation.latitude
+        case .east:
+            newValue = newLocation.longitude
+        case .west:
+            newValue = newLocation.longitude
+        case .up:
+            // For altitude, we need user input - can't check without it
+            return parsedAltitude != nil
+        case .fromHome:
+            guard let homeCoord = settings.homeCoordinate else { return false }
+            let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
+            let recordLocation = CLLocation(latitude: newLocation.latitude, longitude: newLocation.longitude)
+            newValue = recordLocation.distance(from: homeLocation)
+        }
+
+        return recordType.shouldReplace(newValue: newValue, oldValue: currentValue)
+    }
+}
+
+// MARK: - Alerts Modifier
+
+private struct AlertsModifier: ViewModifier {
+    @Binding var showConfirmation: Bool
+    @Binding var showNoLocationAlert: Bool
+    let confirmButtonTitle: String
+    let confirmationMessage: String
+    let addRecord: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Add Record?", isPresented: $showConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button(confirmButtonTitle) { addRecord() }
+            } message: {
+                Text(confirmationMessage)
+            }
+            .alert("No Location Data", isPresented: $showNoLocationAlert) {
+                Button("OK") {}
+            } message: {
+                Text("The selected photo does not contain GPS location information.")
+            }
+    }
+}
+
+// MARK: - Photo Picker Modifier
+
+private struct PhotoPickerModifier: ViewModifier {
+    @Binding var showPhotoPicker: Bool
+    @Binding var selectedPhotoItem: PhotosPickerItem?
+    let onPhotoSelected: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItem, matching: .images)
+            .onChange(of: selectedPhotoItem) { _, _ in
+                onPhotoSelected()
+            }
+    }
+}
+
+// MARK: - Location Change Modifier
+
+private struct LocationChangeModifier: ViewModifier {
+    @Binding var selectedLocation: CLLocationCoordinate2D?
+    @Binding var altitudeText: String
+    let locationName: String?
+    let isGeocodingLocation: Bool
+    let onLocationChange: (CLLocationCoordinate2D) -> Void
+    let onLocationCleared: () -> Void
+    let onAltitudeChange: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: selectedLocation?.latitude) { _, _ in
+                handleLocationChange()
+            }
+            .onChange(of: selectedLocation?.longitude) { _, _ in
+                handleLocationChange()
+            }
+            .onChange(of: altitudeText) { _, _ in
+                onAltitudeChange()
+            }
+    }
+
+    private func handleLocationChange() {
+        if let coord = selectedLocation {
+            onLocationChange(coord)
+        } else {
+            onLocationCleared()
         }
     }
 }

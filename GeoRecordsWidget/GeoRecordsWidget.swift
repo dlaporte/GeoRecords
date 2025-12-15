@@ -616,9 +616,13 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
                     let location = entry.value(forKey: "locationName") as? String ?? "Unknown"
                     let formattedValue = formatRecordValue(value, recordType: recordType, unitSystem: unitSystem)
 
-                    // Create thumbnail using ImageIO to avoid loading full image into memory
+                    // Load thumbnail from app group cache
                     var thumbnail: UIImage?
-                    if let photoData = entry.value(forKey: "photoData") as? Data {
+                    if let recordId = entry.value(forKey: "id") as? UUID {
+                        thumbnail = self.loadThumbnailFromCache(for: recordId)
+                    }
+                    // Fallback to legacy embedded photo data
+                    if thumbnail == nil, let photoData = entry.value(forKey: "photoData") as? Data {
                         thumbnail = self.createThumbnailFromData(photoData, maxSize: 300)
                     }
 
@@ -656,6 +660,27 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
         }
 
         return UIImage(cgImage: cgImage)
+    }
+
+    /// Load a cached thumbnail from the app group
+    private func loadThumbnailFromCache(for recordId: UUID) -> UIImage? {
+        guard let appGroupURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupIdentifier
+        ) else {
+            return nil
+        }
+
+        let thumbnailURL = appGroupURL
+            .appendingPathComponent("Thumbnails")
+            .appendingPathComponent("\(recordId.uuidString).jpg")
+
+        guard FileManager.default.fileExists(atPath: thumbnailURL.path),
+              let data = try? Data(contentsOf: thumbnailURL),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+
+        return image
     }
 }
 

@@ -456,6 +456,9 @@ struct ManualRecordImportView: View {
             timeFrames = [.allTime]  // Only all-time
         }
 
+        // Track if we've saved thumbnail (only need once)
+        var thumbnailSaved = false
+
         // Create records for each applicable timeframe
         for timeFrame in timeFrames {
             let detail = RecordDetail(
@@ -475,6 +478,12 @@ struct ManualRecordImportView: View {
 
             // Save to Core Data
             RecordHistoryManager.shared.addRecord(recordType: selectedRecordType, detail: detail)
+
+            // Save thumbnail to cache (once per photo, for widget and fast loading)
+            if !thumbnailSaved, let image = selectedPhotoImage {
+                ThumbnailCache.shared.saveThumbnail(from: image, for: detail.id)
+                thumbnailSaved = true
+            }
         }
 
         dismiss()

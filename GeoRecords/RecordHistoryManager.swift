@@ -416,6 +416,9 @@ class RecordHistoryManager: ObservableObject {
 
             // Clear daily statistics as well
             DailyStatisticManager.shared.clearAllStatistics()
+
+            // Clear cached thumbnails
+            ThumbnailCache.shared.clearAllThumbnails()
         } catch {
             let message = "Failed to clear records: \(error.localizedDescription)"
             debugLog(message)
@@ -431,6 +434,9 @@ class RecordHistoryManager: ObservableObject {
 
         // Clear daily statistics as well (even for local-only clear)
         DailyStatisticManager.shared.clearAllStatistics()
+
+        // Clear cached thumbnails (will regenerate on app launch after iCloud sync)
+        ThumbnailCache.shared.clearAllThumbnails()
 
         // Reset the managed object context to release all cached objects
         // This prevents crashes when FetchRequests hold stale references

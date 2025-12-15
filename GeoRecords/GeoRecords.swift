@@ -85,6 +85,10 @@ struct GeoRecords: App {
 
             // Start background geocoding for any records missing location names
             await BackgroundGeocoder.shared.geocodeMissingLocations()
+
+            // Generate thumbnails for existing records that don't have cached thumbnails
+            // This ensures widget photos work for records imported before this feature
+            await ThumbnailCache.shared.generateMissingThumbnails()
         }
     }
     

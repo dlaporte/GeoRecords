@@ -589,6 +589,9 @@ class PhotoLibraryScanner: ObservableObject {
             // Create records for each applicable timeframe
             let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
 
+            // Track if we've saved thumbnail for this photo (only need once per import)
+            var thumbnailSaved = false
+
             for timeFrame in timeFrames {
                 let detail = RecordDetail(
                     value: record.value,
@@ -605,6 +608,12 @@ class PhotoLibraryScanner: ObservableObject {
                 // Always add to history (for stats and historical tracking)
                 await MainActor.run {
                     RecordHistoryManager.shared.addRecord(recordType: record.recordType, detail: detail)
+                }
+
+                // Save thumbnail to cache (once per photo, for widget and fast loading)
+                if !thumbnailSaved {
+                    await ThumbnailCache.shared.saveThumbnail(from: record.photoAsset, for: detail.id)
+                    thumbnailSaved = true
                 }
 
                 // Only update RecordManager if record belongs to CURRENT timeframe period

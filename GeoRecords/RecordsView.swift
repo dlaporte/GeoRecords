@@ -328,6 +328,7 @@ private struct RecordValueDisplay: View {
 // MARK: - Record Photo Thumbnail
 
 private struct RecordPhotoThumbnail: View {
+    let recordId: UUID
     let photoAssetIdentifier: String?
     let photoCloudIdentifier: String?
     let photoData: Data?  // Legacy fallback
@@ -361,7 +362,13 @@ private struct RecordPhotoThumbnail: View {
     }
 
     private func loadThumbnail() async {
-        // Try to load from Photos library with fallback: local ID → cloud ID → timestamp/location
+        // First, try loading from thumbnail cache (fastest)
+        if let cached = ThumbnailCache.shared.loadThumbnail(for: recordId) {
+            loadedImage = cached
+            return
+        }
+
+        // Fall back to Photos library with fallback: local ID → cloud ID → timestamp/location
         if let identifier = photoAssetIdentifier {
             if let photo = await PhotoReferenceManager.shared.fetchThumbnailWithFallback(
                 identifier: identifier,
@@ -439,6 +446,7 @@ struct RecordCardView: View {
                 // Right side - photo thumbnail
                 if record.photoAssetIdentifier != nil || record.photoData != nil {
                     RecordPhotoThumbnail(
+                        recordId: record.id,
                         photoAssetIdentifier: record.photoAssetIdentifier,
                         photoCloudIdentifier: record.photoCloudIdentifier,
                         photoData: record.photoData,

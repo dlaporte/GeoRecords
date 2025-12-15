@@ -11,6 +11,9 @@ import MapKit
 ///   - recordManager: The record manager to update
 @MainActor
 func deleteRecordFromStorage(_ record: RecordDetail, recordManager: RecordManager) {
+    // Delete cached thumbnail
+    ThumbnailCache.shared.deleteThumbnail(for: record.id)
+
     // Delete this record and all related records with the same timestamp
     // (Records from the same photo have the same timestamp)
     let deletedCount = RecordHistoryManager.shared.deleteRelatedRecords(

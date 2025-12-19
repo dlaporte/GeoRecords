@@ -170,7 +170,29 @@ class BackupManager {
             // Regenerate daily statistics for graphs
             DailyStatisticManager.shared.regenerateAllStatistics()
 
+            // Force save and trigger CloudKit export
+            let context = PersistenceController.shared.container.viewContext
+            do {
+                // Ensure all changes are saved
+                if context.hasChanges {
+                    try context.save()
+                    debugLog("☁️ Saved context with imported records")
+                }
+
+                // Give CloudKit a moment to pick up the changes
+                try await Task.sleep(nanoseconds: 500_000_000)
+
+                // Trigger CloudKit to notice the new records
+                // This nudges NSPersistentCloudKitContainer to export
+                context.refreshAllObjects()
+
+                debugLog("☁️ Triggered CloudKit export - watch for 'Export started' in logs")
+            } catch {
+                debugLog("⚠️ Error triggering sync: \(error.localizedDescription)")
+            }
+
             debugLog("✅ Backup imported: \(importedCount) records processed")
+            debugLog("☁️ IMPORTANT: Wait for 'Export completed' in logs before deleting app!")
             return importedCount
 
         } catch {

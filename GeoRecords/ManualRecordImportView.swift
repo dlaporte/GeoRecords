@@ -397,10 +397,9 @@ struct ManualRecordImportView: View {
             if let altitude = parsedAltitude {
                 // Display in user's preferred units
                 if settings.unitSystem == .imperial {
-                    let feet = altitude * metersToFeet
-                    return String(format: "%.0f ft", feet)
+                    return FormatUtils.formatFeet(altitude * metersToFeet)
                 } else {
-                    return String(format: "%.0f m", altitude)
+                    return FormatUtils.formatMeters(altitude)
                 }
             } else {
                 return "Enter altitude above"

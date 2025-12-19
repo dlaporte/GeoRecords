@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import Photos
 
 // MARK: - Setup Flow State
 
@@ -8,6 +9,7 @@ enum SetupFlowState: Equatable {
     case none
     case checkingCloud
     case showingRestoreChoice
+    case showingNoCloudData  // Shows alert when no iCloud data found
     case restoringFromCloud
     case showingSetupWizard
     case databaseError
@@ -21,11 +23,11 @@ struct LocationHealthBanner: View {
     @Binding var isDismissed: Bool
     var selectedTab: Int
 
-    /// Only show location banner on the Records tab after setup is complete
+    /// Show location banner on all tabs after setup is complete
     private var shouldShow: Bool {
         // Don't show if setup hasn't been completed - user hasn't had a chance to grant permission yet
         guard settings.hasCompletedSetup else { return false }
-        return !locationManager.healthStatus.isHealthy && !isDismissed && selectedTab == 0
+        return !locationManager.healthStatus.isHealthy && !isDismissed
     }
 
     var body: some View {
@@ -49,17 +51,21 @@ struct LocationHealthBanner: View {
 
                     Spacer()
 
-                    Button(action: {
-                        locationManager.openSettings()
-                    }) {
-                        Text("Fix")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(locationManager.healthStatus.color)
-                            .foregroundColor(.white)
-                            .cornerRadius(8)
+                    // Only show Fix button for app-level issues (not system-level)
+                    // System-level issues require navigating to Settings → Privacy manually
+                    if !locationManager.healthStatus.isSystemLevel {
+                        Button(action: {
+                            locationManager.openSettings()
+                        }) {
+                            Text("Fix")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(locationManager.healthStatus.color)
+                                .foregroundColor(.white)
+                                .cornerRadius(8)
+                        }
                     }
 
                     Button(action: {
@@ -149,7 +155,8 @@ struct ContentView: View {
             persistenceController: persistenceController,
             restoreFromiCloud: restoreFromiCloud,
             performBackupImport: performBackupImport,
-            clearBackupInfo: { backupImportURL = nil; backupInfo = nil }
+            clearBackupInfo: { backupImportURL = nil; backupInfo = nil },
+            checkForCloudRestore: checkForCloudRestore
         ))
     }
 
@@ -167,6 +174,13 @@ struct ContentView: View {
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gear") }
                 .tag(3)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .navigateToiCloudSync)) { _ in
+            selectedTab = 3
+            // Post a delayed notification to scroll to iCloud section after tab switch
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                NotificationCenter.default.post(name: .scrollToiCloudSync, object: nil)
+            }
         }
     }
 
@@ -221,26 +235,17 @@ struct ContentView: View {
         ZStack {
             Color.black.opacity(0.4).ignoresSafeArea()
             VStack(spacing: 20) {
-                HStack {
-                    Spacer()
-                    Button(action: { setupFlowState = .none }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding(.horizontal)
-                .padding(.top)
                 ProgressView().scaleEffect(1.5)
                 VStack(spacing: 8) {
                     Text("Restoring from iCloud").font(.headline)
-                    Text("Your records are syncing from another device")
+                    Text("Your records will sync in the background.\nYou'll be able to use the app shortly.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                 }
                 .padding(.bottom)
             }
+            .padding(30)
             .frame(width: 300)
             .background(RoundedRectangle(cornerRadius: 20).fill(Color(UIColor.systemBackground)))
             .shadow(radius: 20)
@@ -270,7 +275,7 @@ struct ContentView: View {
 
                 await MainActor.run {
                     if hasCloudData {
-                        debugLog("☁️ Existing iCloud data detected, prompting user")
+                        debugLog("☁️ iCloud data detected (zone exists), prompting user")
                         setupFlowState = .showingRestoreChoice
                     } else {
                         debugLog("☁️ No iCloud data found, showing setup wizard")
@@ -290,6 +295,14 @@ struct ContentView: View {
         debugLog("☁️ User chose to restore from iCloud")
         setupFlowState = .restoringFromCloud
 
+        // Clear any local data first so iCloud data takes precedence
+        debugLog("☁️ Clearing ALL local data to allow fresh iCloud restore...")
+        recordManager.resetRecords()
+
+        // Destroy the local database completely - this forces a fresh sync from iCloud
+        let cleared = RecordHistoryManager.shared.clearLocalOnly()
+        debugLog("☁️ Local database cleared: \(cleared)")
+
         // Set reasonable defaults for settings (user can customize later)
         // Keep notifications disabled by default to respect privacy
         settings.notifyOnMonthlyRecords = false
@@ -298,40 +311,100 @@ struct ContentView: View {
         settings.summaryNotificationsEnabled = false
         settings.photoPromptsEnabled = false
 
-        // Use device's current location as home if available
-        if let currentLocation = LocationManager.shared.currentLocation {
-            settings.homeCoordinate = currentLocation.coordinate
-
-            // Also geocode to get location name
-            Task {
-                if let locationName = await reverseGeocode(location: currentLocation) {
-                    await MainActor.run {
-                        self.settings.homeLocationName = locationName
-                        self.settings.saveSettings()
-                        debugLog("☁️ Set home to: \(locationName)")
-                    }
-                } else {
-                    debugLog("☁️ Set home to current location (geocoding failed)")
-                }
-            }
-        }
+        // Don't set home location - let it sync from iCloud
+        // (Home location is already synced via NSUbiquitousKeyValueStore)
 
         // Mark setup as complete
         settings.hasCompletedSetup = true
         settings.saveSettings()
 
-        // Reload records from synced data
-        recordManager.loadRecordsFromHistory()
-
         // Request location permission
         LocationManager.shared.requestLocationAuthorization()
 
-        // Hide message after a delay
+        // Request photo library access (needed to display photos from restored records)
+        PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+            debugLog("📷 Photo library access: \(status == .authorized || status == .limited ? "granted" : "denied")")
+        }
+
+        // Wait for store to reload and iCloud sync to start
         Task {
+            // Wait a bit for the store to reload (happens async in clearLocalOnly)
             try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+
             await MainActor.run {
+                // Don't load records yet - wait for iCloud sync
                 setupFlowState = .none
+                debugLog("☁️ Entering app - waiting for iCloud sync to restore data")
+                debugLog("☁️ NOTE: If bogus records persist, they may be synced TO iCloud. Use 'Delete from iCloud' option to fully remove them.")
             }
+
+            // Monitor sync and only load records when sync completes
+            await monitorSyncCompletion()
+        }
+    }
+
+    private func monitorSyncCompletion() async {
+        // Wait for iCloud sync to actually import data
+        var syncWaitTime: TimeInterval = 0
+        let maxSyncWait: TimeInterval = 120 // 2 minutes max
+        var hasSeenSyncStart = false
+        var lastImportTime: Date? = nil
+
+        // Get initial import time
+        await MainActor.run {
+            lastImportTime = persistenceController.lastImportTime
+        }
+
+        while syncWaitTime < maxSyncWait {
+            try? await Task.sleep(nanoseconds: 2_000_000_000) // Check every 2 seconds
+            syncWaitTime += 2
+
+            let (isSyncing, currentImportTime) = await MainActor.run {
+                (persistenceController.isSyncing, persistenceController.lastImportTime)
+            }
+
+            // Track if sync has started
+            if isSyncing {
+                hasSeenSyncStart = true
+            }
+
+            // Check if a new import has completed
+            if let currentTime = currentImportTime,
+               (lastImportTime.map { currentTime > $0 } ?? true) {
+                // New import completed - reload records
+                await MainActor.run {
+                    debugLog("☁️ iCloud import completed at \(currentTime) - reloading records")
+                    recordManager.loadRecordsFromHistory()
+                }
+                return
+            }
+
+            // If sync finished without seeing an import, still try loading
+            if hasSeenSyncStart && !isSyncing {
+                await MainActor.run {
+                    debugLog("☁️ iCloud sync completed (no new import) - reloading records")
+                    recordManager.loadRecordsFromHistory()
+                }
+                return
+            }
+
+            // Periodically reload to show progress
+            if Int(syncWaitTime) % 10 == 0 {
+                await MainActor.run {
+                    recordManager.loadRecordsFromHistory()
+                    // Count all-time records as a proxy for total loaded
+                    let count = RecordType.allCases.compactMap {
+                        recordManager.getRecord(type: $0.rawValue, timeFrame: .allTime)
+                    }.count
+                    debugLog("☁️ Waiting for sync (\(Int(syncWaitTime))s) - currently have \(count) all-time records")
+                }
+            }
+        }
+
+        // Max wait reached
+        await MainActor.run {
+            debugLog("☁️ Sync timeout after \(Int(maxSyncWait))s - loading available records")
+            recordManager.loadRecordsFromHistory()
         }
     }
 
@@ -403,6 +476,7 @@ private struct ContentViewAlertsModifier: ViewModifier {
     let restoreFromiCloud: () -> Void
     let performBackupImport: () -> Void
     let clearBackupInfo: () -> Void
+    let checkForCloudRestore: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -444,6 +518,12 @@ private struct ContentViewAlertsModifier: ViewModifier {
             } message: {
                 Text("We found existing records in your iCloud account. Would you like to restore them, or start fresh on this device?")
             }
+            .alert("No iCloud Data Found", isPresented: noCloudDataBinding) {
+                Button("Keep Waiting") { checkForCloudRestore() }  // Uses closure from modifier
+                Button("Start Fresh", role: .cancel) { setupFlowState = .showingSetupWizard }
+            } message: {
+                Text("No records found after waiting 60 seconds. iCloud sync may take longer for large datasets.\n\nChoose 'Keep Waiting' to check again, or 'Start Fresh' to set up as a new device.")
+            }
             .alert("Restore from Backup?", isPresented: $showBackupImportConfirm) {
                 Button("Restore") { performBackupImport() }
                 Button("Cancel", role: .cancel) { clearBackupInfo() }
@@ -467,6 +547,13 @@ private struct ContentViewAlertsModifier: ViewModifier {
     private var restoreChoiceBinding: Binding<Bool> {
         Binding(
             get: { setupFlowState == .showingRestoreChoice },
+            set: { if !$0 { setupFlowState = .none } }
+        )
+    }
+
+    private var noCloudDataBinding: Binding<Bool> {
+        Binding(
+            get: { setupFlowState == .showingNoCloudData },
             set: { if !$0 { setupFlowState = .none } }
         )
     }

@@ -7,8 +7,8 @@ import UserNotifications
 /// Represents the overall health of location services for the app
 enum LocationHealthStatus: Equatable {
     case healthy
-    case degraded(reason: String)
-    case disabled(reason: String)
+    case degraded(reason: String, isSystemLevel: Bool = false)
+    case disabled(reason: String, isSystemLevel: Bool = false)
 
     var isHealthy: Bool {
         if case .healthy = self { return true }
@@ -20,11 +20,21 @@ enum LocationHealthStatus: Equatable {
         return false
     }
 
+    /// Whether this issue requires system-level settings (not app settings)
+    var isSystemLevel: Bool {
+        switch self {
+        case .healthy:
+            return false
+        case .degraded(_, let isSystem), .disabled(_, let isSystem):
+            return isSystem
+        }
+    }
+
     var message: String {
         switch self {
         case .healthy:
             return "Location services are working correctly"
-        case .degraded(let reason), .disabled(let reason):
+        case .degraded(let reason, _), .disabled(let reason, _):
             return reason
         }
     }
@@ -145,7 +155,7 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }.value
 
         guard servicesEnabled else {
-            healthStatus = .disabled(reason: "Location Services are turned off. Enable them in Settings → Privacy & Security → Location Services.")
+            healthStatus = .disabled(reason: "Location Services are turned off. Enable them in Settings → Privacy & Security → Location Services.", isSystemLevel: true)
             return
         }
 

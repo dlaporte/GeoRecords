@@ -150,6 +150,48 @@ func distanceBetween(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -
     return fromLocation.distance(from: toLocation)
 }
 
+/// Calculates the north-south great-circle distance component in meters
+/// Positive = destination is north of origin, Negative = destination is south
+/// - Parameters:
+///   - from: Origin coordinate (typically home)
+///   - to: Destination coordinate
+/// - Returns: Signed distance in meters (positive = north, negative = south)
+func northSouthDistance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
+    // Calculate distance along the meridian (same longitude, different latitude)
+    let sameLogitude = CLLocationCoordinate2D(latitude: to.latitude, longitude: from.longitude)
+    let distance = distanceBetween(from: from, to: sameLogitude)
+    // Return positive if north, negative if south
+    return to.latitude >= from.latitude ? distance : -distance
+}
+
+/// Calculates the east-west great-circle distance component in meters
+/// Positive = destination is east of origin, Negative = destination is west
+/// Uses the shorter path around the globe (handles antimeridian correctly)
+/// Distance is calculated at the ORIGIN's latitude (consistent with N/S using origin's longitude)
+/// - Parameters:
+///   - from: Origin coordinate (typically home)
+///   - to: Destination coordinate
+/// - Returns: Signed distance in meters (positive = east, negative = west)
+func eastWestDistance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
+    // Calculate distance along the parallel at the ORIGIN's latitude
+    // This is consistent with N/S which uses the origin's longitude
+    // Answers: "How far east/west would I travel along my home parallel to reach this longitude?"
+    let destAtOriginLat = CLLocationCoordinate2D(latitude: from.latitude, longitude: to.longitude)
+    let distance = distanceBetween(from: from, to: destAtOriginLat)
+
+    // Determine direction (east or west) using the shorter path
+    var lonDiff = to.longitude - from.longitude
+    // Normalize to -180 to 180 range (handles antimeridian crossing)
+    if lonDiff > 180 {
+        lonDiff -= 360
+    } else if lonDiff < -180 {
+        lonDiff += 360
+    }
+
+    // Return positive if east, negative if west
+    return lonDiff >= 0 ? distance : -distance
+}
+
 // MARK: - Geocoding Utilities
 
 /// Reverse geocodes a location to get a human-readable name
@@ -200,6 +242,10 @@ let nullIslandCoordinateThreshold = 0.01
 
 /// Threshold for detecting zero altitude at Null Island
 let nullIslandAltitudeThreshold = 1.0
+
+/// Threshold for filtering out records "at home" (in meters)
+/// Records within this distance of home are considered bogus/test data
+let atHomeRadiusMeters: Double = 100.0
 
 /// Maximum realistic altitude on Earth (meters) - Mount Everest is 8,849m
 let maxRealisticAltitudeMeters = 9000.0
@@ -285,6 +331,10 @@ let geocodingThrottleInterval: TimeInterval = 60
 
 /// Altitude threshold for showing altitude in detail views (meters)
 let altitudeDisplayThreshold: Double = 100
+
+/// Minimum distance threshold for displaying chart values (in miles/km)
+/// Records closer than this to home are shown as "—" to filter noise
+let chartMinDistanceThreshold: Double = 1.0
 
 // MARK: - Photo Import Constants
 

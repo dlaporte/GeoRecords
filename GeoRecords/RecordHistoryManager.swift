@@ -190,6 +190,61 @@ class RecordHistoryManager: ObservableObject {
         return nil
     }
 
+    /// Get the furthest record for a given type and time frame
+    /// Used for displaying location summaries in statistics charts
+    /// - Parameters:
+    ///   - type: The record type (e.g., "Furthest North")
+    ///   - timeFrame: The time frame to query
+    /// - Returns: A simple struct with value and location name, or nil if no record found
+    func getFurthestRecord(type: String, timeFrame: TimeFrame) -> (value: Double, locationName: String?)? {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        // Build predicate based on time frame
+        let calendar = Calendar.current
+        let now = Date()
+
+        switch timeFrame {
+        case .month:
+            let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+            let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart)!
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+                type, monthStart as NSDate, monthEnd as NSDate
+            )
+        case .year:
+            let yearStart = calendar.date(from: calendar.dateComponents([.year], from: now))!
+            let yearEnd = calendar.date(byAdding: .year, value: 1, to: yearStart)!
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+                type, yearStart as NSDate, yearEnd as NSDate
+            )
+        case .allTime:
+            // For all-time, query ALL records of this type regardless of stored timeFrame
+            // This finds the most extreme value ever recorded
+            request.predicate = NSPredicate(
+                format: "recordType == %@",
+                type
+            )
+        }
+
+        // Sort to get the most extreme value
+        // North/East/Up: highest value; South/West: lowest value
+        let isHighestWins = type.contains("North") || type.contains("East") || type.contains("Up") || type.contains("Furthest from Home")
+        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: !isHighestWins)]
+        request.fetchLimit = 1
+
+        do {
+            let results = try context.fetch(request)
+            if let record = results.first {
+                return (value: record.value, locationName: record.locationName)
+            }
+        } catch {
+            debugLog("❌ Failed to get furthest record: \(error.localizedDescription)")
+        }
+
+        return nil
+    }
+
     /// Update location name for all records at the same coordinates
     /// This ensures records at the same location (e.g., yearly and all-time) share the same name
     /// - Parameters:
@@ -428,7 +483,11 @@ class RecordHistoryManager: ObservableObject {
 
     /// Clear local records only - iCloud data remains and will sync back
     /// This deletes the local SQLite file directly to avoid CloudKit sync
-    func clearLocalOnly() {
+    /// Returns true if successful
+    @discardableResult
+    func clearLocalOnly() -> Bool {
+        debugLog("🗑️ Starting local-only clear...")
+
         // Reset in-memory records first
         RecordManager.shared.resetRecords()
 
@@ -446,42 +505,62 @@ class RecordHistoryManager: ObservableObject {
         guard let storeDescription = PersistenceController.shared.container.persistentStoreDescriptions.first,
               let storeURL = storeDescription.url else {
             debugLog("⚠️ Could not find store URL for local clear")
-            return
+            return false
         }
 
-        // Remove the persistent store
+        debugLog("🗑️ Store URL: \(storeURL.path)")
+
+        // Use destroyPersistentStore which properly handles CloudKit stores
         let coordinator = PersistenceController.shared.container.persistentStoreCoordinator
-        if let store = coordinator.persistentStore(for: storeURL) {
-            do {
+        do {
+            // First remove the store if loaded
+            if let store = coordinator.persistentStore(for: storeURL) {
                 try coordinator.remove(store)
-
-                // Delete the SQLite files
-                let fileManager = FileManager.default
-                let storePath = storeURL.path
-                for suffix in ["", "-shm", "-wal"] {
-                    let filePath = storePath + suffix
-                    if fileManager.fileExists(atPath: filePath) {
-                        try fileManager.removeItem(atPath: filePath)
-                    }
-                }
-
-                debugLog("✅ Local database cleared (iCloud data preserved)")
-
-                // Reload the store - iCloud will sync data back
-                PersistenceController.shared.container.loadPersistentStores { _, error in
-                    DispatchQueue.main.async {
-                        if let error = error {
-                            debugLog("❌ Failed to reload store: \(error.localizedDescription)")
-                        } else {
-                            debugLog("✅ Store reloaded - iCloud sync will restore data")
-                            // Reload records from the fresh store
-                            RecordManager.shared.loadRecordsFromHistory()
-                        }
-                    }
-                }
-            } catch {
-                debugLog("❌ Failed to clear local database: \(error.localizedDescription)")
+                debugLog("🗑️ Removed persistent store from coordinator")
             }
+
+            // Destroy the store completely (this handles CloudKit metadata too)
+            try coordinator.destroyPersistentStore(at: storeURL, type: .sqlite, options: nil)
+            debugLog("🗑️ Destroyed persistent store at URL")
+
+            // Also delete any leftover SQLite files (belt and suspenders)
+            let fileManager = FileManager.default
+            let storePath = storeURL.path
+            for suffix in ["", "-shm", "-wal"] {
+                let filePath = storePath + suffix
+                if fileManager.fileExists(atPath: filePath) {
+                    try? fileManager.removeItem(atPath: filePath)
+                    debugLog("🗑️ Deleted file: \(filePath)")
+                }
+            }
+
+            // Also clear CloudKit metadata cache if it exists
+            let ckMetadataPath = storeURL.deletingLastPathComponent()
+                .appendingPathComponent("ckAssetFiles")
+            if fileManager.fileExists(atPath: ckMetadataPath.path) {
+                try? fileManager.removeItem(at: ckMetadataPath)
+                debugLog("🗑️ Cleared CloudKit asset cache")
+            }
+
+            debugLog("✅ Local database destroyed completely")
+
+            // Reload the store - iCloud will sync data back fresh
+            PersistenceController.shared.container.loadPersistentStores { description, error in
+                DispatchQueue.main.async {
+                    if let error = error {
+                        debugLog("❌ Failed to reload store: \(error.localizedDescription)")
+                    } else {
+                        debugLog("✅ Store reloaded - waiting for iCloud sync to restore data")
+                        // DON'T load records here - wait for iCloud sync to complete first
+                        // The caller should monitor sync completion and then reload
+                    }
+                }
+            }
+
+            return true
+        } catch {
+            debugLog("❌ Failed to clear local database: \(error.localizedDescription)")
+            return false
         }
     }
 

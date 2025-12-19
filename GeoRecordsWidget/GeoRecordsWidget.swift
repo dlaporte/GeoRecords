@@ -10,6 +10,7 @@ import SwiftUI
 import CoreData
 import AppIntents
 import ImageIO
+import CoreLocation
 
 // MARK: - Constants
 
@@ -21,6 +22,32 @@ private enum UnitConversion {
 }
 
 /// Shared value formatter for widget display
+// MARK: - Locale-Aware Number Formatting
+
+private let wholeNumberFormatter: NumberFormatter = {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .decimal
+    formatter.maximumFractionDigits = 0
+    formatter.minimumFractionDigits = 0
+    return formatter
+}()
+
+private let twoDecimalFormatter: NumberFormatter = {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .decimal
+    formatter.maximumFractionDigits = 2
+    formatter.minimumFractionDigits = 2
+    return formatter
+}()
+
+private func formatWholeNumber(_ value: Double) -> String {
+    wholeNumberFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.0f", value)
+}
+
+private func formatTwoDecimal(_ value: Double) -> String {
+    twoDecimalFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+}
+
 private func formatRecordValue(_ value: Double, recordType: String, unitSystem: String) -> String {
     guard let type = WidgetRecordType.from(string: recordType) else {
         return "\(value)"
@@ -31,15 +58,15 @@ private func formatRecordValue(_ value: Double, recordType: String, unitSystem: 
         return String(format: "%.4f°", value)
     case .up:
         if unitSystem == "imperial" {
-            return String(format: "%.0f ft", value * UnitConversion.metersToFeet)
+            return "\(formatWholeNumber(value * UnitConversion.metersToFeet)) ft"
         } else {
-            return String(format: "%.0f m", value)
+            return "\(formatWholeNumber(value)) m"
         }
     case .fromHome:
         if unitSystem == "imperial" {
-            return String(format: "%.2f mi", value * UnitConversion.metersToMiles)
+            return "\(formatTwoDecimal(value * UnitConversion.metersToMiles)) mi"
         } else {
-            return String(format: "%.2f km", value * UnitConversion.metersToKilometers)
+            return "\(formatTwoDecimal(value * UnitConversion.metersToKilometers)) km"
         }
     }
 }
@@ -52,8 +79,8 @@ private let appGroupIdentifier = "group.com.georecords.shared"
 /// Widget refresh interval in hours
 private let widgetRefreshIntervalHours = 1
 
-/// Standard record order using WidgetRecordType enum
-let standardRecordOrder = WidgetRecordType.allCases.map { $0.rawValue }
+/// Standard record order using WidgetRecordType enum, sorted by sortOrder
+let standardRecordOrder = WidgetRecordType.allCases.sorted { $0.sortOrder < $1.sortOrder }.map { $0.rawValue }
 
 // MARK: - Shared Core Data Access
 
@@ -94,6 +121,22 @@ private func getUnitSystem() -> String {
     let unitSystemString = sharedDefaults?.string(forKey: "unitSystem") ?? "imperial"
     return unitSystemString == "metric" ? "metric" : "imperial"
 }
+
+/// Gets the user's home coordinate from shared UserDefaults
+/// Returns nil if no home is set
+private func getHomeCoordinate() -> CLLocationCoordinate2D? {
+    let sharedDefaults = UserDefaults(suiteName: appGroupIdentifier)
+    guard let lat = sharedDefaults?.object(forKey: "homeLatitude") as? Double,
+          let lon = sharedDefaults?.object(forKey: "homeLongitude") as? Double else {
+        return nil
+    }
+    let coord = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    guard CLLocationCoordinate2DIsValid(coord) else { return nil }
+    return coord
+}
+
+/// Threshold for filtering out records at home (in meters)
+private let widgetAtHomeRadiusMeters: Double = 100.0
 
 /// Calculates the start date for a given time frame
 /// - Parameter timeFrame: The time frame to get the start date for
@@ -137,9 +180,9 @@ enum WidgetRecordType: String, CaseIterable, AppEnum {
         switch self {
         case .north: return 0
         case .south: return 1
-        case .east: return 2
+        case .up: return 2
         case .west: return 3
-        case .up: return 4
+        case .east: return 4
         case .fromHome: return 5
         }
     }
@@ -309,11 +352,25 @@ struct Provider: AppIntentTimelineProvider {
 
                 let unitSystem = getUnitSystem()
                 let timeFrameStart = timeFrameStartDate(for: timeFrame)
+                let homeCoord = getHomeCoordinate()
+                let homeLocation: CLLocation? = homeCoord.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
 
-                // Filter entries by time frame
+                // Filter entries by time frame and exclude at-home records
                 let filteredEntries = entries.filter { entry in
                     guard let timestamp = entry.value(forKey: "timestamp") as? Date else { return false }
-                    return timestamp >= timeFrameStart
+                    guard timestamp >= timeFrameStart else { return false }
+
+                    // Filter out records at home
+                    if let home = homeLocation,
+                       let lat = entry.value(forKey: "latitude") as? Double,
+                       let lon = entry.value(forKey: "longitude") as? Double {
+                        let entryLocation = CLLocation(latitude: lat, longitude: lon)
+                        if entryLocation.distance(from: home) <= widgetAtHomeRadiusMeters {
+                            return false
+                        }
+                    }
+
+                    return true
                 }
 
                 // Group by record type and get the most extreme for each
@@ -381,58 +438,161 @@ struct GeoRecordsWidgetEntryView : View {
     @Environment(\.widgetFamily) var family
     var entry: Provider.Entry
 
+    private var timeFrame: WidgetTimeFrame {
+        entry.configuration.timeFrame
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            // Compact header
-            HStack(spacing: 4) {
-                Image(systemName: "location.circle.fill")
-                    .font(.system(size: 10))
-                Text("GeoRecords")
-                    .font(.system(size: 10, weight: .semibold))
-            }
-            .foregroundColor(.secondary)
-            .padding(.bottom, 2)
-
-            // Records - show more based on widget size
-            let recordsToShow = family == .systemMedium ? min(6, entry.records.count) : min(4, entry.records.count)
-
+        VStack(spacing: 0) {
             if family == .systemMedium {
-                // Two columns for medium widget
-                HStack(alignment: .top, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(0..<(recordsToShow + 1) / 2, id: \.self) { index in
-                            if index < entry.records.count {
-                                CompactRecordRowView(record: entry.records[index])
-                            }
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach((recordsToShow + 1) / 2..<recordsToShow, id: \.self) { index in
-                            if index < entry.records.count {
-                                CompactRecordRowView(record: entry.records[index])
-                            }
-                        }
-                    }
-                }
+                // Medium widget: 2x3 grid with timeframe
+                MediumWidgetGridView(records: entry.records, timeFrame: timeFrame)
             } else {
-                // Single column for small widget
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(0..<recordsToShow, id: \.self) { index in
-                        if index < entry.records.count {
-                            CompactRecordRowView(record: entry.records[index])
-                        }
-                    }
+                // Small widget: compact list
+                SmallWidgetListView(records: entry.records, timeFrame: timeFrame)
+            }
+        }
+    }
+}
+
+// MARK: - Medium Widget Grid View
+
+struct MediumWidgetGridView: View {
+    let records: [WidgetRecordData]
+    let timeFrame: WidgetTimeFrame
+
+    var body: some View {
+        VStack(spacing: 4) {
+            // Timeframe indicator in top-right
+            HStack {
+                Spacer()
+                Text(timeFrame.rawValue)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.15))
+                    )
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, 2)
+
+            // 2x3 grid of records
+            let recordsToShow = min(6, records.count)
+
+            LazyVGrid(columns: [
+                GridItem(.flexible()),
+                GridItem(.flexible()),
+                GridItem(.flexible())
+            ], spacing: 4) {
+                ForEach(0..<recordsToShow, id: \.self) { index in
+                    RecordGridCell(record: records[index])
+                }
+            }
+            .padding(.horizontal, 2)
+            .padding(.bottom, 2)
+        }
+    }
+}
+
+struct RecordGridCell: View {
+    let record: WidgetRecordData
+
+    private var recordType: WidgetRecordType? {
+        WidgetRecordType.from(string: record.type)
+    }
+
+    /// Split location into two lines after the second comma
+    private var locationLines: (line1: String, line2: String?) {
+        let parts = record.location.components(separatedBy: ", ")
+        if parts.count >= 3 {
+            let line1 = parts[0..<2].joined(separator: ", ")
+            let line2 = parts[2...].joined(separator: ", ")
+            return (line1, line2)
+        } else {
+            return (record.location, nil)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            // Icon
+            Image(systemName: recordType?.iconName ?? "location.circle.fill")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(recordType?.color ?? .gray)
+
+            // Value
+            Text(record.value)
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundColor(recordType?.color ?? .primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            // Location - split into two centered lines
+            VStack(spacing: 0) {
+                Text(locationLines.line1)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                if let line2 = locationLines.line2 {
+                    Text(line2)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+            }
+            .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Small Widget Grid View
+
+struct SmallWidgetListView: View {
+    let records: [WidgetRecordData]
+    let timeFrame: WidgetTimeFrame
+
+    var body: some View {
+        VStack(spacing: 4) {
+            // Timeframe indicator in top-right
+            HStack {
+                Spacer()
+                Text(timeFrame.rawValue)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.15))
+                    )
+            }
+
+            // 2x2 grid of records
+            let recordsToShow = min(4, records.count)
+
+            LazyVGrid(columns: [
+                GridItem(.flexible()),
+                GridItem(.flexible())
+            ], spacing: 8) {
+                ForEach(0..<recordsToShow, id: \.self) { index in
+                    SmallRecordGridCell(record: records[index])
                 }
             }
 
             Spacer(minLength: 0)
         }
-        .padding(10)
+        .padding(2)
     }
 }
 
-struct CompactRecordRowView: View {
+struct SmallRecordGridCell: View {
     let record: WidgetRecordData
 
     private var recordType: WidgetRecordType? {
@@ -440,30 +600,20 @@ struct CompactRecordRowView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 4) {
-                Image(systemName: recordType?.iconName ?? "location.circle.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(recordType?.color ?? .gray)
-                    .frame(width: 14)
+        VStack(spacing: 4) {
+            // Icon
+            Image(systemName: recordType?.iconName ?? "location.circle.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(recordType?.color ?? .gray)
 
-                Text(recordType?.shortName ?? record.type)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-
-                Spacer(minLength: 2)
-
-                Text(record.value)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-            }
-
-            Text(record.location)
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
+            // Value
+            Text(record.value)
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundColor(recordType?.color ?? .primary)
                 .lineLimit(1)
-                .padding(.leading, 18)
+                .minimumScaleFactor(0.6)
         }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -582,11 +732,25 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
 
                 let unitSystem = getUnitSystem()
                 let timeFrameStart = timeFrameStartDate(for: timeFrame)
+                let homeCoord = getHomeCoordinate()
+                let homeLocation: CLLocation? = homeCoord.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
 
-                // Filter by time frame and find most extreme
+                // Filter by time frame and exclude at-home records
                 let filteredEntries = entries.filter { entry in
                     guard let timestamp = entry.value(forKey: "timestamp") as? Date else { return false }
-                    return timestamp >= timeFrameStart
+                    guard timestamp >= timeFrameStart else { return false }
+
+                    // Filter out records at home
+                    if let home = homeLocation,
+                       let lat = entry.value(forKey: "latitude") as? Double,
+                       let lon = entry.value(forKey: "longitude") as? Double {
+                        let entryLocation = CLLocation(latitude: lat, longitude: lon)
+                        if entryLocation.distance(from: home) <= widgetAtHomeRadiusMeters {
+                            return false
+                        }
+                    }
+
+                    return true
                 }
 
                 var bestEntry: NSManagedObject?
@@ -684,71 +848,110 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
     }
 }
 
-/// View for single record widget
-struct SingleRecordWidgetView: View {
-    var entry: SingleRecordEntry
-
-    private var hasPhoto: Bool {
-        entry.record.thumbnailImage != nil
-    }
+/// View for single record widget content (text overlay)
+struct SingleRecordContentView: View {
+    let record: SingleRecordData
+    let hasPhoto: Bool
+    let timeFrame: WidgetTimeFrame
 
     private var recordType: WidgetRecordType? {
-        WidgetRecordType.from(string: entry.record.type)
+        WidgetRecordType.from(string: record.type)
+    }
+
+    private func shadowModifier() -> some ViewModifier {
+        TextShadowModifier(isEnabled: hasPhoto)
     }
 
     var body: some View {
-        let record = entry.record
+        VStack(alignment: .leading, spacing: 4) {
+            // Header: icon left, timeframe right
+            HStack {
+                Image(systemName: recordType?.iconName ?? "location.circle.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(hasPhoto ? .white : (recordType?.color ?? .gray))
+                    .modifier(shadowModifier())
 
+                Spacer()
+
+                // Timeframe indicator
+                Text(timeFrame.rawValue)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(hasPhoto ? .white.opacity(0.8) : .secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(hasPhoto ? Color.white.opacity(0.2) : Color.secondary.opacity(0.15))
+                    )
+                    .modifier(shadowModifier())
+            }
+
+            Spacer()
+
+            // Bottom content - centered
+            VStack(spacing: 2) {
+                // Value
+                Text(record.value)
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundColor(hasPhoto ? .white : (recordType?.color ?? .gray))
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
+                    .modifier(shadowModifier())
+
+                // Location
+                Text(record.location)
+                    .font(.system(size: 13))
+                    .foregroundColor(hasPhoto ? .white.opacity(0.95) : .secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .modifier(shadowModifier())
+
+                // Date
+                Text(record.timestamp, style: .date)
+                    .font(.system(size: 11))
+                    .foregroundColor(hasPhoto ? .white.opacity(0.7) : .secondary.opacity(0.7))
+                    .modifier(shadowModifier())
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 4)
+        .padding(.bottom, 0)
+    }
+}
+
+/// Modifier that adds shadow only when enabled (for photo backgrounds)
+struct TextShadowModifier: ViewModifier {
+    let isEnabled: Bool
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
+        } else {
+            content
+        }
+    }
+}
+
+/// Background view for single record widget (photo + gradient)
+struct SingleRecordBackgroundView: View {
+    let thumbnail: UIImage
+
+    var body: some View {
         GeometryReader { geometry in
-            ZStack {
-                // Background photo if available (already resized in provider)
-                if let thumbnail = record.thumbnailImage {
-                    Image(uiImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
-
-                    // Gradient overlay for readability
+            Image(uiImage: thumbnail)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .clipped()
+                .overlay {
+                    // Subtle gradient overlay for text readability
                     LinearGradient(
-                        colors: [.black.opacity(0.6), .black.opacity(0.3), .black.opacity(0.6)],
+                        colors: [.black.opacity(0.45), .black.opacity(0.15), .black.opacity(0.5)],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 }
-
-                // Content
-                VStack(alignment: .leading, spacing: 4) {
-                    // Header with icon and type
-                    HStack(spacing: 6) {
-                        Image(systemName: recordType?.iconName ?? "location.circle.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(hasPhoto ? .white : (recordType?.color ?? .gray))
-
-                        Text(recordType?.shortName ?? record.type)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(hasPhoto ? .white : .primary)
-
-                        Spacer()
-                    }
-
-                    Spacer()
-
-                    // Value
-                    Text(record.value)
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundColor(hasPhoto ? .white : (recordType?.color ?? .gray))
-                        .minimumScaleFactor(0.6)
-                        .lineLimit(1)
-
-                    // Location
-                    Text(record.location)
-                        .font(.system(size: 11))
-                        .foregroundColor(hasPhoto ? .white.opacity(0.9) : .secondary)
-                        .lineLimit(2)
-                }
-                .padding(12)
-            }
         }
     }
 }
@@ -759,13 +962,27 @@ struct SingleRecordWidget: Widget {
 
     var body: some WidgetConfiguration {
         AppIntentConfiguration(kind: kind, intent: SingleRecordWidgetIntent.self, provider: SingleRecordProvider()) { entry in
+            let hasPhoto = entry.record.thumbnailImage != nil
+            let timeFrame = entry.configuration.timeFrame
+
             if #available(iOS 17.0, *) {
-                SingleRecordWidgetView(entry: entry)
-                    .containerBackground(.fill.tertiary, for: .widget)
+                SingleRecordContentView(record: entry.record, hasPhoto: hasPhoto, timeFrame: timeFrame)
+                    .containerBackground(for: .widget) {
+                        if let thumbnail = entry.record.thumbnailImage {
+                            SingleRecordBackgroundView(thumbnail: thumbnail)
+                        } else {
+                            Color(.systemBackground).opacity(0.8)
+                        }
+                    }
             } else {
-                SingleRecordWidgetView(entry: entry)
-                    .padding()
-                    .background()
+                ZStack {
+                    if let thumbnail = entry.record.thumbnailImage {
+                        SingleRecordBackgroundView(thumbnail: thumbnail)
+                    }
+                    SingleRecordContentView(record: entry.record, hasPhoto: hasPhoto, timeFrame: timeFrame)
+                }
+                .padding()
+                .background()
             }
         }
         .configurationDisplayName("Single Record")

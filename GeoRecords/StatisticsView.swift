@@ -101,18 +101,18 @@ struct StatisticsView: View {
                     } else if hasNoData {
                         NoDataView()
                     } else {
-                        // Geographic Footprint Section (relative to home)
+                        // Distance Section (relative to home)
                         VStack(alignment: .leading, spacing: 16) {
-                            Text("Geographic Footprint")
+                            Text("Distance")
                                 .font(.headline)
                                 .padding(.horizontal)
 
                             if settings.homeCoordinate != nil {
-                                // N-S Chart (relative to home)
+                                // N-S Chart (relative to home, in miles/km)
                                 BidirectionalStatChartCard(
                                     title: "North / South of Home",
-                                    subtitle: currentNSSpanFormatted,
-                                    unit: "°",
+                                    summary: currentNSSummary,
+                                    unit: settings.unitSystem == .imperial ? "mi" : "km",
                                     positiveColor: .blue,
                                     negativeColor: .blue.opacity(0.5),
                                     positiveLabel: "N",
@@ -124,11 +124,11 @@ struct StatisticsView: View {
                                     unitSystem: settings.unitSystem
                                 )
 
-                                // E-W Chart (relative to home)
+                                // E-W Chart (relative to home, in miles/km)
                                 BidirectionalStatChartCard(
                                     title: "East / West of Home",
-                                    subtitle: currentEWSpanFormatted,
-                                    unit: "°",
+                                    summary: currentEWSummary,
+                                    unit: settings.unitSystem == .imperial ? "mi" : "km",
                                     positiveColor: .orange,
                                     negativeColor: .orange.opacity(0.5),
                                     positiveLabel: "E",
@@ -139,9 +139,21 @@ struct StatisticsView: View {
                                     negativeRecordType: RecordType.west.rawValue,
                                     unitSystem: settings.unitSystem
                                 )
+
+                                // Distance from Home Chart
+                                StatChartCard(
+                                    title: "Furthest from Home",
+                                    summary: currentDistanceSummary,
+                                    unit: settings.unitSystem == .imperial ? "mi" : "km",
+                                    color: .red,
+                                    data: chartDataForDistance,
+                                    timeFrame: selectedTimeFrame,
+                                    recordTypeToQuery: RecordType.fromHome.rawValue,
+                                    unitSystem: settings.unitSystem
+                                )
                             } else {
                                 // Home not set - show message
-                                HomeNotSetCard(message: "Set your home location in Settings to see how far north, south, east, and west you've traveled relative to home.")
+                                HomeNotSetCard(message: "Set your home location in Settings to see how far you've traveled relative to home.")
                             }
                         }
 
@@ -153,7 +165,7 @@ struct StatisticsView: View {
 
                             StatChartCard(
                                 title: "Highest Elevation",
-                                subtitle: currentElevationFormatted,
+                                summary: currentElevationSummary,
                                 unit: settings.unitSystem == .imperial ? "ft" : "m",
                                 color: .green,
                                 data: chartDataForElevation,
@@ -161,28 +173,6 @@ struct StatisticsView: View {
                                 recordTypeToQuery: RecordType.up.rawValue,
                                 unitSystem: settings.unitSystem
                             )
-                        }
-
-                        // Distance from Home Section
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text("Distance from Home")
-                                .font(.headline)
-                                .padding(.horizontal)
-
-                            if settings.homeCoordinate != nil {
-                                StatChartCard(
-                                    title: "Max Distance",
-                                    subtitle: currentDistanceFormatted,
-                                    unit: settings.unitSystem == .imperial ? "mi" : "km",
-                                    color: .red,
-                                    data: chartDataForDistance,
-                                    timeFrame: selectedTimeFrame,
-                                    recordTypeToQuery: RecordType.fromHome.rawValue,
-                                    unitSystem: settings.unitSystem
-                                )
-                            } else {
-                                HomeNotSetCard(message: "Set your home location in Settings to see how far you've traveled from home.")
-                            }
                         }
                     }
                 }
@@ -242,75 +232,123 @@ struct StatisticsView: View {
         }
     }
 
-    private var currentNSSpanFormatted: String {
-        guard let span = currentNSSpan else { return "—" }
-        return String(format: "%.4f°", span)
+    private var currentNSSummary: DirectionSummary? {
+        let timeFrame: TimeFrame = selectedTimeFrame
+
+        // Get the furthest north and south records for current period
+        let northRecord = RecordHistoryManager.shared.getFurthestRecord(
+            type: RecordType.north.rawValue,
+            timeFrame: timeFrame
+        )
+        let southRecord = RecordHistoryManager.shared.getFurthestRecord(
+            type: RecordType.south.rawValue,
+            timeFrame: timeFrame
+        )
+
+        guard northRecord != nil || southRecord != nil else { return nil }
+
+        // Calculate great-circle distances from home
+        // North: positive if north of home, negative if south
+        let northDistance = northRecord.map { nsDistanceFromHome(latitude: $0.value) } ?? 0
+        // South: we want positive distance for display, but nsDistanceFromHome returns negative for south
+        // So we negate it to get positive distance south of home
+        let southDistance = southRecord.map { -nsDistanceFromHome(latitude: $0.value) } ?? 0
+
+        // Show records if they have significant distance
+        let validNorth = abs(northDistance) > chartMinDistanceThreshold
+        let validSouth = abs(southDistance) > chartMinDistanceThreshold
+
+        return DirectionSummary(
+            positiveLocationName: validNorth ? northRecord?.locationName : nil,
+            positiveDistance: validNorth ? FormatUtils.formatDistance(abs(northDistance), unitSystem: settings.unitSystem) : "—",
+            negativeLocationName: validSouth ? southRecord?.locationName : nil,
+            negativeDistance: validSouth ? FormatUtils.formatDistance(abs(southDistance), unitSystem: settings.unitSystem) : "—"
+        )
     }
 
-    private var currentEWSpanFormatted: String {
-        guard let span = currentEWSpan else { return "—" }
-        return String(format: "%.4f°", span)
+    private var currentEWSummary: DirectionSummary? {
+        let timeFrame: TimeFrame = selectedTimeFrame
+
+        // Get the furthest east and west records for current period
+        let eastRecord = RecordHistoryManager.shared.getFurthestRecord(
+            type: RecordType.east.rawValue,
+            timeFrame: timeFrame
+        )
+        let westRecord = RecordHistoryManager.shared.getFurthestRecord(
+            type: RecordType.west.rawValue,
+            timeFrame: timeFrame
+        )
+
+        guard eastRecord != nil || westRecord != nil else { return nil }
+
+        // Calculate great-circle distances from home
+        // East: positive if east of home, negative if west
+        let eastDistance = eastRecord.map { ewDistanceFromHome(longitude: $0.value) } ?? 0
+        // West: we want positive distance for display, but ewDistanceFromHome returns negative for west
+        // So we negate it to get positive distance west of home
+        let westDistance = westRecord.map { -ewDistanceFromHome(longitude: $0.value) } ?? 0
+
+        // Show records if they have significant distance
+        let validEast = abs(eastDistance) > chartMinDistanceThreshold
+        let validWest = abs(westDistance) > chartMinDistanceThreshold
+
+        return DirectionSummary(
+            positiveLocationName: validEast ? eastRecord?.locationName : nil,
+            positiveDistance: validEast ? FormatUtils.formatDistance(abs(eastDistance), unitSystem: settings.unitSystem) : "—",
+            negativeLocationName: validWest ? westRecord?.locationName : nil,
+            negativeDistance: validWest ? FormatUtils.formatDistance(abs(westDistance), unitSystem: settings.unitSystem) : "—"
+        )
     }
 
-    private var currentElevationFormatted: String {
-        guard let range = currentElevation else { return "—" }
+    private var currentElevationSummary: SingleDirectionSummary? {
+        let timeFrame: TimeFrame = selectedTimeFrame
+
+        // Get the highest elevation record for current period
+        let elevationRecord = RecordHistoryManager.shared.getFurthestRecord(
+            type: RecordType.up.rawValue,
+            timeFrame: timeFrame
+        )
+
+        guard let record = elevationRecord else { return nil }
+
+        let formattedValue: String
         if settings.unitSystem == .imperial {
-            return String(format: "%.0f ft", range * metersToFeet)
+            formattedValue = FormatUtils.formatFeet(record.value * metersToFeet)
         } else {
-            return String(format: "%.0f m", range)
+            formattedValue = FormatUtils.formatMeters(record.value)
         }
+
+        return SingleDirectionSummary(
+            locationName: record.locationName,
+            formattedValue: formattedValue
+        )
     }
 
-    private var currentDistanceFormatted: String {
-        guard let distance = currentDistance else { return "—" }
+    private var currentDistanceSummary: SingleDirectionSummary? {
+        let timeFrame: TimeFrame = selectedTimeFrame
+
+        // Get the furthest from home record for current period
+        let distanceRecord = RecordHistoryManager.shared.getFurthestRecord(
+            type: RecordType.fromHome.rawValue,
+            timeFrame: timeFrame
+        )
+
+        guard let record = distanceRecord else { return nil }
+
+        let formattedValue: String
         if settings.unitSystem == .imperial {
-            return String(format: "%.1f mi", distance / metersPerMile)
+            formattedValue = FormatUtils.formatMiles(record.value / metersPerMile, decimals: 0)
         } else {
-            return String(format: "%.1f km", distance / metersPerKm)
+            formattedValue = FormatUtils.formatKilometers(record.value / metersPerKm, decimals: 0)
         }
+
+        return SingleDirectionSummary(
+            locationName: record.locationName,
+            formattedValue: formattedValue
+        )
     }
 
     // MARK: - Aggregate Calculations for Current Period
-
-    private var currentNSSpan: Double? {
-        switch selectedTimeFrame {
-        case .month:
-            let north = dailyStats.compactMap { $0.maxNorth != 0 ? $0.maxNorth : nil }.max()
-            let south = dailyStats.compactMap { $0.maxSouth != 0 ? $0.maxSouth : nil }.min()
-            guard let n = north, let s = south else { return nil }
-            return n - s
-        case .year:
-            let north = monthlyAggregates.compactMap { $0.maxNorth }.max()
-            let south = monthlyAggregates.compactMap { $0.maxSouth }.min()
-            guard let n = north, let s = south else { return nil }
-            return n - s
-        case .allTime:
-            let north = yearlyAggregates.compactMap { $0.maxNorth }.max()
-            let south = yearlyAggregates.compactMap { $0.maxSouth }.min()
-            guard let n = north, let s = south else { return nil }
-            return n - s
-        }
-    }
-
-    private var currentEWSpan: Double? {
-        switch selectedTimeFrame {
-        case .month:
-            let east = dailyStats.compactMap { $0.maxEast != 0 ? $0.maxEast : nil }.max()
-            let west = dailyStats.compactMap { $0.maxWest != 0 ? $0.maxWest : nil }.min()
-            guard let e = east, let w = west else { return nil }
-            return e - w
-        case .year:
-            let east = monthlyAggregates.compactMap { $0.maxEast }.max()
-            let west = monthlyAggregates.compactMap { $0.maxWest }.min()
-            guard let e = east, let w = west else { return nil }
-            return e - w
-        case .allTime:
-            let east = yearlyAggregates.compactMap { $0.maxEast }.max()
-            let west = yearlyAggregates.compactMap { $0.maxWest }.min()
-            guard let e = east, let w = west else { return nil }
-            return e - w
-        }
-    }
 
     private var currentElevation: Double? {
         switch selectedTimeFrame {
@@ -346,10 +384,37 @@ struct StatisticsView: View {
         settings.homeCoordinate?.longitude ?? 0
     }
 
+    /// Home coordinate for distance calculations
+    private var homeCoord: CLLocationCoordinate2D {
+        settings.homeCoordinate ?? CLLocationCoordinate2D(latitude: 0, longitude: 0)
+    }
+
+    /// Unit conversion factor (meters to display units)
+    private var distanceUnitFactor: Double {
+        settings.unitSystem == .imperial ? 1.0 / metersPerMile : 1.0 / metersPerKm
+    }
+
+    /// Calculate N/S distance from home to a latitude (in display units: miles or km)
+    /// Returns positive for north, negative for south
+    private func nsDistanceFromHome(latitude: Double) -> Double {
+        guard latitude != 0 else { return 0 }
+        let destination = CLLocationCoordinate2D(latitude: latitude, longitude: homeCoord.longitude)
+        let distanceMeters = northSouthDistance(from: homeCoord, to: destination)
+        return distanceMeters * distanceUnitFactor
+    }
+
+    /// Calculate E/W distance from home to a longitude (in display units: miles or km)
+    /// Returns positive for east, negative for west
+    private func ewDistanceFromHome(longitude: Double) -> Double {
+        guard longitude != 0 else { return 0 }
+        let destination = CLLocationCoordinate2D(latitude: homeCoord.latitude, longitude: longitude)
+        let distanceMeters = eastWestDistance(from: homeCoord, to: destination)
+        return distanceMeters * distanceUnitFactor
+    }
+
     private var chartDataForNS: [BidirectionalChartDataPoint] {
         switch selectedTimeFrame {
         case .month:
-            // Generate all days of the month
             let calendar = Calendar.current
             let now = Date()
             guard let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)),
@@ -357,50 +422,52 @@ struct StatisticsView: View {
                 return []
             }
 
-            // Create a lookup dictionary for existing stats
             let statsDict = Dictionary(uniqueKeysWithValues: dailyStats.compactMap { stat -> (Int, DailyStatistic)? in
                 guard stat.date != nil else { return nil }
                 return (stat.dayOfMonth, stat)
             })
 
-            // Generate data for all days
             return monthRange.compactMap { day in
                 guard let date = calendar.date(byAdding: .day, value: day - 1, to: monthStart) else { return nil }
-
                 let stat = statsDict[day]
-                let north = stat?.maxNorth ?? 0
-                let south = stat?.maxSouth ?? 0
 
-                // Only show bars if there's actual data (not 0)
-                let positiveValue = north != 0 ? north - homeLat : 0
-                let negativeValue = south != 0 ? south - homeLat : 0
+                let rawPositive = nsDistanceFromHome(latitude: stat?.maxNorth ?? 0)
+                let rawNegative = nsDistanceFromHome(latitude: stat?.maxSouth ?? 0)
 
                 return BidirectionalChartDataPoint(
                     label: "\(day)",
-                    positiveValue: positiveValue,
-                    negativeValue: negativeValue,
+                    positiveValue: max(0, rawPositive),
+                    negativeValue: min(0, rawNegative),
                     startDate: calendar.startOfDay(for: date),
                     endDate: calendar.startOfDay(for: date).addingTimeInterval(86399)
                 )
             }
+
         case .year:
             return monthlyAggregates.map { agg in
                 let (start, end) = dateRangeForMonth(year: agg.year, month: agg.month)
+                let rawPositive = nsDistanceFromHome(latitude: agg.maxNorth ?? homeLat)
+                let rawNegative = nsDistanceFromHome(latitude: agg.maxSouth ?? homeLat)
                 return BidirectionalChartDataPoint(
                     label: agg.monthName,
-                    positiveValue: (agg.maxNorth ?? homeLat) - homeLat,
-                    negativeValue: (agg.maxSouth ?? homeLat) - homeLat,
+                    positiveValue: max(0, rawPositive),
+                    negativeValue: min(0, rawNegative),
                     startDate: start,
                     endDate: end
                 )
             }
+
         case .allTime:
-            return yearlyAggregates.map { agg in
-                let (start, end) = dateRangeForYear(agg.year)
+            let dict = yearlyAggregatesDict
+            return fullYearRange.map { year in
+                let (start, end) = dateRangeForYear(year)
+                let agg = dict[year]
+                let rawPositive = nsDistanceFromHome(latitude: agg?.maxNorth ?? homeLat)
+                let rawNegative = nsDistanceFromHome(latitude: agg?.maxSouth ?? homeLat)
                 return BidirectionalChartDataPoint(
-                    label: "\(agg.year)",
-                    positiveValue: (agg.maxNorth ?? homeLat) - homeLat,
-                    negativeValue: (agg.maxSouth ?? homeLat) - homeLat,
+                    label: "\(year)",
+                    positiveValue: max(0, rawPositive),
+                    negativeValue: min(0, rawNegative),
                     startDate: start,
                     endDate: end
                 )
@@ -411,7 +478,6 @@ struct StatisticsView: View {
     private var chartDataForEW: [BidirectionalChartDataPoint] {
         switch selectedTimeFrame {
         case .month:
-            // Generate all days of the month
             let calendar = Calendar.current
             let now = Date()
             guard let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)),
@@ -419,50 +485,52 @@ struct StatisticsView: View {
                 return []
             }
 
-            // Create a lookup dictionary for existing stats
             let statsDict = Dictionary(uniqueKeysWithValues: dailyStats.compactMap { stat -> (Int, DailyStatistic)? in
                 guard stat.date != nil else { return nil }
                 return (stat.dayOfMonth, stat)
             })
 
-            // Generate data for all days
             return monthRange.compactMap { day in
                 guard let date = calendar.date(byAdding: .day, value: day - 1, to: monthStart) else { return nil }
-
                 let stat = statsDict[day]
-                let east = stat?.maxEast ?? 0
-                let west = stat?.maxWest ?? 0
 
-                // Only show bars if there's actual data (not 0)
-                let positiveValue = east != 0 ? east - homeLon : 0
-                let negativeValue = west != 0 ? west - homeLon : 0
+                let rawPositive = ewDistanceFromHome(longitude: stat?.maxEast ?? 0)
+                let rawNegative = ewDistanceFromHome(longitude: stat?.maxWest ?? 0)
 
                 return BidirectionalChartDataPoint(
                     label: "\(day)",
-                    positiveValue: positiveValue,
-                    negativeValue: negativeValue,
+                    positiveValue: max(0, rawPositive),
+                    negativeValue: min(0, rawNegative),
                     startDate: calendar.startOfDay(for: date),
                     endDate: calendar.startOfDay(for: date).addingTimeInterval(86399)
                 )
             }
+
         case .year:
             return monthlyAggregates.map { agg in
                 let (start, end) = dateRangeForMonth(year: agg.year, month: agg.month)
+                let rawPositive = ewDistanceFromHome(longitude: agg.maxEast ?? homeLon)
+                let rawNegative = ewDistanceFromHome(longitude: agg.maxWest ?? homeLon)
                 return BidirectionalChartDataPoint(
                     label: agg.monthName,
-                    positiveValue: (agg.maxEast ?? homeLon) - homeLon,
-                    negativeValue: (agg.maxWest ?? homeLon) - homeLon,
+                    positiveValue: max(0, rawPositive),
+                    negativeValue: min(0, rawNegative),
                     startDate: start,
                     endDate: end
                 )
             }
+
         case .allTime:
-            return yearlyAggregates.map { agg in
-                let (start, end) = dateRangeForYear(agg.year)
+            let dict = yearlyAggregatesDict
+            return fullYearRange.map { year in
+                let (start, end) = dateRangeForYear(year)
+                let agg = dict[year]
+                let rawPositive = ewDistanceFromHome(longitude: agg?.maxEast ?? homeLon)
+                let rawNegative = ewDistanceFromHome(longitude: agg?.maxWest ?? homeLon)
                 return BidirectionalChartDataPoint(
-                    label: "\(agg.year)",
-                    positiveValue: (agg.maxEast ?? homeLon) - homeLon,
-                    negativeValue: (agg.maxWest ?? homeLon) - homeLon,
+                    label: "\(year)",
+                    positiveValue: max(0, rawPositive),
+                    negativeValue: min(0, rawNegative),
                     startDate: start,
                     endDate: end
                 )
@@ -514,11 +582,13 @@ struct StatisticsView: View {
                 )
             }
         case .allTime:
-            return yearlyAggregates.map { agg in
-                let (start, end) = dateRangeForYear(agg.year)
+            let dict = yearlyAggregatesDict
+            return fullYearRange.map { year in
+                let (start, end) = dateRangeForYear(year)
+                let agg = dict[year]
                 return ChartDataPoint(
-                    label: "\(agg.year)",
-                    value: (agg.maxUp ?? 0) * conversionFactor,
+                    label: "\(year)",
+                    value: (agg?.maxUp ?? 0) * conversionFactor,
                     startDate: start,
                     endDate: end
                 )
@@ -570,16 +640,33 @@ struct StatisticsView: View {
                 )
             }
         case .allTime:
-            return yearlyAggregates.map { agg in
-                let (start, end) = dateRangeForYear(agg.year)
+            let dict = yearlyAggregatesDict
+            return fullYearRange.map { year in
+                let (start, end) = dateRangeForYear(year)
+                let agg = dict[year]
                 return ChartDataPoint(
-                    label: "\(agg.year)",
-                    value: (agg.maxDistanceFromHome ?? 0) * conversionFactor,
+                    label: "\(year)",
+                    value: (agg?.maxDistanceFromHome ?? 0) * conversionFactor,
                     startDate: start,
                     endDate: end
                 )
             }
         }
+    }
+
+    // MARK: - Year Range Helper
+
+    /// Returns the full range of years from the earliest data to current year
+    private var fullYearRange: [Int] {
+        guard !yearlyAggregates.isEmpty else { return [] }
+        let minYear = yearlyAggregates.map { $0.year }.min() ?? Calendar.current.component(.year, from: Date())
+        let maxYear = Calendar.current.component(.year, from: Date())
+        return Array(minYear...maxYear)
+    }
+
+    /// Creates a lookup dictionary from yearly aggregates
+    private var yearlyAggregatesDict: [Int: YearlyAggregate] {
+        Dictionary(uniqueKeysWithValues: yearlyAggregates.map { ($0.year, $0) })
     }
 
     // MARK: - Date Range Helpers
@@ -638,9 +725,15 @@ struct BidirectionalChartDataPoint: Identifiable, Equatable {
 
 // MARK: - Stat Chart Card
 
+/// Summary for single-direction charts (Elevation, Distance from Home)
+struct SingleDirectionSummary {
+    let locationName: String?
+    let formattedValue: String
+}
+
 struct StatChartCard: View {
     let title: String
-    let subtitle: String
+    let summary: SingleDirectionSummary?
     let unit: String
     let color: Color
     let data: [ChartDataPoint]
@@ -668,32 +761,53 @@ struct StatChartCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Header with title/subtitle OR location info when dragging
-            if isDragging, let point = selectedPoint {
-                // Show location info while dragging
-                LocationOverlay(
-                    point: point,
-                    record: recordCache[point.label],
-                    recordType: recordTypeToQuery,
-                    unitSystem: unitSystem,
-                    color: color
-                )
-                .transition(.opacity)
-            } else {
-                // Normal header
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(title)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+            // Header - always show title
+            VStack(alignment: .leading, spacing: 8) {
+                // Title or period label when dragging
+                if isDragging, let point = selectedPoint {
+                    Text(point.label)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text(title)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
 
-                        Text(subtitle)
-                            .font(.title2)
-                            .fontWeight(.bold)
+                // Location row - either dragging values or default summary
+                if isDragging, let point = selectedPoint {
+                    // Show value for the dragged period
+                    HStack {
+                        HStack(spacing: 6) {
+                            Circle().fill(color).frame(width: 6, height: 6)
+                            Text(locationText(for: recordCache[point.label]))
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Text(formatValue(point.value))
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
                             .foregroundColor(color)
                     }
-
-                    Spacer()
+                    .transition(.opacity)
+                } else if let summary = summary {
+                    // Default summary row
+                    HStack {
+                        HStack(spacing: 6) {
+                            Circle().fill(color).frame(width: 6, height: 6)
+                            Text(summary.locationName ?? "—")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Text(summary.formattedValue)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(color)
+                    }
                 }
             }
 
@@ -823,13 +937,46 @@ struct StatChartCard: View {
         }
     }
 
+    private func locationText(for record: RecordHistoryEntry?) -> String {
+        guard let record = record else { return "—" }
+        if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
+            return name
+        }
+        return String(format: "%.4f, %.4f", record.latitude, record.longitude)
+    }
+
+    private func formatValue(_ value: Double) -> String {
+        if recordTypeToQuery == RecordType.up.rawValue {
+            if unitSystem == .imperial {
+                return FormatUtils.formatFeet(value)
+            } else {
+                return FormatUtils.formatMeters(value)
+            }
+        } else {
+            // Distance from home
+            if unitSystem == .imperial {
+                return FormatUtils.formatMiles(value, decimals: 0)
+            } else {
+                return FormatUtils.formatKilometers(value, decimals: 0)
+            }
+        }
+    }
+
 }
 
 // MARK: - Bidirectional Stat Chart Card (for N/S, E/W)
 
+/// Summary of furthest locations for a direction pair (N/S or E/W)
+struct DirectionSummary {
+    let positiveLocationName: String?
+    let positiveDistance: String
+    let negativeLocationName: String?
+    let negativeDistance: String
+}
+
 struct BidirectionalStatChartCard: View {
     let title: String
-    let subtitle: String
+    let summary: DirectionSummary?
     let unit: String
     let positiveColor: Color
     let negativeColor: Color
@@ -872,39 +1019,23 @@ struct BidirectionalStatChartCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Header with title/subtitle OR location info when dragging
-            if isDragging, let point = selectedPoint {
-                // Show both locations while dragging
-                BidirectionalLocationOverlay(
-                    point: point,
-                    positiveRecord: positiveRecordCache[point.label],
-                    negativeRecord: negativeRecordCache[point.label],
-                    positiveLabel: positiveLabel,
-                    negativeLabel: negativeLabel,
-                    positiveColor: positiveColor,
-                    negativeColor: negativeColor,
-                    positiveRecordType: positiveRecordType,
-                    negativeRecordType: negativeRecordType,
-                    unitSystem: unitSystem
-                )
-                .transition(.opacity)
-            } else {
-                // Normal header
+            // Header - always show title and legend
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    VStack(alignment: .leading, spacing: 4) {
+                    // Title or period label when dragging
+                    if isDragging, let point = selectedPoint {
+                        Text(point.label)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    } else {
                         Text(title)
                             .font(.subheadline)
                             .foregroundColor(.secondary)
-
-                        Text(subtitle)
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .foregroundColor(positiveColor)
                     }
 
                     Spacer()
 
-                    // Legend
+                    // Legend - always visible
                     HStack(spacing: 8) {
                         HStack(spacing: 4) {
                             Circle().fill(positiveColor).frame(width: 8, height: 8)
@@ -913,6 +1044,86 @@ struct BidirectionalStatChartCard: View {
                         HStack(spacing: 4) {
                             Circle().fill(negativeColor).frame(width: 8, height: 8)
                             Text(negativeLabel).font(.caption2).foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Two-row content - either dragging values or default summary
+                if isDragging, let point = selectedPoint {
+                    // Show values for the dragged period
+                    // Both positive and negative values displayed as absolute distances
+                    let posValue = abs(point.positiveValue)
+                    let negValue = abs(point.negativeValue)
+                    let validPos = posValue > chartMinDistanceThreshold
+                    let validNeg = negValue > chartMinDistanceThreshold
+
+                    VStack(spacing: 4) {
+                        // Positive direction row (N or E)
+                        HStack {
+                            HStack(spacing: 6) {
+                                Circle().fill(positiveColor).frame(width: 6, height: 6)
+                                Text(validPos ? locationText(for: positiveRecordCache[point.label]) : "—")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Text(validPos ? formatDistance(posValue) : "—")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(positiveColor)
+                        }
+
+                        // Negative direction row (S or W) - display as positive
+                        HStack {
+                            HStack(spacing: 6) {
+                                Circle().fill(negativeColor).frame(width: 6, height: 6)
+                                Text(validNeg ? locationText(for: negativeRecordCache[point.label]) : "—")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Text(validNeg ? formatDistance(negValue) : "—")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(negativeColor)
+                        }
+                    }
+                    .transition(.opacity)
+                } else if let summary = summary {
+                    // Two-row location summary showing max for each direction
+                    VStack(spacing: 4) {
+                        // Positive direction row (N or E)
+                        HStack {
+                            HStack(spacing: 6) {
+                                Circle().fill(positiveColor).frame(width: 6, height: 6)
+                                Text(summary.positiveLocationName ?? "—")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Text(summary.positiveDistance)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(positiveColor)
+                        }
+
+                        // Negative direction row (S or W)
+                        HStack {
+                            HStack(spacing: 6) {
+                                Circle().fill(negativeColor).frame(width: 6, height: 6)
+                                Text(summary.negativeLocationName ?? "—")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Text(summary.negativeDistance)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(negativeColor)
                         }
                     }
                 }
@@ -1043,6 +1254,18 @@ struct BidirectionalStatChartCard: View {
         }
     }
 
+    private func locationText(for record: RecordHistoryEntry?) -> String {
+        guard let record = record else { return "—" }
+        if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
+            return name
+        }
+        return String(format: "%.4f, %.4f", record.latitude, record.longitude)
+    }
+
+    private func formatDistance(_ value: Double) -> String {
+        FormatUtils.formatDistance(value, unitSystem: unitSystem)
+    }
+
     private func fetchAndCacheRecords(for point: BidirectionalChartDataPoint) {
         Task { @MainActor in
             if let record = fetchMostExtremeRecord(recordType: positiveRecordType, from: point.startDate, to: point.endDate) {
@@ -1071,52 +1294,59 @@ private struct BidirectionalLocationOverlay: View {
     let unitSystem: UnitSystem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             // Period label
             Text(point.label)
                 .font(.subheadline)
-                .fontWeight(.bold)
+                .foregroundColor(.secondary)
 
-            HStack(spacing: 12) {
-                // Positive record info
-                HStack(spacing: 4) {
-                    Circle().fill(positiveColor).frame(width: 6, height: 6)
-                    if let record = positiveRecord {
-                        Text(locationText(for: record))
-                            .font(.caption2)
+            // Two-row location summary
+            VStack(spacing: 4) {
+                // Positive direction row (N or E)
+                HStack {
+                    HStack(spacing: 6) {
+                        Circle().fill(positiveColor).frame(width: 6, height: 6)
+                        Text(locationText(for: positiveRecord))
+                            .font(.subheadline)
+                            .fontWeight(.medium)
                             .lineLimit(1)
-                    } else {
-                        Text("No \(positiveLabel)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
                     }
+                    Spacer()
+                    Text(formatDistance(point.positiveValue))
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(positiveColor)
                 }
 
-                // Negative record info
-                HStack(spacing: 4) {
-                    Circle().fill(negativeColor).frame(width: 6, height: 6)
-                    if let record = negativeRecord {
-                        Text(locationText(for: record))
-                            .font(.caption2)
+                // Negative direction row (S or W)
+                HStack {
+                    HStack(spacing: 6) {
+                        Circle().fill(negativeColor).frame(width: 6, height: 6)
+                        Text(locationText(for: negativeRecord))
+                            .font(.subheadline)
+                            .fontWeight(.medium)
                             .lineLimit(1)
-                    } else {
-                        Text("No \(negativeLabel)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
                     }
+                    Spacer()
+                    Text(formatDistance(abs(point.negativeValue)))
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(negativeColor)
                 }
-
-                Spacer()
             }
         }
-        .frame(height: 44)
     }
 
-    private func locationText(for record: RecordHistoryEntry) -> String {
+    private func locationText(for record: RecordHistoryEntry?) -> String {
+        guard let record = record else { return "—" }
         if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
             return name
         }
         return String(format: "%.4f, %.4f", record.latitude, record.longitude)
+    }
+
+    private func formatDistance(_ value: Double) -> String {
+        FormatUtils.formatDistance(value, unitSystem: unitSystem)
     }
 }
 
@@ -1183,18 +1413,18 @@ private struct LocationOverlay: View {
             return String(format: "%.4f°", record.value)
         case RecordType.up.rawValue:
             if unitSystem == .imperial {
-                return String(format: "%.0f ft", record.value * metersToFeet)
+                return FormatUtils.formatFeet(record.value * metersToFeet)
             } else {
-                return String(format: "%.0f m", record.value)
+                return FormatUtils.formatMeters(record.value)
             }
         case RecordType.fromHome.rawValue:
             if unitSystem == .imperial {
-                return String(format: "%.1f mi", record.value / metersPerMile)
+                return FormatUtils.formatMiles(record.value / metersPerMile)
             } else {
-                return String(format: "%.1f km", record.value / metersPerKm)
+                return FormatUtils.formatKilometers(record.value / metersPerKm)
             }
         default:
-            return String(format: "%.2f", record.value)
+            return FormatUtils.formatTwoDecimal(record.value)
         }
     }
 }

@@ -2,6 +2,13 @@ import SwiftUI
 import MapKit
 import CoreData
 
+// MARK: - Notifications
+
+extension Notification.Name {
+    static let navigateToiCloudSync = Notification.Name("navigateToiCloudSync")
+    static let scrollToiCloudSync = Notification.Name("scrollToiCloudSync")
+}
+
 // MARK: - Layout Constants
 
 private let mapHeightRatio: CGFloat = 0.5
@@ -12,6 +19,7 @@ struct RecordsView: View {
     @EnvironmentObject var recordManager: RecordManager
     @EnvironmentObject var settings: SettingsManager
     @EnvironmentObject var deepLinkManager: DeepLinkManager
+    @ObservedObject private var persistenceController = PersistenceController.shared
 
     @State private var navigateToDetail = false
     @State private var selectedRecordIndex: Int = 0
@@ -20,9 +28,13 @@ struct RecordsView: View {
     @State private var selectedTimeFrame: TimeFrame = .allTime
     @State private var selectedYear: Int?
     @State private var availableYears: [Int] = []
+    @State private var refreshTrigger = UUID()  // Forces view to recompute
 
     // Computed property to get all non-nil records in order for the selected timeframe
     private var allRecords: [RecordDetail] {
+        // Reference refreshTrigger to force recomputation when it changes
+        _ = refreshTrigger
+
         // For All Time mode with a specific year selected, fetch best records from that year
         if selectedTimeFrame == .allTime, let year = selectedYear {
             return fetchRecordsForYear(year)
@@ -38,19 +50,33 @@ struct RecordsView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 if allRecords.isEmpty {
-                    // Empty state
+                    // Empty state - show different content if syncing
                     VStack(spacing: 20) {
-                        Image(systemName: "map")
-                            .font(.system(size: 60))
-                            .foregroundColor(.gray)
-                        Text("No Records Yet")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                        Text("Start exploring to set your first geographical record!")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal)
+                        if persistenceController.isSyncing {
+                            ProgressView()
+                                .scaleEffect(1.5)
+                                .padding(.bottom, 8)
+                            Text("Syncing from iCloud")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                            Text("Your records are being downloaded from iCloud. This may take a moment...")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+                        } else {
+                            Image(systemName: "map")
+                                .font(.system(size: 60))
+                                .foregroundColor(.gray)
+                            Text("No Records Yet")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                            Text("Start exploring to set your first geographical record!")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -94,28 +120,23 @@ struct RecordsView: View {
             .navigationTitle("Records")
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Picker("Time Frame", selection: $selectedTimeFrame) {
-                        ForEach(TimeFrame.allCases, id: \.self) { timeFrame in
-                            Text(timeFrameLabel(for: timeFrame)).tag(timeFrame)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: pickerWidth)
-                    .contextMenu {
-                        if selectedTimeFrame == .allTime && !availableYears.isEmpty {
-                            Button {
-                                selectedYear = nil
-                            } label: {
-                                Label("All Years", systemImage: selectedYear == nil ? "checkmark" : "calendar")
-                            }
-                            Divider()
-                            ForEach(availableYears, id: \.self) { year in
-                                Button {
-                                    selectedYear = year
-                                } label: {
-                                    Label(yearString(year), systemImage: selectedYear == year ? "checkmark" : "calendar")
-                                }
-                            }
+                    TimeFramePickerWithBadges(
+                        selectedTimeFrame: $selectedTimeFrame,
+                        selectedYear: $selectedYear,
+                        availableYears: availableYears,
+                        timeFrameLabel: timeFrameLabel,
+                        yearString: yearString
+                    )
+                    .environmentObject(recordManager)
+                }
+                // Show sync indicator when iCloud is syncing - tapping goes to iCloud Sync section
+                if persistenceController.isSyncing {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button {
+                            NotificationCenter.default.post(name: .navigateToiCloudSync, object: nil)
+                        } label: {
+                            ProgressView()
+                                .scaleEffect(0.8)
                         }
                     }
                 }
@@ -125,6 +146,9 @@ struct RecordsView: View {
                 if newValue != .allTime {
                     selectedYear = nil
                 }
+
+                // Clear badge for this timeframe since user is viewing it
+                recordManager.clearBadge(for: newValue)
 
                 // Update map when timeframe changes
                 if let record = allRecords[safe: currentRecordIndex] {
@@ -154,6 +178,8 @@ struct RecordsView: View {
             .onAppear {
                 loadAvailableYears()
                 handleDeepLink()
+                // Clear badge for the currently selected timeframe
+                recordManager.clearBadge(for: selectedTimeFrame)
                 // Initialize map to first record
                 if let firstRecord = allRecords.first {
                     mapPosition = .region(MKCoordinateRegion(
@@ -164,6 +190,27 @@ struct RecordsView: View {
             }
             .onChange(of: deepLinkManager.recordType) { _, _ in
                 handleDeepLink()
+            }
+            .onChange(of: persistenceController.lastImportTime) { _, newTime in
+                // Refresh records when iCloud import completes
+                if newTime != nil {
+                    debugLog("☁️ RecordsView: iCloud import detected, reloading records")
+                    recordManager.loadRecordsFromHistory()
+                    loadAvailableYears()
+                    // Force view to recompute allRecords
+                    refreshTrigger = UUID()
+                    // Update map position if we have records
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        if let firstRecord = allRecords.first {
+                            withAnimation {
+                                mapPosition = .region(MKCoordinateRegion(
+                                    center: firstRecord.coordinate,
+                                    span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
+                                ))
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -220,6 +267,11 @@ struct RecordsView: View {
             return []
         }
 
+        // Prepare home location filter if available
+        let homeLocation: CLLocation? = settings.homeCoordinate.map {
+            CLLocation(latitude: $0.latitude, longitude: $0.longitude)
+        }
+
         var yearRecords: [RecordDetail] = []
 
         // For each record type, find the most extreme record from that year
@@ -235,10 +287,21 @@ struct RecordsView: View {
             // Sort to get the most extreme
             let ascending = !recordType.isAscending
             request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
-            request.fetchLimit = 1
+            // Don't use fetchLimit - we need to filter out home records first
 
             do {
-                if let entry = try context.fetch(request).first,
+                var entries = try context.fetch(request)
+
+                // Filter out records at home
+                if let home = homeLocation {
+                    entries = entries.filter { entry in
+                        let entryLocation = CLLocation(latitude: entry.latitude, longitude: entry.longitude)
+                        return entryLocation.distance(from: home) > atHomeRadiusMeters
+                    }
+                }
+
+                // Take the first (most extreme) after filtering
+                if let entry = entries.first,
                    var record = RecordDetail(from: entry) {
                     record.timeFrame = .allTime  // Display as all-time records
                     yearRecords.append(record)
@@ -479,5 +542,100 @@ struct RecordCardView: View {
                 .fill(Color(UIColor.secondarySystemBackground))
         )
         .padding(.horizontal, sizing.horizontalPadding)
+    }
+}
+
+// MARK: - Time Frame Picker with Badges
+
+private struct TimeFramePickerWithBadges: View {
+    @Binding var selectedTimeFrame: TimeFrame
+    @Binding var selectedYear: Int?
+    let availableYears: [Int]
+    let timeFrameLabel: (TimeFrame) -> String
+    let yearString: (Int) -> String
+
+    @EnvironmentObject var recordManager: RecordManager
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(TimeFrame.allCases, id: \.self) { timeFrame in
+                TimeFrameSegment(
+                    timeFrame: timeFrame,
+                    isSelected: selectedTimeFrame == timeFrame,
+                    label: timeFrameLabel(timeFrame),
+                    badgeCount: badgeCount(for: timeFrame)
+                ) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selectedTimeFrame = timeFrame
+                    }
+                }
+            }
+        }
+        .background(Color(UIColor.systemGray5))
+        .cornerRadius(8)
+        .frame(width: pickerWidth)
+        .contextMenu {
+            if selectedTimeFrame == .allTime && !availableYears.isEmpty {
+                Button {
+                    selectedYear = nil
+                } label: {
+                    Label("All Years", systemImage: selectedYear == nil ? "checkmark" : "calendar")
+                }
+                Divider()
+                ForEach(availableYears, id: \.self) { year in
+                    Button {
+                        selectedYear = year
+                    } label: {
+                        Label(yearString(year), systemImage: selectedYear == year ? "checkmark" : "calendar")
+                    }
+                }
+            }
+        }
+    }
+
+    private func badgeCount(for timeFrame: TimeFrame) -> Int {
+        switch timeFrame {
+        case .month:
+            return recordManager.newMonthlyRecordCount
+        case .year:
+            return recordManager.newYearlyRecordCount
+        case .allTime:
+            return recordManager.newAllTimeRecordCount
+        }
+    }
+}
+
+private struct TimeFrameSegment: View {
+    let timeFrame: TimeFrame
+    let isSelected: Bool
+    let label: String
+    let badgeCount: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .topTrailing) {
+                Text(label)
+                    .font(.subheadline)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                    .foregroundColor(isSelected ? .primary : .secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(
+                        isSelected ? Color(UIColor.systemBackground) : Color.clear
+                    )
+                    .cornerRadius(6)
+                    .padding(2)
+
+                // Badge indicator
+                if badgeCount > 0 {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 8, height: 8)
+                        .offset(x: -4, y: 4)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }

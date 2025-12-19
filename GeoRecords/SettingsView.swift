@@ -64,6 +64,7 @@ struct SettingsView: View {
     
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             Form {
                 // MARK: - Home Location Section
                 Section(header: Text("Home Location")) {
@@ -239,6 +240,7 @@ struct SettingsView: View {
 
                 // MARK: - iCloud Sync Section
                 Section(header: Text("iCloud Sync")) {
+                    EmptyView().id("iCloudSync")  // Anchor for scrolling
                     HStack {
                         Image(systemName: "icloud")
                             .foregroundColor(.blue)
@@ -269,6 +271,19 @@ struct SettingsView: View {
                                     .font(.subheadline)
                             }
                         }
+                    }
+
+                    // Show last export time if available
+                    if let exportTime = persistenceController.lastExportTime {
+                        HStack {
+                            Text("Last upload")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text(exportTime, style: .relative)
+                                .font(.caption)
+                                .foregroundColor(.green)
+                        }
+                        .font(.caption)
                     }
 
                     if let error = persistenceController.lastSyncError {
@@ -365,7 +380,7 @@ struct SettingsView: View {
                         deleteFromiCloud = false  // Reset to default
                         showClearRecordsSheet = true
                     } label: {
-                        Label("Clear All Records", systemImage: "trash")
+                        Label("Delete All Records", systemImage: "trash")
                             .foregroundColor(.red)
                     }
                 } header: {
@@ -374,29 +389,25 @@ struct SettingsView: View {
                     Text("Permanently delete all records from this device and optionally from iCloud.")
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .scrollToiCloudSync)) { _ in
+                withAnimation {
+                    proxy.scrollTo("iCloudSync", anchor: .top)
+                }
+            }
+            } // ScrollViewReader
             .navigationTitle("Settings")
             .sheet(isPresented: $showClearRecordsSheet) {
                 ClearRecordsSheet(
                     deleteFromiCloud: $deleteFromiCloud,
-                    onConfirm: {
-                        if deleteFromiCloud {
-                            // Delete from Core Data (syncs deletion to iCloud)
-                            RecordHistoryManager.shared.clearHistory()
-                        } else {
-                            // Clear local database only - iCloud data preserved
-                            RecordHistoryManager.shared.clearLocalOnly()
-                        }
-                        // Reset setup flag to show wizard
-                        settings.hasCompletedSetup = false
-                        settings.saveSettings()
+                    persistenceController: persistenceController,
+                    onComplete: {
                         showClearRecordsSheet = false
-                        showSetupWizard = true
                     },
                     onCancel: {
                         showClearRecordsSheet = false
                     }
                 )
-                .presentationDetents([.height(280)])
+                .presentationDetents([.height(320)])
             }
             .fullScreenCover(isPresented: $showSetupWizard) {
                 SetupWizardView()
@@ -487,59 +498,134 @@ struct SettingsView: View {
 
 struct ClearRecordsSheet: View {
     @Binding var deleteFromiCloud: Bool
-    let onConfirm: () -> Void
+    @ObservedObject var persistenceController: PersistenceController
+    let onComplete: () -> Void
     let onCancel: () -> Void
+
+    @State private var isDeleting = false
+    @State private var statusMessage = ""
 
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
 
-            Image(systemName: "trash.circle.fill")
-                .font(.system(size: 56))
-                .foregroundColor(.red)
+            if isDeleting {
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .padding(.bottom, 8)
 
-            Text("Delete all records?")
-                .font(.title2)
-                .fontWeight(.semibold)
+                Text("Deleting records...")
+                    .font(.title2)
+                    .fontWeight(.semibold)
 
-            Toggle(isOn: $deleteFromiCloud) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Delete from iCloud")
-                        .font(.body)
-                    Text(deleteFromiCloud
-                         ? "Permanently removes records from all devices"
-                         : "Records will sync back from iCloud")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                Text(statusMessage)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            } else {
+                Image(systemName: "trash.circle.fill")
+                    .font(.system(size: 56))
+                    .foregroundColor(.red)
+
+                Text("Delete all records?")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+
+                Toggle(isOn: $deleteFromiCloud) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Also delete from iCloud")
+                            .font(.body)
+                        Text(deleteFromiCloud
+                             ? "Permanently removes records from all devices"
+                             : "Records will sync back from iCloud")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
+                .tint(.red)
+                .padding(.horizontal, 24)
             }
-            .tint(.red)
-            .padding(.horizontal, 24)
 
             Spacer()
 
-            HStack(spacing: 12) {
-                Button("Cancel") {
-                    onCancel()
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(Color(UIColor.tertiarySystemFill))
-                .foregroundColor(.primary)
-                .cornerRadius(12)
+            if !isDeleting {
+                HStack(spacing: 12) {
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color(UIColor.tertiarySystemFill))
+                    .foregroundColor(.primary)
+                    .cornerRadius(12)
 
-                Button("Delete") {
-                    onConfirm()
+                    Button("Delete") {
+                        performDelete()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.red)
+                    .foregroundColor(.white)
+                    .fontWeight(.semibold)
+                    .cornerRadius(12)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(Color.red)
-                .foregroundColor(.white)
-                .fontWeight(.semibold)
-                .cornerRadius(12)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 16)
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 16)
+        }
+    }
+
+    private func performDelete() {
+        if deleteFromiCloud {
+            // Delete from iCloud - need to wait for sync
+            isDeleting = true
+            statusMessage = "Syncing deletions to iCloud..."
+
+            // Capture current export time to detect new export
+            let exportTimeBefore = persistenceController.lastExportTime
+
+            // Perform the deletion
+            RecordHistoryManager.shared.clearHistory()
+
+            // Wait for CloudKit export to complete
+            Task {
+                // Wait up to 30 seconds for export to complete
+                let timeout = Date().addingTimeInterval(30)
+
+                while Date() < timeout {
+                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+
+                    // Check if a new export completed
+                    if let newExportTime = persistenceController.lastExportTime,
+                       exportTimeBefore == nil || newExportTime > exportTimeBefore! {
+                        await MainActor.run {
+                            statusMessage = "Deletion synced to iCloud"
+                        }
+                        try? await Task.sleep(nanoseconds: 500_000_000) // Brief pause to show success
+                        await MainActor.run {
+                            onComplete()
+                        }
+                        return
+                    }
+
+                    // Update status if still syncing
+                    if persistenceController.pendingExport {
+                        await MainActor.run {
+                            statusMessage = "Syncing deletions to iCloud..."
+                        }
+                    }
+                }
+
+                // Timeout - complete anyway
+                await MainActor.run {
+                    onComplete()
+                }
+            }
+        } else {
+            // Local only - no need to wait
+            RecordHistoryManager.shared.clearLocalOnly()
+            onComplete()
         }
     }
 }

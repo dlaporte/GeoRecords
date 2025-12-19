@@ -22,7 +22,7 @@ class PhotoReferenceManager {
         targetSize: CGSize = PHImageManagerMaximumSize,
         contentMode: PHImageContentMode = .aspectFit
     ) async -> UIImage? {
-        guard let asset = findAsset(identifier: identifier) else {
+        guard let asset = PhotoAssetFinder.findAssetByLocalIdentifier(identifier) else {
             debugLog("📷 Photo not found in library: \(identifier)")
             return nil
         }
@@ -48,87 +48,17 @@ class PhotoReferenceManager {
         targetSize: CGSize = PHImageManagerMaximumSize,
         contentMode: PHImageContentMode = .aspectFit
     ) async -> UIImage? {
-        // First try direct local identifier lookup
-        if let asset = findAsset(identifier: identifier) {
-            return await fetchImage(from: asset, targetSize: targetSize, contentMode: contentMode)
-        }
-
-        // Second: try cloud identifier (works across devices with same iCloud Photo Library)
-        if let cloudId = cloudIdentifier, let asset = findAssetByCloudIdentifier(cloudId) {
-            debugLog("📷 Found photo via cloud identifier")
-            return await fetchImage(from: asset, targetSize: targetSize, contentMode: contentMode)
-        }
-
-        // Third fallback: search by timestamp and location
-        debugLog("📷 Trying fallback search for photo by timestamp/location")
-        if let asset = findAssetByTimestampAndLocation(timestamp: timestamp, coordinate: coordinate) {
-            debugLog("📷 Found matching photo via timestamp/location fallback")
-            return await fetchImage(from: asset, targetSize: targetSize, contentMode: contentMode)
-        }
-
-        debugLog("📷 Photo not found even with all fallback methods")
-        return nil
-    }
-
-    /// Find asset by cloud identifier (for cross-device access)
-    private func findAssetByCloudIdentifier(_ cloudIdentifierString: String) -> PHAsset? {
-        // PHCloudIdentifier(stringValue:) is a failable initializer, not throwing
-        let cloudIdentifier = PHCloudIdentifier(stringValue: cloudIdentifierString)
-
-        // localIdentifierMappings(for:) is synchronous in iOS 16+
-        let mappings = PHPhotoLibrary.shared().localIdentifierMappings(for: [cloudIdentifier])
-
-        guard let mapping = mappings[cloudIdentifier] else {
-            debugLog("📷 No mapping found for cloud identifier")
+        guard let asset = PhotoAssetFinder.findAsset(
+            localIdentifier: identifier,
+            cloudIdentifier: cloudIdentifier,
+            timestamp: timestamp,
+            coordinate: coordinate
+        ) else {
+            debugLog("📷 Photo not found even with all fallback methods")
             return nil
         }
 
-        switch mapping {
-        case .success(let localIdentifier):
-            let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
-            return fetchResult.firstObject
-        case .failure(let error):
-            debugLog("📷 Failed to resolve cloud identifier: \(error.localizedDescription)")
-            return nil
-        }
-    }
-
-    /// Find asset by local identifier
-    private func findAsset(identifier: String) -> PHAsset? {
-        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
-        return fetchResult.firstObject
-    }
-
-    /// Find asset by matching timestamp and GPS location
-    /// Used as fallback when local identifier doesn't work (e.g., different device)
-    private func findAssetByTimestampAndLocation(timestamp: Date, coordinate: CLLocationCoordinate2D) -> PHAsset? {
-        let options = PHFetchOptions()
-
-        // Search within 2 seconds of the timestamp
-        let startDate = timestamp.addingTimeInterval(-2)
-        let endDate = timestamp.addingTimeInterval(2)
-        options.predicate = NSPredicate(
-            format: "creationDate >= %@ AND creationDate <= %@",
-            startDate as NSDate,
-            endDate as NSDate
-        )
-
-        let fetchResult = PHAsset.fetchAssets(with: .image, options: options)
-
-        // Find photo with matching location
-        var bestMatch: PHAsset?
-        fetchResult.enumerateObjects { asset, _, stop in
-            if let location = asset.location {
-                let distance = location.distance(from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude))
-                // Match if within 100 meters
-                if distance < 100 {
-                    bestMatch = asset
-                    stop.pointee = true
-                }
-            }
-        }
-
-        return bestMatch
+        return await fetchImage(from: asset, targetSize: targetSize, contentMode: contentMode)
     }
 
     /// Fetch image from a PHAsset
@@ -233,16 +163,17 @@ class PhotoReferenceManager {
     /// - Parameter identifier: The PHAsset.localIdentifier to check
     /// - Returns: true if the photo exists, false if deleted
     func photoExists(identifier: String) -> Bool {
-        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
-        return fetchResult.count > 0
+        return PhotoAssetFinder.findAssetByLocalIdentifier(identifier) != nil
     }
 
     /// Check if a photo exists, with fallback search by timestamp/location
     func photoExistsWithFallback(identifier: String, timestamp: Date, coordinate: CLLocationCoordinate2D) -> Bool {
-        if photoExists(identifier: identifier) {
-            return true
-        }
-        return findAssetByTimestampAndLocation(timestamp: timestamp, coordinate: coordinate) != nil
+        return PhotoAssetFinder.findAsset(
+            localIdentifier: identifier,
+            cloudIdentifier: nil,
+            timestamp: timestamp,
+            coordinate: coordinate
+        ) != nil
     }
 }
 

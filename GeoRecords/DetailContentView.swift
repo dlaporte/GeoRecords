@@ -82,9 +82,9 @@ struct DetailContentView: View {
 
     private var formattedAltitude: String {
         if settings.unitSystem == .imperial {
-            return String(format: "%.0f ft", record.altitude * metersToFeet)
+            return FormatUtils.formatFeet(record.altitude * metersToFeet)
         } else {
-            return String(format: "%.0f m", record.altitude)
+            return FormatUtils.formatMeters(record.altitude)
         }
     }
 

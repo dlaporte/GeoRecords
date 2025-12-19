@@ -13,6 +13,9 @@ class PersistenceController: ObservableObject {
     @Published var databaseWasDeleted = false
     @Published var isSyncing = false
     @Published var lastSyncError: Error?
+    @Published var lastExportTime: Date?
+    @Published var lastImportTime: Date?
+    @Published var pendingExport = false
 
     init() {
         container = NSPersistentCloudKitContainer(name: "GeoRecordsModel")
@@ -102,22 +105,26 @@ class PersistenceController: ObservableObject {
     private func handleCloudKitEvent(_ event: NSPersistentCloudKitContainer.Event) {
         switch event.type {
         case .setup:
-            debugLog("☁️ CloudKit: Setup started")
+            debugLog("☁️ CloudKit: Setup \(event.endDate != nil ? "completed" : "started")")
         case .import:
             if event.endDate != nil {
-                debugLog("☁️ CloudKit: Import completed")
+                debugLog("☁️ CloudKit: Import completed ✅")
                 isSyncing = false
+                lastImportTime = Date()
             } else {
-                debugLog("☁️ CloudKit: Import started")
+                debugLog("☁️ CloudKit: Import started...")
                 isSyncing = true
             }
         case .export:
             if event.endDate != nil {
-                debugLog("☁️ CloudKit: Export completed")
+                debugLog("☁️ CloudKit: Export completed ✅ - Data is now in iCloud!")
                 isSyncing = false
+                lastExportTime = Date()
+                pendingExport = false
             } else {
-                debugLog("☁️ CloudKit: Export started")
+                debugLog("☁️ CloudKit: Export started...")
                 isSyncing = true
+                pendingExport = true
             }
         @unknown default:
             break
@@ -198,55 +205,68 @@ class PersistenceController: ObservableObject {
         }
     }
 
-    /// Throwing version of hasExistingCloudData for proper error handling
-    /// Waits for initial CloudKit sync to complete before checking
+    /// Quick check if CloudKit has any data for this app (checks zone existence, not record download)
+    /// This is fast (~2 seconds) and doesn't wait for full sync
     func hasExistingCloudDataThrowing() async throws -> Bool {
-        // Wait for CloudKit to complete initial import (up to 15 seconds)
-        let maxWaitTime: TimeInterval = 15.0
-        let checkInterval: TimeInterval = 0.3
-        var waitedTime: TimeInterval = 0
-        var syncStarted = false
+        debugLog("☁️ Quick check for iCloud data (checking zone existence)...")
 
-        // Wait for sync to start and then complete
-        while waitedTime < maxWaitTime {
-            let currentlySyncing = await MainActor.run(body: { self.isSyncing })
+        // Check iCloud account status first
+        let accountStatus = await checkCloudKitAccountStatus()
+        debugLog("☁️ CloudKit account status: \(accountStatus)")
 
-            if currentlySyncing {
-                syncStarted = true
-                debugLog("☁️ Waiting for CloudKit sync to complete...")
-                try await Task.sleep(nanoseconds: UInt64(checkInterval * 1_000_000_000))
-                waitedTime += checkInterval
-                continue
+        guard accountStatus == "available" else {
+            debugLog("☁️ iCloud not available, skipping cloud check")
+            return false
+        }
+
+        // Quick check: Does the Core Data CloudKit zone exist?
+        // If yes, user has synced data before - prompt to restore
+        let ckContainer = CKContainer(identifier: "iCloud.com.georecords")
+        let database = ckContainer.privateCloudDatabase
+
+        do {
+            let allZones = try await database.allRecordZones()
+            let hasDataZone = allZones.contains { $0.zoneID.zoneName == "com.apple.coredata.cloudkit.zone" }
+
+            if hasDataZone {
+                debugLog("☁️ CloudKit zone exists - user has iCloud data!")
+                return true
+            } else {
+                debugLog("☁️ No CloudKit zone found - this is a new user")
+                return false
             }
-
-            // Sync finished (or not started yet) - check if we have data
+        } catch {
+            debugLog("☁️ Error checking CloudKit zones: \(error.localizedDescription)")
+            // On error, also check if we have local data (might have synced already)
             let context = container.viewContext
             let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
             request.fetchLimit = 1
-
-            let count = try await context.perform {
-                try context.count(for: request)
-            }
-            debugLog("☁️ Found \(count) record(s) in local database (after \(String(format: "%.1f", waitedTime))s)")
-
-            if count > 0 {
-                return true
-            }
-
-            // If sync already started and completed with no data, we're done
-            if syncStarted {
-                debugLog("☁️ CloudKit sync completed but no data found")
-                return false
-            }
-
-            // No data yet and sync hasn't started - wait a bit more
-            if waitedTime < maxWaitTime {
-                try await Task.sleep(nanoseconds: UInt64(checkInterval * 1_000_000_000))
-                waitedTime += checkInterval
-            }
+            let count = try await context.perform { try context.count(for: request) }
+            return count > 0
         }
-
-        debugLog("☁️ No data found after waiting \(maxWaitTime)s for CloudKit sync")
-        return false
     }
+
+    /// Check CloudKit account status
+    private func checkCloudKitAccountStatus() async -> String {
+        do {
+            let status = try await CKContainer(identifier: "iCloud.com.georecords").accountStatus()
+            switch status {
+            case .available:
+                return "available"
+            case .noAccount:
+                return "noAccount"
+            case .restricted:
+                return "restricted"
+            case .couldNotDetermine:
+                return "couldNotDetermine"
+            case .temporarilyUnavailable:
+                return "temporarilyUnavailable"
+            @unknown default:
+                return "unknown"
+            }
+        } catch {
+            return "error: \(error.localizedDescription)"
+        }
+    }
+
 }

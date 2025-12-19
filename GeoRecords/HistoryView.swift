@@ -3,6 +3,7 @@ import CoreData
 import CoreLocation
 
 struct HistoryView: View {
+    @EnvironmentObject var settings: SettingsManager
     @State private var searchText = ""
     @State private var selectedRecordTypeFilter: String? = nil
     @State private var selectedTimeFrameFilter: String? = nil
@@ -18,6 +19,16 @@ struct HistoryView: View {
     /// Pre-filtered entries using database predicate, with search applied in-memory
     private var filteredEntries: [RecordHistoryEntry] {
         var entries = Array(historyEntries)
+
+        // Filter out records at home (likely test/bogus data)
+        if let homeCoord = settings.homeCoordinate {
+            let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
+            entries = entries.filter { entry in
+                let entryLocation = CLLocation(latitude: entry.latitude, longitude: entry.longitude)
+                let distance = entryLocation.distance(from: homeLocation)
+                return distance > atHomeRadiusMeters
+            }
+        }
 
         // Apply database-level filters first (record type and time frame)
         if let recordType = selectedRecordTypeFilter {

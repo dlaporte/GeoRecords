@@ -2,6 +2,7 @@ import Foundation
 import UIKit
 import Photos
 import CoreData
+import CoreLocation
 
 /// Manages cached thumbnails in the app group container for widget access and fast app loading
 /// Thumbnails are stored as JPEG files named by record ID
@@ -117,6 +118,37 @@ class ThumbnailCache {
         await saveThumbnail(from: asset, for: recordId)
     }
 
+    /// Save a thumbnail for a record with fallback to cloud identifier and timestamp/location
+    /// Uses PhotoAssetFinder for consistent asset lookup logic across the app.
+    /// - Parameters:
+    ///   - assetIdentifier: The PHAsset.localIdentifier
+    ///   - cloudIdentifier: The PHCloudIdentifier string for cross-device access
+    ///   - timestamp: The photo's original timestamp (for fallback matching)
+    ///   - coordinate: The photo's GPS coordinate (for fallback matching)
+    ///   - recordId: The record's UUID
+    /// - Returns: true if thumbnail was successfully generated, false otherwise
+    @discardableResult
+    func saveThumbnailWithFallback(
+        assetIdentifier: String?,
+        cloudIdentifier: String?,
+        timestamp: Date?,
+        coordinate: CLLocationCoordinate2D?,
+        for recordId: UUID
+    ) async -> Bool {
+        if let asset = PhotoAssetFinder.findAsset(
+            localIdentifier: assetIdentifier,
+            cloudIdentifier: cloudIdentifier,
+            timestamp: timestamp,
+            coordinate: coordinate
+        ) {
+            await saveThumbnail(from: asset, for: recordId)
+            return true
+        }
+
+        debugLog("⚠️ ThumbnailCache: Could not find photo for record \(recordId) with any method")
+        return false
+    }
+
     // MARK: - Load Thumbnails
 
     /// Load a cached thumbnail for a record
@@ -221,14 +253,32 @@ class ThumbnailCache {
                 // Skip if thumbnail already exists
                 if thumbnailExists(for: recordId) { continue }
 
-                // Try to generate from asset identifier
-                if let assetIdentifier = entry.photoAssetIdentifier {
-                    await saveThumbnail(fromAssetIdentifier: assetIdentifier, for: recordId)
-                    generatedCount += 1
-                }
-                // Or from legacy photo data
-                else if let photoData = entry.photoData, let image = UIImage(data: photoData) {
+                // Check if this entry has any photo reference
+                let hasPhotoReference = entry.photoAssetIdentifier != nil ||
+                                         entry.photoCloudIdentifier != nil ||
+                                         entry.photoData != nil
+
+                guard hasPhotoReference else { continue }
+
+                // Try legacy photo data first (fastest, no Photos library access needed)
+                if let photoData = entry.photoData, let image = UIImage(data: photoData) {
                     saveThumbnail(from: image, for: recordId)
+                    generatedCount += 1
+                    continue
+                }
+
+                // Build coordinate for fallback matching
+                let coordinate = CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude)
+
+                // Use fallback method with cloud identifier and timestamp/location
+                let success = await saveThumbnailWithFallback(
+                    assetIdentifier: entry.photoAssetIdentifier,
+                    cloudIdentifier: entry.photoCloudIdentifier,
+                    timestamp: entry.timestamp,
+                    coordinate: coordinate,
+                    for: recordId
+                )
+                if success {
                     generatedCount += 1
                 }
             }

@@ -5,6 +5,93 @@ import MapKit
 /// Shared formatting utilities for GeoRecords app
 enum FormatUtils {
 
+    // MARK: - Locale-Aware Number Formatting
+
+    /// Shared number formatter for distances (no decimal places)
+    private static let wholeNumberFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        formatter.minimumFractionDigits = 0
+        return formatter
+    }()
+
+    /// Shared number formatter for distances (1 decimal place)
+    private static let oneDecimalFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 1
+        formatter.minimumFractionDigits = 1
+        return formatter
+    }()
+
+    /// Shared number formatter for distances (2 decimal places)
+    private static let twoDecimalFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 2
+        formatter.minimumFractionDigits = 2
+        return formatter
+    }()
+
+    /// Format a number with locale-appropriate separators (no decimals)
+    /// Example: 2000 -> "2,000" (US) or "2.000" (DE)
+    static func formatWholeNumber(_ value: Double) -> String {
+        wholeNumberFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.0f", value)
+    }
+
+    /// Format a number with locale-appropriate separators (1 decimal)
+    /// Example: 2000.5 -> "2,000.5" (US) or "2.000,5" (DE)
+    static func formatOneDecimal(_ value: Double) -> String {
+        oneDecimalFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.1f", value)
+    }
+
+    /// Format a number with locale-appropriate separators (2 decimals)
+    /// Example: 2000.55 -> "2,000.55" (US) or "2.000,55" (DE)
+    static func formatTwoDecimal(_ value: Double) -> String {
+        twoDecimalFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+    }
+
+    /// Format distance in miles with locale-appropriate separators
+    static func formatMiles(_ miles: Double, decimals: Int = 1) -> String {
+        switch decimals {
+        case 0: return "\(formatWholeNumber(miles)) mi"
+        case 1: return "\(formatOneDecimal(miles)) mi"
+        default: return "\(formatTwoDecimal(miles)) mi"
+        }
+    }
+
+    /// Format distance in kilometers with locale-appropriate separators
+    static func formatKilometers(_ km: Double, decimals: Int = 1) -> String {
+        switch decimals {
+        case 0: return "\(formatWholeNumber(km)) km"
+        case 1: return "\(formatOneDecimal(km)) km"
+        default: return "\(formatTwoDecimal(km)) km"
+        }
+    }
+
+    /// Format elevation in feet with locale-appropriate separators
+    static func formatFeet(_ feet: Double) -> String {
+        "\(formatWholeNumber(feet)) ft"
+    }
+
+    /// Format elevation in meters with locale-appropriate separators
+    static func formatMeters(_ meters: Double) -> String {
+        "\(formatWholeNumber(meters)) m"
+    }
+
+    /// Format distance using the appropriate unit system
+    /// - Parameters:
+    ///   - value: Distance value (already in miles or km based on unit system)
+    ///   - unitSystem: The unit system to use for formatting
+    ///   - decimals: Number of decimal places (default: 0)
+    /// - Returns: Formatted distance string with unit suffix
+    static func formatDistance(_ value: Double, unitSystem: UnitSystem, decimals: Int = 0) -> String {
+        unitSystem == .imperial
+            ? formatMiles(value, decimals: decimals)
+            : formatKilometers(value, decimals: decimals)
+    }
+
     // MARK: - Record Type Display Names
 
     static func shortName(for recordType: String) -> String {
@@ -79,20 +166,17 @@ enum FormatUtils {
         case .up:
             // Value is stored in meters
             if unitSystem == .imperial {
-                let feet = value * metersToFeet
-                return String(format: "%.0f ft", feet)
+                return formatFeet(value * metersToFeet)
             } else {
-                return String(format: "%.0f m", value)
+                return formatMeters(value)
             }
 
         case .fromHome:
             // Value is stored in meters (consistent with altitude)
             if unitSystem == .imperial {
-                let miles = value / metersPerMile
-                return String(format: "%.2f mi", miles)
+                return formatMiles(value / metersPerMile, decimals: 2)
             } else {
-                let km = value / metersPerKm
-                return String(format: "%.2f km", km)
+                return formatKilometers(value / metersPerKm, decimals: 2)
             }
         }
     }
@@ -117,14 +201,12 @@ enum FormatUtils {
         let distanceMeters = distanceBetween(from: coordinate, to: homeCoord)
 
         if unitSystem == .imperial {
-            let miles = distanceMeters / metersPerMile
-            return String(format: "%.2f mi", miles)
+            return formatMiles(distanceMeters / metersPerMile, decimals: 2)
         } else {
             if distanceMeters >= metersPerKm {
-                let km = distanceMeters / metersPerKm
-                return String(format: "%.2f km", km)
+                return formatKilometers(distanceMeters / metersPerKm, decimals: 2)
             } else {
-                return String(format: "%.0f m", distanceMeters)
+                return formatMeters(distanceMeters)
             }
         }
     }
@@ -162,11 +244,9 @@ enum FormatUtils {
             let distance = distanceBetween(from: coordinate, to: homeCoord)
 
             if unitSystem == .imperial {
-                let miles = distance / metersPerMile
-                return String(format: "%.2f mi", miles)
+                return formatMiles(distance / metersPerMile, decimals: 2)
             } else {
-                let km = distance / metersPerKm
-                return String(format: "%.2f km", km)
+                return formatKilometers(distance / metersPerKm, decimals: 2)
             }
         }
     }
@@ -187,7 +267,7 @@ enum FormatUtils {
         coordinatePrecision: Int = 4
     ) -> String {
         guard let type = RecordType.from(string: recordType) else {
-            return String(format: "%.2f", value)
+            return formatTwoDecimal(value)
         }
 
         switch type {
@@ -196,20 +276,17 @@ enum FormatUtils {
 
         case .up:
             if unitSystem == .imperial {
-                let feet = altitude * metersToFeet
-                return String(format: "%.0f ft", feet)
+                return formatFeet(altitude * metersToFeet)
             } else {
-                return String(format: "%.0f m", altitude)
+                return formatMeters(altitude)
             }
 
         case .fromHome:
             // Value is stored in meters
             if unitSystem == .imperial {
-                let miles = value / metersPerMile
-                return String(format: "%.2f mi", miles)
+                return formatMiles(value / metersPerMile, decimals: 2)
             } else {
-                let km = value / metersPerKm
-                return String(format: "%.2f km", km)
+                return formatKilometers(value / metersPerKm, decimals: 2)
             }
         }
     }

@@ -94,12 +94,18 @@ protocol RecordManaging: ObservableObject {
     var showPhotoPrompt: Bool { get set }
     var pendingRecordForPhoto: (type: String, detail: RecordDetail)? { get set }
 
+    // Badge counts for new records
+    var newMonthlyRecordCount: Int { get }
+    var newYearlyRecordCount: Int { get }
+    var newAllTimeRecordCount: Int { get }
+
     func getRecord(type: String, timeFrame: TimeFrame) -> RecordDetail?
     func setRecord(type: String, timeFrame: TimeFrame, record: RecordDetail?)
     func updateRecords(with location: CLLocation, reverseGeocodedName: String?)
     func loadRecordsFromHistory()
     func resetRecords()
     func attachPhotoToRecord(recordType: String, photoData: Data?)
+    func clearBadge(for timeFrame: TimeFrame)
 }
 
 @MainActor
@@ -116,6 +122,11 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     // Photo prompt state
     @Published var showPhotoPrompt = false
     @Published var pendingRecordForPhoto: (type: String, detail: RecordDetail)?
+
+    // Badge counts for new/unseen records per timeframe
+    @Published var newMonthlyRecordCount = 0
+    @Published var newYearlyRecordCount = 0
+    @Published var newAllTimeRecordCount = 0
 
     // Geocoding status - tracks consecutive failures for user feedback
     @Published var consecutiveGeocodingFailures = 0
@@ -232,13 +243,29 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         RecordHistoryManager.shared.removeDuplicates()
 
         let context = PersistenceController.shared.container.viewContext
+        let settings = SettingsManager.shared
 
         // Single batch fetch to get all record types at once
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
         do {
             // Fetch all entries
-            let allEntries = try context.fetch(request)
+            var allEntries = try context.fetch(request)
+
+            // Filter out records that are at home (likely test/bogus data)
+            if let homeCoord = settings.homeCoordinate {
+                let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
+                let originalCount = allEntries.count
+                allEntries = allEntries.filter { entry in
+                    let entryLocation = CLLocation(latitude: entry.latitude, longitude: entry.longitude)
+                    let distance = entryLocation.distance(from: homeLocation)
+                    return distance > atHomeRadiusMeters
+                }
+                let filteredCount = originalCount - allEntries.count
+                if filteredCount > 0 {
+                    debugLog("🏠 Filtered out \(filteredCount) records at home (within \(Int(atHomeRadiusMeters))m)")
+                }
+            }
 
             // Get current month and year boundaries
             let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
@@ -283,6 +310,9 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             loadRecordsForTimeFrame(entries: yearEntries, timeFrame: .year)
             loadRecordsForTimeFrame(entries: allEntries, timeFrame: .allTime)
 
+            // Explicitly notify observers that records have changed
+            objectWillChange.send()
+
             debugLog("Loaded all records from history for all timeframes")
         } catch {
             debugLog("Failed to load records: \(error.localizedDescription)")
@@ -325,6 +355,9 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                 )
                 setRecord(type: type, timeFrame: timeFrame, record: newRecord)
                 RecordHistoryManager.shared.addRecord(recordType: type, detail: newRecord)
+
+                // Increment badge for this timeframe
+                incrementBadge(for: timeFrame)
 
                 // Photo prompts only for all-time records
                 if timeFrame == .allTime {
@@ -474,6 +507,16 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             return
         case .valid:
             break
+        }
+
+        // Skip locations at home (likely test data)
+        if let homeCoord = SettingsManager.shared.homeCoordinate {
+            let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
+            let distanceFromHomeMeters = location.distance(from: homeLocation)
+            if distanceFromHomeMeters <= atHomeRadiusMeters {
+                debugLog("🏠 Skipping location at home (within \(Int(distanceFromHomeMeters))m)")
+                return
+            }
         }
 
         let lat = location.coordinate.latitude
@@ -652,5 +695,56 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     func resetRecords() {
         objectWillChange.send()
         records.removeAll()
+    }
+
+    // MARK: - Badge Management
+
+    /// Increment badge count for a timeframe when a new record is set
+    func incrementBadge(for timeFrame: TimeFrame) {
+        switch timeFrame {
+        case .month:
+            newMonthlyRecordCount += 1
+        case .year:
+            newYearlyRecordCount += 1
+        case .allTime:
+            newAllTimeRecordCount += 1
+        }
+        updateAppIconBadge()
+    }
+
+    /// Clear badge count for a specific timeframe (called when user views that timeframe)
+    func clearBadge(for timeFrame: TimeFrame) {
+        switch timeFrame {
+        case .month:
+            newMonthlyRecordCount = 0
+        case .year:
+            newYearlyRecordCount = 0
+        case .allTime:
+            newAllTimeRecordCount = 0
+        }
+        updateAppIconBadge()
+    }
+
+    /// Clear all badges
+    func clearAllBadges() {
+        newMonthlyRecordCount = 0
+        newYearlyRecordCount = 0
+        newAllTimeRecordCount = 0
+        updateAppIconBadge()
+    }
+
+    /// Total number of unseen records across all timeframes
+    var totalUnseenRecordCount: Int {
+        newMonthlyRecordCount + newYearlyRecordCount + newAllTimeRecordCount
+    }
+
+    /// Update the app icon badge with the total unseen record count
+    private func updateAppIconBadge() {
+        let total = totalUnseenRecordCount
+        UNUserNotificationCenter.current().setBadgeCount(total) { error in
+            if let error = error {
+                debugLog("Failed to update badge: \(error.localizedDescription)")
+            }
+        }
     }
 }

@@ -25,17 +25,33 @@ struct ImportWizardView: View {
                         YearlyStepView(scanner: scanner)
                     case .monthly:
                         MonthlyStepView(scanner: scanner)
+                    case .countries:
+                        RegionConfirmationView(
+                            regionType: .country,
+                            regions: $scanner.discoveredCountries,
+                            onNext: goToNextStep,
+                            onBack: goToPreviousStep
+                        )
+                    case .states:
+                        RegionConfirmationView(
+                            regionType: .state,
+                            regions: $scanner.discoveredStates,
+                            onNext: { finishWizard() },
+                            onBack: goToPreviousStep
+                        )
                     }
                 }
                 .animation(.easeInOut(duration: 0.3), value: scanner.currentWizardStep)
 
-                // Navigation buttons
-                WizardNavigationBar(
-                    currentStep: scanner.currentWizardStep,
-                    onBack: goToPreviousStep,
-                    onNext: goToNextStep,
-                    onFinish: finishWizard
-                )
+                // Navigation buttons (hidden for region steps which have their own nav)
+                if !scanner.currentWizardStep.isRegionStep {
+                    WizardNavigationBar(
+                        currentStep: scanner.currentWizardStep,
+                        onBack: goToPreviousStep,
+                        onNext: goToNextStep,
+                        onFinish: finishWizard
+                    )
+                }
             }
             .disabled(scanner.isImporting)
 
@@ -82,6 +98,8 @@ struct ImportWizardView: View {
 
     private func finishWizard() {
         scanner.buildConfirmedRecordsFromSelections()
+        // Confirm the selected regions
+        scanner.confirmDiscoveredRegions()
         onImport()
     }
 }

@@ -35,12 +35,16 @@ enum ImportWizardStep: Int, CaseIterable {
     case allTime = 0
     case yearly = 1
     case monthly = 2
+    case countries = 3  // Region confirmation: countries
+    case states = 4     // Region confirmation: US states
 
     var title: String {
         switch self {
         case .allTime: return "All-Time Records"
         case .yearly: return "Yearly Records"
         case .monthly: return "Monthly Records"
+        case .countries: return "Countries Visited"
+        case .states: return "States Visited"
         }
     }
 
@@ -49,6 +53,8 @@ enum ImportWizardStep: Int, CaseIterable {
         case .allTime: return "All Years"
         case .yearly: return "Past Years"
         case .monthly: return "This Year"
+        case .countries: return "Countries"
+        case .states: return "States"
         }
     }
 
@@ -57,6 +63,8 @@ enum ImportWizardStep: Int, CaseIterable {
         case .allTime: return nil
         case .yearly: return .allTime
         case .monthly: return .yearly
+        case .countries: return .monthly
+        case .states: return .countries
         }
     }
 
@@ -64,8 +72,15 @@ enum ImportWizardStep: Int, CaseIterable {
         switch self {
         case .allTime: return .yearly
         case .yearly: return .monthly
-        case .monthly: return nil
+        case .monthly: return .countries
+        case .countries: return .states
+        case .states: return nil
         }
+    }
+
+    /// Whether this step is a region confirmation step
+    var isRegionStep: Bool {
+        self == .countries || self == .states
     }
 }
 
@@ -167,6 +182,21 @@ class PhotoLibraryScanner: ObservableObject {
     /// Whether wizard mode is active (vs legacy confirmation flow)
     @Published var isWizardMode = false
 
+    // MARK: - Discovered Regions State
+
+    /// Countries discovered during photo scan (pending user confirmation)
+    @Published var discoveredCountries: [DiscoveredRegion] = []
+
+    /// US States discovered during photo scan (pending user confirmation)
+    @Published var discoveredStates: [DiscoveredRegion] = []
+
+    /// Live counts during scanning (for progress display)
+    @Published var discoveredCountryCount: Int = 0
+    @Published var discoveredStateCount: Int = 0
+
+    /// Temporary storage for regions during scan (keyed by region code)
+    private var regionPhotoMap: [String: (info: RegionInfo, assets: [PHAsset])] = [:]
+
     func requestPhotoLibraryAccess(completion: @escaping (Bool) -> Void) {
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
             _ = Task { @MainActor in
@@ -187,6 +217,16 @@ class PhotoLibraryScanner: ObservableObject {
         currentTimeFrame = nil
         currentRecordTypeIndex = 0
         isConfirming = false
+
+        // Reset discovered regions
+        discoveredCountries = []
+        discoveredStates = []
+        discoveredCountryCount = 0
+        discoveredStateCount = 0
+        regionPhotoMap = [:]
+
+        // Ensure region boundaries are loaded
+        RegionLookupService.shared.loadBoundaries()
         candidatesByTimeFrame = [:]
         currentCandidateIndices = [:]
         confirmedRecords = []
@@ -261,6 +301,27 @@ class PhotoLibraryScanner: ObservableObject {
                     if let homeCoord = homeCoordinate {
                         let distance = distanceBetween(from: location.coordinate, to: homeCoord)
                         fromHomeCandidates.append((distance, asset, location))
+                    }
+
+                    // Collect region for this photo
+                    if let regionInfo = RegionLookupService.shared.region(for: location.coordinate) {
+                        await MainActor.run {
+                            let isNewRegion = self.regionPhotoMap[regionInfo.code] == nil
+                            if self.regionPhotoMap[regionInfo.code] != nil {
+                                self.regionPhotoMap[regionInfo.code]?.assets.append(asset)
+                            } else {
+                                self.regionPhotoMap[regionInfo.code] = (info: regionInfo, assets: [asset])
+                            }
+                            // Update live counts for UI
+                            if isNewRegion {
+                                switch regionInfo.type {
+                                case .country:
+                                    self.discoveredCountryCount += 1
+                                case .state:
+                                    self.discoveredStateCount += 1
+                                }
+                            }
+                        }
                     }
                 }
             }.value
@@ -352,6 +413,9 @@ class PhotoLibraryScanner: ObservableObject {
                 currentCandidateIndices[key] = 0
             }
         }
+
+        // Convert collected regions to DiscoveredRegion arrays
+        buildDiscoveredRegions()
 
         isScanning = false
 
@@ -814,36 +878,74 @@ class PhotoLibraryScanner: ObservableObject {
         }
     }
 
-    /// Initialize default selections (index 0 = most extreme for all)
+    /// Initialize selections - pre-select photos that match existing records, otherwise default to index 0
     private func initializeDefaultSelections() {
         wizardSelections = WizardSelection()
 
-        // All-time: select index 0 for each record type that has candidates
+        // All-time: try to match existing record photos, otherwise select index 0
         for recordType in allTimeCandidates.keys {
             if let candidates = allTimeCandidates[recordType], !candidates.isEmpty {
-                wizardSelections.allTime[recordType] = 0
+                let existingRecord = RecordManager.shared.getRecord(type: recordType, timeFrame: .allTime)
+                let matchIndex = findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
+                wizardSelections.allTime[recordType] = matchIndex
             }
         }
 
-        // Yearly: select index 0 for each year/recordType with candidates
+        // Yearly: try to match existing record photos for each year
         for bucket in yearlyBuckets {
             var yearSelections: [String: Int] = [:]
             for recordType in bucket.availableRecordTypes {
-                yearSelections[recordType] = 0
+                if let candidates = bucket.records[recordType], !candidates.isEmpty {
+                    // For yearly, check if any existing record matches a candidate
+                    let existingRecord = RecordManager.shared.getRecord(type: recordType, timeFrame: .year)
+                    let matchIndex = findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
+                    yearSelections[recordType] = matchIndex
+                }
             }
             wizardSelections.yearly[bucket.id] = yearSelections
         }
 
-        // Monthly: select index 0 for each month/recordType with candidates
+        // Monthly: try to match existing record photos for each month
         for bucket in monthlyBuckets {
             let key = WizardSelection.monthKey(year: bucket.year, month: bucket.id)
             var monthSelections: [String: Int] = [:]
             for recordType in bucket.availableRecordTypes {
-                monthSelections[recordType] = 0
+                if let candidates = bucket.records[recordType], !candidates.isEmpty {
+                    let existingRecord = RecordManager.shared.getRecord(type: recordType, timeFrame: .month)
+                    let matchIndex = findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
+                    monthSelections[recordType] = matchIndex
+                }
             }
             wizardSelections.monthly[key] = monthSelections
         }
+    }
 
+    /// Find the index of a candidate that matches an existing record's photo
+    /// Returns 0 if no match found (default to most extreme)
+    private func findMatchingCandidateIndex(candidates: [DiscoveredRecord], existingRecord: RecordDetail?) -> Int {
+        guard let existing = existingRecord else { return 0 }
+
+        // Try to match by photo asset identifier
+        if let existingAssetId = existing.photoAssetIdentifier {
+            for (index, candidate) in candidates.enumerated() {
+                if candidate.photoAsset.localIdentifier == existingAssetId {
+                    return index
+                }
+            }
+        }
+
+        // Try to match by cloud identifier
+        if let existingCloudId = existing.photoCloudIdentifier {
+            for (index, candidate) in candidates.enumerated() {
+                let cloudId = getCloudIdentifier(for: candidate.photoAsset)
+                if cloudId == existingCloudId {
+                    return index
+                }
+            }
+        }
+
+        // No match found, default to most extreme (index 0)
+        return 0
     }
 
     /// Update selection for all-time record
@@ -944,5 +1046,54 @@ class PhotoLibraryScanner: ObservableObject {
             debugLog("⚠️ Failed to get cloud identifier: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    // MARK: - Region Discovery
+
+    /// Convert collected regionPhotoMap to discoveredCountries and discoveredStates arrays
+    private func buildDiscoveredRegions() {
+        var countries: [DiscoveredRegion] = []
+        var states: [DiscoveredRegion] = []
+
+        for (code, data) in regionPhotoMap {
+            let region = DiscoveredRegion(
+                regionCode: code,
+                regionName: data.info.name,
+                regionType: data.info.type,
+                continent: data.info.continent,
+                photoAssets: data.assets,
+                confirmed: true  // Default to selected
+            )
+
+            switch data.info.type {
+            case .state:
+                states.append(region)
+            case .country:
+                countries.append(region)
+            }
+        }
+
+        // Sort by photo count descending (most photos first)
+        discoveredCountries = countries.sorted { $0.photoCount > $1.photoCount }
+        discoveredStates = states.sorted { $0.photoCount > $1.photoCount }
+
+        debugLog("📍 PhotoLibraryScanner: Discovered \(discoveredCountries.count) countries, \(discoveredStates.count) states")
+    }
+
+    /// Check if there are any discovered regions pending confirmation
+    var hasDiscoveredRegions: Bool {
+        !discoveredCountries.isEmpty || !discoveredStates.isEmpty
+    }
+
+    /// Confirm selected regions and record them
+    func confirmDiscoveredRegions() {
+        let confirmedCountries = discoveredCountries.filter { $0.confirmed }
+        let confirmedStates = discoveredStates.filter { $0.confirmed }
+
+        Task { @MainActor in
+            RegionTrackingManager.shared.recordConfirmedRegions(confirmedCountries + confirmedStates)
+        }
+
+        debugLog("📍 Confirmed \(confirmedCountries.count) countries, \(confirmedStates.count) states")
     }
 }

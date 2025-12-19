@@ -272,6 +272,14 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             self.currentLocation = currentLocation
             RecordManager.shared.updateRecords(with: currentLocation)
             // Smart Notifications retired - removed call to SmartNotificationManager
+
+            // Track visited region (background location update - auto-confirmed, no user intervention)
+            RegionTrackingManager.shared.recordVisit(
+                coordinate: currentLocation.coordinate,
+                date: Date(),
+                source: .backgroundLocation,
+                altitude: currentLocation.altitude
+            )
         }
     }
     

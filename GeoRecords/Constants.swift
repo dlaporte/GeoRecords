@@ -62,6 +62,47 @@ enum RecordType: String, CaseIterable {
     }
 }
 
+/// Region type for visited regions tracking
+enum RegionType: String, CaseIterable, Codable {
+    case state = "state"
+    case country = "country"
+
+    var displayName: String {
+        switch self {
+        case .state: return "State"
+        case .country: return "Country"
+        }
+    }
+
+    var pluralName: String {
+        switch self {
+        case .state: return "States"
+        case .country: return "Countries"
+        }
+    }
+}
+
+/// Continent enum for continent-level tracking (derived from countries)
+enum Continent: String, CaseIterable {
+    case africa = "Africa"
+    case antarctica = "Antarctica"
+    case asia = "Asia"
+    case europe = "Europe"
+    case northAmerica = "North America"
+    case oceania = "Australia / Oceania"
+    case southAmerica = "South America"
+
+    /// Total number of continents
+    static var totalCount: Int { 7 }
+}
+
+/// Visit source for tracking how a region visit was recorded
+enum VisitSource: String {
+    case photo = "photo"
+    case backgroundLocation = "location"
+    case manual = "manual"
+}
+
 // MARK: - UserDefaults Keys
 
 /// Type-safe keys for UserDefaults storage

@@ -183,6 +183,8 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("Minimum Deltas")
+                } footer: {
+                    Text("New records must exceed current records by at least these amounts. Higher values reduce noise from minor location changes.")
                 }
 
                 // MARK: - Record Alerts Section

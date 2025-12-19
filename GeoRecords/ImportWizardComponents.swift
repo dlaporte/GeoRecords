@@ -3,19 +3,25 @@ import Photos
 
 // MARK: - Wizard Progress Indicator
 
-/// Progress indicator showing the three wizard steps
+/// Progress indicator showing the wizard steps
 struct WizardProgressIndicator: View {
     let currentStep: ImportWizardStep
 
     var body: some View {
-        HStack(spacing: 0) {
-            WizardStepItem(step: .allTime, currentStep: currentStep)
-            WizardStepConnector(isCompleted: currentStep.rawValue > 0)
-            WizardStepItem(step: .yearly, currentStep: currentStep)
-            WizardStepConnector(isCompleted: currentStep.rawValue > 1)
-            WizardStepItem(step: .monthly, currentStep: currentStep)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                WizardStepItem(step: .allTime, currentStep: currentStep)
+                WizardStepConnector(isCompleted: currentStep.rawValue > 0)
+                WizardStepItem(step: .yearly, currentStep: currentStep)
+                WizardStepConnector(isCompleted: currentStep.rawValue > 1)
+                WizardStepItem(step: .monthly, currentStep: currentStep)
+                WizardStepConnector(isCompleted: currentStep.rawValue > 2)
+                WizardStepItem(step: .countries, currentStep: currentStep)
+                WizardStepConnector(isCompleted: currentStep.rawValue > 3)
+                WizardStepItem(step: .states, currentStep: currentStep)
+            }
+            .padding(.horizontal, 12)
         }
-        .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Color(UIColor.systemBackground))
     }

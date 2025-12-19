@@ -9,6 +9,8 @@ struct ImportPreviewView: View {
     @State private var isImporting = false
     @State private var showSuccess = false
     @State private var importedCount = 0
+    @State private var importedCountryCount = 0
+    @State private var importedStateCount = 0
 
     var body: some View {
         NavigationStack {
@@ -30,6 +32,12 @@ struct ImportPreviewView: View {
                             Text("\(scanner.photosWithLocation) photos with location data")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+
+                            if scanner.discoveredCountryCount > 0 || scanner.discoveredStateCount > 0 {
+                                Text("\(scanner.discoveredCountryCount) countries, \(scanner.discoveredStateCount) states found")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     }
                     .padding()

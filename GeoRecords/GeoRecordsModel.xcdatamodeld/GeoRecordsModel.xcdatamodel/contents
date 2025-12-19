@@ -11,6 +11,16 @@
         <attribute name="maxUp" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
         <attribute name="maxWest" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
     </entity>
+    <entity name="PhotoRegionCache" representedClassName="PhotoRegionCache" syncable="YES" codeGenerationType="class">
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="photoCloudIdentifier" optional="YES" attributeType="String"/>
+        <attribute name="photoDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="photoLatitude" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="photoLocalIdentifier" optional="YES" attributeType="String"/>
+        <attribute name="photoLongitude" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="processedDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="regionCode" optional="YES" attributeType="String"/>
+    </entity>
     <entity name="RecordHistoryEntry" representedClassName="RecordHistoryEntry" syncable="YES" codeGenerationType="class">
         <attribute name="altitude" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
         <attribute name="dateAdded" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
@@ -26,5 +36,11 @@
         <attribute name="timeFrame" optional="YES" attributeType="String"/>
         <attribute name="timestamp" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="value" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+    </entity>
+    <entity name="VisitedRegion" representedClassName="VisitedRegion" syncable="YES" codeGenerationType="class">
+        <attribute name="regionCode" optional="YES" attributeType="String"/>
+        <attribute name="regionName" optional="YES" attributeType="String"/>
+        <attribute name="regionType" optional="YES" attributeType="String"/>
+        <attribute name="visitDates" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromData"/>
     </entity>
 </model>

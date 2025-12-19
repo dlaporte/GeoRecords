@@ -154,6 +154,7 @@ struct ContentView: View {
             recordHistoryManager: recordHistoryManager,
             persistenceController: persistenceController,
             restoreFromiCloud: restoreFromiCloud,
+            startFresh: startFresh,
             performBackupImport: performBackupImport,
             clearBackupInfo: { backupImportURL = nil; backupInfo = nil },
             checkForCloudRestore: checkForCloudRestore
@@ -171,12 +172,15 @@ struct ContentView: View {
             StatisticsView()
                 .tabItem { Label("Stats", systemImage: "chart.bar.fill") }
                 .tag(2)
+            MapsTabView()
+                .tabItem { Label("Maps", systemImage: "map.fill") }
+                .tag(3)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gear") }
-                .tag(3)
+                .tag(4)
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToiCloudSync)) { _ in
-            selectedTab = 3
+            selectedTab = 4  // Settings tab
             // Post a delayed notification to scroll to iCloud section after tab switch
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 NotificationCenter.default.post(name: .scrollToiCloudSync, object: nil)
@@ -275,8 +279,9 @@ struct ContentView: View {
 
                 await MainActor.run {
                     if hasCloudData {
-                        debugLog("☁️ iCloud data detected (zone exists), prompting user")
-                        setupFlowState = .showingRestoreChoice
+                        debugLog("☁️ iCloud data detected (zone exists), auto-restoring")
+                        // Always restore from iCloud automatically - skip the choice dialog
+                        restoreFromiCloud()
                     } else {
                         debugLog("☁️ No iCloud data found, showing setup wizard")
                         setupFlowState = .showingSetupWizard
@@ -341,6 +346,18 @@ struct ContentView: View {
             // Monitor sync and only load records when sync completes
             await monitorSyncCompletion()
         }
+    }
+
+    /// User chose to start fresh - clear any synced data and show setup wizard
+    private func startFresh() {
+        debugLog("🆕 User chose to start fresh - clearing any synced data")
+
+        // Clear all local data including any that synced from iCloud
+        recordManager.resetRecords()
+        RecordHistoryManager.shared.clearHistory()
+        RegionTrackingManager.shared.loadVisitedRegions()  // Reload empty state
+
+        setupFlowState = .showingSetupWizard
     }
 
     private func monitorSyncCompletion() async {
@@ -474,6 +491,7 @@ private struct ContentViewAlertsModifier: ViewModifier {
     let recordHistoryManager: RecordHistoryManager
     let persistenceController: PersistenceController
     let restoreFromiCloud: () -> Void
+    let startFresh: () -> Void
     let performBackupImport: () -> Void
     let clearBackupInfo: () -> Void
     let checkForCloudRestore: () -> Void
@@ -514,13 +532,13 @@ private struct ContentViewAlertsModifier: ViewModifier {
             }
             .alert("Restore from iCloud?", isPresented: restoreChoiceBinding) {
                 Button("Restore from iCloud") { restoreFromiCloud() }
-                Button("Start Fresh", role: .cancel) { setupFlowState = .showingSetupWizard }
+                Button("Start Fresh", role: .cancel) { startFresh() }
             } message: {
                 Text("We found existing records in your iCloud account. Would you like to restore them, or start fresh on this device?")
             }
             .alert("No iCloud Data Found", isPresented: noCloudDataBinding) {
                 Button("Keep Waiting") { checkForCloudRestore() }  // Uses closure from modifier
-                Button("Start Fresh", role: .cancel) { setupFlowState = .showingSetupWizard }
+                Button("Start Fresh", role: .cancel) { startFresh() }
             } message: {
                 Text("No records found after waiting 60 seconds. iCloud sync may take longer for large datasets.\n\nChoose 'Keep Waiting' to check again, or 'Start Fresh' to set up as a new device.")
             }

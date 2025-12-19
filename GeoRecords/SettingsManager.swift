@@ -109,12 +109,19 @@ class SettingsManager: ObservableObject, SettingsManaging {
         let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? UserDefaults.standard
         let ubiquitousStore = NSUbiquitousKeyValueStore.default
 
+        // Pull latest values from iCloud before loading
+        ubiquitousStore.synchronize()
+        debugLog("☁️ SettingsManager init - synced iCloud Key-Value Store")
+
         // Helper to load setting with iCloud priority
         func loadBool(key: UserDefaultsKey, defaultValue: Bool) -> Bool {
             if let iCloudValue = ubiquitousStore.object(forKey: key.rawValue) as? Bool {
+                debugLog("☁️ Loaded \(key.rawValue) = \(iCloudValue) from iCloud")
                 return iCloudValue
             }
-            return defaults.object(forKey: key.rawValue) as? Bool ?? defaultValue
+            let localValue = defaults.object(forKey: key.rawValue) as? Bool ?? defaultValue
+            debugLog("☁️ Loaded \(key.rawValue) = \(localValue) from local/default")
+            return localValue
         }
 
         func loadDouble(key: UserDefaultsKey, defaultValue: Double) -> Double {
@@ -283,9 +290,11 @@ class SettingsManager: ObservableObject, SettingsManaging {
 
         debugLog("☁️ iCloud settings changed (reason: \(changeReason))")
 
-        // Only handle server changes or initial sync
-        guard changeReason == NSUbiquitousKeyValueStoreServerChange ||
-              changeReason == NSUbiquitousKeyValueStoreInitialSyncChange else {
+        // Only handle server changes from OTHER devices
+        // Do NOT handle InitialSyncChange - it can contain stale data that overwrites
+        // settings we just saved (e.g., wizard settings get overwritten by old iCloud data)
+        guard changeReason == NSUbiquitousKeyValueStoreServerChange else {
+            debugLog("☁️ Ignoring iCloud change (not a server change from another device)")
             return
         }
 
@@ -420,30 +429,39 @@ class SettingsManager: ObservableObject, SettingsManaging {
 
         // Sync iCloud Key-Value Store
         ubiquitousStore.synchronize()
-        debugLog("☁️ Settings saved to iCloud")
+        debugLog("☁️ Settings saved to iCloud - alerts: monthly=\(notifyOnMonthlyRecords), yearly=\(notifyOnYearlyRecords), allTime=\(notifyOnAllTimeRecords) | reminders: summary=\(summaryNotificationsEnabled), photo=\(photoPromptsEnabled), inactivity=\(inactivityReminderEnabled)")
     }
     
     func resetToDefaults() {
+        // Reset setup state so wizard shows again
+        hasCompletedSetup = false
+
+        // Reset notification settings
         notifyOnMonthlyRecords = Self.defaultNotifyOnMonthlyRecords
         notifyOnYearlyRecords = Self.defaultNotifyOnYearlyRecords
         notifyOnAllTimeRecords = Self.defaultNotifyOnAllTimeRecords
         summaryNotificationsEnabled = Self.defaultSummaryNotificationsEnabled
+        photoPromptsEnabled = Self.defaultPhotoPromptsEnabled
         inactivityReminderEnabled = Self.defaultInactivityReminderEnabled
         inactivityReminderDays = Self.defaultInactivityReminderDays
+
+        // Reset delta settings
         minLatitudeDelta = Self.defaultMinLatitudeDelta
         minLongitudeDelta = Self.defaultMinLongitudeDelta
-
-        // Reset both Imperial and Metric to their respective defaults
         minAltitudeDeltaMetersImperial = Self.defaultMinAltitudeDeltaMetersImperial
         minDistanceDeltaMetersImperial = Self.defaultMinDistanceDeltaMetersImperial
         minAltitudeDeltaMetersMetric = Self.defaultMinAltitudeDeltaMetersMetric
         minDistanceDeltaMetersMetric = Self.defaultMinDistanceDeltaMetersMetric
 
+        // Reset home location
         homeAddress = Self.defaultHomeAddress
         homeCoordinate = Self.defaultHomeCoordinate
+        homeLocationName = nil
+
         // Don't reset unitSystem - keep the current selection
 
         saveSettings()
+        debugLog("⚙️ Settings reset to defaults")
     }
 
     /// Reset only delta values to defaults (used from Settings > Minimum Deltas)

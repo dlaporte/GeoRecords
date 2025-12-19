@@ -25,19 +25,25 @@ struct ImportWizardView: View {
                         YearlyStepView(scanner: scanner)
                     case .monthly:
                         MonthlyStepView(scanner: scanner)
-                    case .countries:
-                        RegionConfirmationView(
-                            regionType: .country,
-                            regions: $scanner.discoveredCountries,
-                            onNext: goToNextStep,
-                            onBack: goToPreviousStep
-                        )
                     case .states:
                         RegionConfirmationView(
                             regionType: .state,
                             regions: $scanner.discoveredStates,
+                            onNext: goToNextStep,
+                            onBack: goToPreviousStep,
+                            isLastStep: false,
+                            backTitle: "Monthly",
+                            nextTitle: "Countries"
+                        )
+                    case .countries:
+                        RegionConfirmationView(
+                            regionType: .country,
+                            regions: $scanner.discoveredCountries,
                             onNext: { finishWizard() },
-                            onBack: goToPreviousStep
+                            onBack: goToPreviousStep,
+                            isLastStep: true,
+                            backTitle: "States",
+                            nextTitle: ""
                         )
                     }
                 }
@@ -116,6 +122,13 @@ struct AllTimeStepView: View {
         GridItem(.flexible(), spacing: 10)
     ]
 
+    /// Record types that have candidates available
+    private var availableTypes: [String] {
+        RecordType.allCases
+            .map { $0.rawValue }
+            .filter { scanner.allTimeCandidates[$0]?.isEmpty == false }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -132,19 +145,20 @@ struct AllTimeStepView: View {
                     )
                 } else {
                     LazyVGrid(columns: columns, spacing: 10) {
-                        ForEach(RecordType.allCases, id: \.rawValue) { recordType in
-                            if let candidates = scanner.allTimeCandidates[recordType.rawValue],
-                               !candidates.isEmpty {
-                                WizardRecordCard(
-                                    recordType: recordType.rawValue,
-                                    candidates: candidates,
-                                    selectedIndex: scanner.wizardSelections.allTime[recordType.rawValue] ?? 0,
-                                    unitSystem: settings.unitSystem,
-                                    onSelect: { index in
-                                        scanner.updateAllTimeSelection(recordType: recordType.rawValue, index: index)
-                                    }
-                                )
-                            }
+                        ForEach(availableTypes, id: \.self) { recordType in
+                            WizardRecordCard(
+                                recordType: recordType,
+                                candidates: scanner.allTimeCandidates[recordType] ?? [],
+                                selectedIndex: scanner.wizardSelections.allTime[recordType] ?? 0,
+                                unitSystem: settings.unitSystem,
+                                onSelect: { index in
+                                    scanner.updateAllTimeSelection(recordType: recordType, index: index)
+                                },
+                                isNew: !scanner.wizardSelections.recordExists(timeFrame: "allTime", recordType: recordType),
+                                onModified: {
+                                    scanner.wizardSelections.markModified(timeFrame: "allTime", recordType: recordType)
+                                }
+                            )
                         }
                     }
                     .padding(.horizontal)
@@ -206,23 +220,30 @@ struct YearSectionView: View {
     @ObservedObject var scanner: PhotoLibraryScanner
     let unitSystem: UnitSystem
 
+    /// Record types that have candidates available for this year
+    private var availableTypes: [String] {
+        bucket.availableRecordTypes.filter { bucket.records[$0]?.isEmpty == false }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             WizardSectionHeader(title: "\(bucket.id)")
 
             LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(bucket.availableRecordTypes, id: \.self) { recordType in
-                    if let candidates = bucket.records[recordType], !candidates.isEmpty {
-                        WizardRecordCard(
-                            recordType: recordType,
-                            candidates: candidates,
-                            selectedIndex: scanner.wizardSelections.yearly[bucket.id]?[recordType] ?? 0,
-                            unitSystem: unitSystem,
-                            onSelect: { index in
-                                scanner.updateYearlySelection(year: bucket.id, recordType: recordType, index: index)
-                            }
-                        )
-                    }
+                ForEach(availableTypes, id: \.self) { recordType in
+                    WizardRecordCard(
+                        recordType: recordType,
+                        candidates: bucket.records[recordType] ?? [],
+                        selectedIndex: scanner.wizardSelections.yearly[bucket.id]?[recordType] ?? 0,
+                        unitSystem: unitSystem,
+                        onSelect: { index in
+                            scanner.updateYearlySelection(year: bucket.id, recordType: recordType, index: index)
+                        },
+                        isNew: !scanner.wizardSelections.recordExists(timeFrame: "\(bucket.id)", recordType: recordType),
+                        onModified: {
+                            scanner.wizardSelections.markModified(timeFrame: "\(bucket.id)", recordType: recordType)
+                        }
+                    )
                 }
             }
             .padding(.horizontal)
@@ -289,23 +310,30 @@ struct MonthSectionView: View {
         WizardSelection.monthKey(year: bucket.year, month: bucket.id)
     }
 
+    /// Record types that have candidates available for this month
+    private var availableTypes: [String] {
+        bucket.availableRecordTypes.filter { bucket.records[$0]?.isEmpty == false }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             WizardSectionHeader(title: bucket.displayName)
 
             LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(bucket.availableRecordTypes, id: \.self) { recordType in
-                    if let candidates = bucket.records[recordType], !candidates.isEmpty {
-                        WizardRecordCard(
-                            recordType: recordType,
-                            candidates: candidates,
-                            selectedIndex: scanner.wizardSelections.monthly[monthKey]?[recordType] ?? 0,
-                            unitSystem: unitSystem,
-                            onSelect: { index in
-                                scanner.updateMonthlySelection(year: bucket.year, month: bucket.id, recordType: recordType, index: index)
-                            }
-                        )
-                    }
+                ForEach(availableTypes, id: \.self) { recordType in
+                    WizardRecordCard(
+                        recordType: recordType,
+                        candidates: bucket.records[recordType] ?? [],
+                        selectedIndex: scanner.wizardSelections.monthly[monthKey]?[recordType] ?? 0,
+                        unitSystem: unitSystem,
+                        onSelect: { index in
+                            scanner.updateMonthlySelection(year: bucket.year, month: bucket.id, recordType: recordType, index: index)
+                        },
+                        isNew: !scanner.wizardSelections.recordExists(timeFrame: monthKey, recordType: recordType),
+                        onModified: {
+                            scanner.wizardSelections.markModified(timeFrame: monthKey, recordType: recordType)
+                        }
+                    )
                 }
             }
             .padding(.horizontal)

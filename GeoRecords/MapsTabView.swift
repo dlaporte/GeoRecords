@@ -18,12 +18,11 @@ struct MapsTabView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 // Segmented picker
-                Picker("Map Type", selection: $selectedMapType) {
-                    ForEach(MapType.allCases, id: \.self) { type in
-                        Text(type.rawValue).tag(type)
-                    }
-                }
-                .pickerStyle(.segmented)
+                StyledSegmentedPicker(
+                    selection: $selectedMapType,
+                    options: MapType.allCases,
+                    label: { $0.rawValue }
+                )
                 .padding()
 
                 // Map content
@@ -39,7 +38,7 @@ struct MapsTabView: View {
                 }
                 .animation(.easeInOut(duration: 0.2), value: selectedMapType)
             }
-            .navigationTitle("Maps")
+            .navigationTitle("Regions")
         }
     }
 }
@@ -51,15 +50,16 @@ struct StatesMapView: View {
     @StateObject private var regionManager = RegionTrackingManager.shared
 
     /// All 50 states sorted alphabetically with visit info
-    private var allStatesWithVisitInfo: [(state: RegionInfo, visitDate: Date?)] {
-        // Build dictionary, keeping earliest date for duplicates
-        var visitedCodes: [String: Date] = [:]
+    private var allStatesWithVisitInfo: [(state: RegionInfo, visitDate: Date?, isVisited: Bool)] {
+        // Build dictionary of visited codes and their dates
+        var visitedCodes: [String: Date?] = [:]
         for region in regionManager.visitedStates {
-            guard let code = region.regionCode,
-                  let date = region.firstVisitDate else { continue }
-            if let existing = visitedCodes[code] {
-                visitedCodes[code] = min(existing, date)
-            } else {
+            guard let code = region.regionCode else { continue }
+            // Mark as visited even if date is nil
+            let date = region.firstVisitDate
+            if let existingDate = visitedCodes[code] ?? nil, let newDate = date {
+                visitedCodes[code] = min(existingDate, newDate)
+            } else if visitedCodes[code] == nil {
                 visitedCodes[code] = date
             }
         }
@@ -67,22 +67,13 @@ struct StatesMapView: View {
         return RegionLookupService.shared.allUSStates
             .sorted { $0.name < $1.name }
             .map { state in
-                (state: state, visitDate: visitedCodes[state.code])
+                let isVisited = visitedCodes.keys.contains(state.code)
+                return (state: state, visitDate: visitedCodes[state.code] ?? nil, isVisited: isVisited)
             }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Stats header
-            HStack {
-                Image(systemName: "flag.fill")
-                    .foregroundColor(.blue)
-                Text("\(regionManager.stateCount) of 50 states visited")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.vertical, 8)
-
             // Map
             RegionMapView(
                 regionType: .state,
@@ -90,29 +81,35 @@ struct StatesMapView: View {
                 centerCoordinate: CLLocationCoordinate2D(latitude: 39.8283, longitude: -98.5795),
                 span: MKCoordinateSpan(latitudeDelta: 45, longitudeDelta: 60)
             )
-            .frame(height: 280)
+            .frame(maxWidth: .infinity)
+
+            // Stats header
+            HStack {
+                Image(systemName: "flag.fill")
+                    .foregroundColor(.orange)
+                Text("\(regionManager.stateCount) of 50 states visited")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 8)
 
             // List of all states
             List {
                 ForEach(allStatesWithVisitInfo, id: \.state.code) { item in
                     HStack {
+                        Image(systemName: item.isVisited ? "checkmark.circle.fill" : "circle")
+                            .foregroundColor(item.isVisited ? .orange : .secondary.opacity(0.3))
+                            .font(.title3)
+
                         Text(item.state.name)
                             .font(.body)
-                            .foregroundColor(item.visitDate != nil ? .primary : .secondary)
-                        Spacer()
-                        if let visitDate = item.visitDate {
-                            Text(visitDate, style: .date)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text("–")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
+                            .foregroundColor(item.isVisited ? .primary : .secondary)
                     }
+                    .padding(.vertical, 2)
                 }
             }
             .listStyle(.plain)
+            .frame(height: 245)
         }
     }
 }
@@ -150,16 +147,6 @@ struct CountriesMapView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Stats header
-            HStack {
-                Image(systemName: "globe.americas.fill")
-                    .foregroundColor(.blue)
-                Text("\(regionManager.countryCount) of 195 countries visited")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.vertical, 8)
-
             // Map
             RegionMapView(
                 regionType: .country,
@@ -167,7 +154,17 @@ struct CountriesMapView: View {
                 centerCoordinate: CLLocationCoordinate2D(latitude: 20, longitude: 0),
                 span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 180)
             )
-            .frame(height: 280)
+            .frame(maxWidth: .infinity)
+
+            // Stats header
+            HStack {
+                Image(systemName: "globe.americas.fill")
+                    .foregroundColor(.orange)
+                Text("\(regionManager.countryCount) of 195 countries visited")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 8)
 
             // List of visited countries grouped by continent
             if regionManager.visitedCountries.isEmpty {
@@ -182,6 +179,7 @@ struct CountriesMapView: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
+                .frame(height: 245)
             } else {
                 List {
                     ForEach(countriesByContinent, id: \.continent) { group in
@@ -202,6 +200,7 @@ struct CountriesMapView: View {
                     }
                 }
                 .listStyle(.plain)
+                .frame(height: 245)
             }
         }
     }
@@ -236,30 +235,30 @@ struct ContinentsMapView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Stats header
-            HStack {
-                Image(systemName: "globe")
-                    .foregroundColor(.blue)
-                Text("\(visitedContinents.count) of 7 continents visited")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.vertical, 8)
-
             // Map showing visited continents
             ContinentMapView(
                 visitedContinents: visitedContinents,
                 centerCoordinate: CLLocationCoordinate2D(latitude: 20, longitude: 0),
                 span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 180)
             )
-            .frame(height: 280)
+            .frame(maxWidth: .infinity)
+
+            // Stats header
+            HStack {
+                Image(systemName: "globe")
+                    .foregroundColor(.orange)
+                Text("\(visitedContinents.count) of 7 continents visited")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 8)
 
             // List of all continents
             List {
                 ForEach(continentStats, id: \.continent) { stat in
                     HStack {
                         Image(systemName: stat.isVisited ? "checkmark.circle.fill" : "circle")
-                            .foregroundColor(stat.isVisited ? .blue : .secondary.opacity(0.3))
+                            .foregroundColor(stat.isVisited ? .orange : .secondary.opacity(0.3))
                             .font(.title3)
 
                         Text(stat.continent.rawValue)
@@ -270,6 +269,7 @@ struct ContinentsMapView: View {
                 }
             }
             .listStyle(.plain)
+            .frame(height: 245)
         }
     }
 }
@@ -322,8 +322,8 @@ struct ContinentMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let polygon = overlay as? MKPolygon {
                 let renderer = MKPolygonRenderer(polygon: polygon)
-                renderer.fillColor = UIColor.systemBlue.withAlphaComponent(0.3)
-                renderer.strokeColor = UIColor.systemBlue
+                renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
+                renderer.strokeColor = UIColor.systemOrange
                 renderer.lineWidth = 1
                 return renderer
             }
@@ -395,21 +395,58 @@ struct RegionMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let polyline = overlay as? MKPolyline {
-                // US outline - blue stroke to match state overlays
+                // US outline - subtle gray so only visited states stand out in orange
                 let renderer = MKPolylineRenderer(polyline: polyline)
-                renderer.strokeColor = UIColor.systemBlue
-                renderer.lineWidth = 1
+                renderer.strokeColor = UIColor.systemGray3
+                renderer.lineWidth = 0.5
                 return renderer
             }
             if let polygon = overlay as? MKPolygon {
+                // Visited states - orange fill and stroke
                 let renderer = MKPolygonRenderer(polygon: polygon)
-                renderer.fillColor = UIColor.systemBlue.withAlphaComponent(0.3)
-                renderer.strokeColor = UIColor.systemBlue
+                renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
+                renderer.strokeColor = UIColor.systemOrange
                 renderer.lineWidth = 1
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)
         }
+    }
+}
+
+// MARK: - Styled Segmented Picker
+
+/// Generic styled segmented picker that matches the Records page styling
+private struct StyledSegmentedPicker<T: Hashable>: View {
+    @Binding var selection: T
+    let options: [T]
+    let label: (T) -> String
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(options, id: \.self) { option in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selection = option
+                    }
+                } label: {
+                    Text(label(option))
+                        .font(.subheadline)
+                        .fontWeight(selection == option ? .semibold : .regular)
+                        .foregroundColor(selection == option ? .primary : .secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(
+                            selection == option ? Color(UIColor.systemBackground) : Color.clear
+                        )
+                        .cornerRadius(6)
+                        .padding(2)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(Color(UIColor.systemGray5))
+        .cornerRadius(8)
     }
 }
 

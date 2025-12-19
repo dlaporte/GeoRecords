@@ -28,13 +28,7 @@ struct DetailContentView: View {
     }
 
     private var iconColor: Color {
-        guard let recordType = RecordType.from(string: record.recordType) else { return .gray }
-        switch recordType {
-        case .north, .south: return .blue
-        case .east, .west: return .orange
-        case .up: return .green
-        case .fromHome: return .red
-        }
+        FormatUtils.colorForRecordType(record.recordType)
     }
 
     private var timeFrameColor: Color {

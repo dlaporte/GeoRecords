@@ -25,6 +25,15 @@ enum TimeFrame: String, CaseIterable {
         case .allTime: return "All Years"
         }
     }
+
+    /// Sort order for displaying timeframes (Monthly first, then Yearly, then All Time)
+    var sortOrder: Int {
+        switch self {
+        case .month: return 0
+        case .year: return 1
+        case .allTime: return 2
+        }
+    }
 }
 
 /// Record type enum for type safety and comparison logic
@@ -116,11 +125,6 @@ enum UserDefaultsKey: String {
     case notifyOnAllTimeRecords
     case summaryNotificationsEnabled
     case photoPromptsEnabled
-
-    // Smart notifications
-    case smartNotificationsEnabled
-    case lastInactivityNotification
-    case lastFunFactNotification
 
     // Inactivity reminder
     case inactivityReminderEnabled

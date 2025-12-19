@@ -205,10 +205,10 @@ class PersistenceController: ObservableObject {
         }
     }
 
-    /// Quick check if CloudKit has any data for this app (checks zone existence, not record download)
-    /// This is fast (~2 seconds) and doesn't wait for full sync
+    /// Check if CloudKit has any actual records for this app
+    /// This queries the CloudKit zone directly to verify records exist, not just that the zone exists
     func hasExistingCloudDataThrowing() async throws -> Bool {
-        debugLog("☁️ Quick check for iCloud data (checking zone existence)...")
+        debugLog("☁️ Checking for iCloud data (querying for actual records)...")
 
         // Check iCloud account status first
         let accountStatus = await checkCloudKitAccountStatus()
@@ -219,31 +219,71 @@ class PersistenceController: ObservableObject {
             return false
         }
 
-        // Quick check: Does the Core Data CloudKit zone exist?
-        // If yes, user has synced data before - prompt to restore
         let ckContainer = CKContainer(identifier: "iCloud.com.georecords")
         let database = ckContainer.privateCloudDatabase
 
+        // First check if the Core Data zone exists
+        let allZones: [CKRecordZone]
         do {
-            let allZones = try await database.allRecordZones()
-            let hasDataZone = allZones.contains { $0.zoneID.zoneName == "com.apple.coredata.cloudkit.zone" }
-
-            if hasDataZone {
-                debugLog("☁️ CloudKit zone exists - user has iCloud data!")
-                return true
-            } else {
-                debugLog("☁️ No CloudKit zone found - this is a new user")
-                return false
-            }
+            allZones = try await database.allRecordZones()
         } catch {
-            debugLog("☁️ Error checking CloudKit zones: \(error.localizedDescription)")
-            // On error, also check if we have local data (might have synced already)
-            let context = container.viewContext
-            let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-            request.fetchLimit = 1
-            let count = try await context.perform { try context.count(for: request) }
-            return count > 0
+            debugLog("☁️ Error fetching CloudKit zones: \(error.localizedDescription)")
+            return false
         }
+
+        let dataZone = allZones.first { $0.zoneID.zoneName == "com.apple.coredata.cloudkit.zone" }
+
+        guard let zone = dataZone else {
+            debugLog("☁️ No CloudKit zone found - this is a new user")
+            return false
+        }
+
+        debugLog("☁️ CloudKit zone exists, checking for actual records...")
+        let zoneID = zone.zoneID
+
+        // Check for RecordHistoryEntry records (main app data)
+        do {
+            let recordQuery = CKQuery(recordType: "CD_RecordHistoryEntry", predicate: NSPredicate(value: true))
+            let recordResults = try await database.records(
+                matching: recordQuery,
+                inZoneWith: zoneID,
+                desiredKeys: nil,
+                resultsLimit: 1
+            )
+
+            if !recordResults.matchResults.isEmpty {
+                debugLog("☁️ Found RecordHistoryEntry in CloudKit - user has data to restore!")
+                return true
+            }
+            debugLog("☁️ No RecordHistoryEntry records found in CloudKit")
+        } catch {
+            debugLog("☁️ Error querying RecordHistoryEntry: \(error.localizedDescription)")
+            // Continue to check other record types
+        }
+
+        // Check for VisitedRegion records (visited states/countries)
+        do {
+            let regionQuery = CKQuery(recordType: "CD_VisitedRegion", predicate: NSPredicate(value: true))
+            let regionResults = try await database.records(
+                matching: regionQuery,
+                inZoneWith: zoneID,
+                desiredKeys: nil,
+                resultsLimit: 1
+            )
+
+            if !regionResults.matchResults.isEmpty {
+                debugLog("☁️ Found VisitedRegion in CloudKit - user has data to restore!")
+                return true
+            }
+            debugLog("☁️ No VisitedRegion records found in CloudKit")
+        } catch {
+            debugLog("☁️ Error querying VisitedRegion: \(error.localizedDescription)")
+            // Continue
+        }
+
+        // No meaningful data found in CloudKit
+        debugLog("☁️ CloudKit zone exists but no user data found - treating as new user")
+        return false
     }
 
     /// Check CloudKit account status
@@ -266,6 +306,34 @@ class PersistenceController: ObservableObject {
             }
         } catch {
             return "error: \(error.localizedDescription)"
+        }
+    }
+
+    /// Completely delete the CloudKit zone and all data in iCloud
+    /// This is a destructive operation that removes ALL synced data from iCloud
+    /// - Returns: true if successful, false otherwise
+    func deleteCloudKitZone() async -> Bool {
+        debugLog("☁️ Deleting CloudKit zone...")
+
+        let ckContainer = CKContainer(identifier: "iCloud.com.georecords")
+        let database = ckContainer.privateCloudDatabase
+
+        // The Core Data CloudKit zone ID
+        let zoneID = CKRecordZone.ID(zoneName: "com.apple.coredata.cloudkit.zone", ownerName: CKCurrentUserDefaultName)
+
+        do {
+            // Delete the entire zone - this removes all records in it
+            try await database.deleteRecordZone(withID: zoneID)
+            debugLog("☁️ Successfully deleted CloudKit zone - all iCloud data removed")
+            return true
+        } catch {
+            // CKError.zoneNotFound means it's already gone, which is fine
+            if let ckError = error as? CKError, ckError.code == .zoneNotFound {
+                debugLog("☁️ CloudKit zone not found (already deleted or never created)")
+                return true
+            }
+            debugLog("☁️ Error deleting CloudKit zone: \(error.localizedDescription)")
+            return false
         }
     }
 

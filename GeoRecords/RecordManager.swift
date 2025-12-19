@@ -180,6 +180,31 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         records[type]?[timeFrame] = record
     }
 
+    /// Clear a record by type and timeframe, both in-memory and in Core Data
+    /// - Parameters:
+    ///   - type: The record type (e.g., "Furthest North")
+    ///   - timeFrame: The timeframe (.month, .year, .allTime)
+    ///   - year: The year (required for month/year timeframes)
+    ///   - month: The month (required for month timeframe, 1-12)
+    func clearRecord(type: String, timeFrame: TimeFrame, year: Int? = nil, month: Int? = nil) {
+        // Clear in-memory record
+        setRecord(type: type, timeFrame: timeFrame, record: nil)
+
+        // Delete from Core Data history
+        switch timeFrame {
+        case .allTime:
+            _ = RecordHistoryManager.shared.deleteAllRecords(type: type)
+        case .year:
+            if let year = year {
+                _ = RecordHistoryManager.shared.deleteRecords(type: type, year: year)
+            }
+        case .month:
+            if let year = year, let month = month {
+                _ = RecordHistoryManager.shared.deleteRecords(type: type, year: year, month: month)
+            }
+        }
+    }
+
     /// Conditionally updates a record if the new value is better than the existing one
     /// - Parameters:
     ///   - recordType: The type of record (e.g., "Furthest North")

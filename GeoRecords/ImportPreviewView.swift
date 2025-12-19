@@ -41,6 +41,28 @@ struct ImportPreviewView: View {
                         }
                     }
                     .padding()
+                } else if scanner.isProcessing {
+                    // Post-scan processing
+                    VStack(spacing: 20) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+
+                        Text("Processing Results...")
+                            .font(.headline)
+
+                        VStack(spacing: 8) {
+                            Text("Organizing \(scanner.photosWithLocation) photos into records")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+
+                            if scanner.discoveredCountryCount > 0 || scanner.discoveredStateCount > 0 {
+                                Text("\(scanner.discoveredCountryCount) countries, \(scanner.discoveredStateCount) states found")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding()
                 } else if let errorMessage = scanner.errorMessage {
                     // Error state
                     VStack(spacing: 20) {
@@ -150,13 +172,45 @@ struct ImportPreviewView: View {
                     dismiss()
                 }
             } message: {
-                Text("Imported \(importedCount) records from your photo library!")
+                Text(completionMessage)
             }
+        }
+    }
+
+    /// Build the completion message including records, countries, and states
+    private var completionMessage: String {
+        var parts: [String] = []
+
+        if importedCount > 0 {
+            parts.append("\(importedCount) record\(importedCount == 1 ? "" : "s")")
+        }
+
+        if importedCountryCount > 0 {
+            parts.append("\(importedCountryCount) countr\(importedCountryCount == 1 ? "y" : "ies")")
+        }
+
+        if importedStateCount > 0 {
+            parts.append("\(importedStateCount) state\(importedStateCount == 1 ? "" : "s")")
+        }
+
+        if parts.isEmpty {
+            return "Import complete!"
+        } else if parts.count == 1 {
+            return "Imported \(parts[0]) from your photo library!"
+        } else if parts.count == 2 {
+            return "Imported \(parts[0]) and \(parts[1]) from your photo library!"
+        } else {
+            let lastPart = parts.removeLast()
+            return "Imported \(parts.joined(separator: ", ")), and \(lastPart) from your photo library!"
         }
     }
 
     private func importRecords() {
         isImporting = true
+
+        // Count confirmed regions before import
+        importedCountryCount = scanner.discoveredCountries.filter { $0.confirmed }.count
+        importedStateCount = scanner.discoveredStates.filter { $0.confirmed }.count
 
         Task {
             await scanner.importSelectedRecords { count in

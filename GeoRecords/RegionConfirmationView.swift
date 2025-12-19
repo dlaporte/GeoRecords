@@ -11,7 +11,19 @@ struct RegionConfirmationView: View {
     let onNext: () -> Void
     let onBack: () -> Void
 
+    /// Whether this is the last step (states) - shows "Import Records" instead of "Next"
+    var isLastStep: Bool = false
+    /// Title for the back button
+    var backTitle: String = "Monthly"
+    /// Title for the next button (ignored if isLastStep)
+    var nextTitle: String = "States"
+
     @State private var loadedImages: [String: UIImage] = [:]
+
+    /// Indices of regions sorted alphabetically by name
+    private var sortedRegionIndices: [Int] {
+        regions.indices.sorted { regions[$0].regionName < regions[$1].regionName }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,12 +33,12 @@ struct RegionConfirmationView: View {
             if regions.isEmpty {
                 emptyState
             } else {
-                // Regions list with photo carousels
+                // Regions list with photo carousels (sorted alphabetically)
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach($regions) { $region in
+                        ForEach(sortedRegionIndices, id: \.self) { index in
                             RegionCard(
-                                region: $region,
+                                region: $regions[index],
                                 loadedImages: $loadedImages
                             )
                         }
@@ -93,31 +105,65 @@ struct RegionConfirmationView: View {
     }
 
     private var navigationBar: some View {
-        HStack {
-            Button(action: onBack) {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                    Text("Back")
-                }
-            }
-
-            Spacer()
-
+        VStack(spacing: 8) {
+            // Selection count
             Text("\(regions.filter { $0.confirmed }.count) of \(regions.count) selected")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            Spacer()
+            // Navigation buttons matching WizardNavigationBar style
+            HStack(spacing: 12) {
+                // Back button
+                Button(action: onBack) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.subheadline)
+                        Text("Back: \(backTitle)")
+                            .font(.subheadline)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.gray.opacity(0.15))
+                    .foregroundColor(.primary)
+                    .cornerRadius(10)
+                }
 
-            Button(action: onNext) {
-                HStack(spacing: 4) {
-                    Text("Next")
-                    Image(systemName: "chevron.right")
+                // Next/Finish button
+                if isLastStep {
+                    Button(action: onNext) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.subheadline)
+                            Text("Import Records")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.green)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                    }
+                } else {
+                    Button(action: onNext) {
+                        HStack(spacing: 4) {
+                            Text("Next: \(nextTitle)")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Image(systemName: "chevron.right")
+                                .font(.subheadline)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                    }
                 }
             }
-            .fontWeight(.semibold)
         }
-        .padding()
+        .padding(.horizontal)
+        .padding(.vertical, 12)
         .background(Color(UIColor.systemBackground))
     }
 }
@@ -125,26 +171,32 @@ struct RegionConfirmationView: View {
 // MARK: - Region Card
 
 /// Card for a single region with photo carousel and confirmation toggle
+/// Supports infinite scrolling - loads more photos as user swipes near the end
 struct RegionCard: View {
     @Binding var region: DiscoveredRegion
     @Binding var loadedImages: [String: UIImage]
 
     @State private var currentPhotoIndex: Int = 0
+    @State private var visibleCount: Int
 
-    private let maxPhotosToShow = 10
+    init(region: Binding<DiscoveredRegion>, loadedImages: Binding<[String: UIImage]>) {
+        self._region = region
+        self._loadedImages = loadedImages
+        // Use same batch size as WizardRecordCard for consistency
+        self._visibleCount = State(initialValue: min(wizardMaxCandidatesPerType, region.wrappedValue.photoAssets.count))
+    }
+
+    /// Whether there are more photos available to load
+    private var hasMorePhotos: Bool {
+        region.photoAssets.count > visibleCount
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             // Header with name and toggle
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(region.regionName)
-                        .font(.headline)
-
-                    Text("\(region.photoCount) photo\(region.photoCount == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+                Text(region.regionName)
+                    .font(.headline)
 
                 Spacer()
 
@@ -167,7 +219,7 @@ struct RegionCard: View {
 
     private var photoCarousel: some View {
         TabView(selection: $currentPhotoIndex) {
-            ForEach(Array(region.photoAssets.prefix(maxPhotosToShow).enumerated()), id: \.element.localIdentifier) { index, asset in
+            ForEach(Array(region.photoAssets.prefix(visibleCount).enumerated()), id: \.element.localIdentifier) { index, asset in
                 RegionPhotoThumbnail(
                     asset: asset,
                     loadedImage: loadedImages[asset.localIdentifier],
@@ -183,6 +235,22 @@ struct RegionCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal)
         .padding(.bottom, 12)
+        .onChange(of: currentPhotoIndex) { _, newIndex in
+            // Auto-load more photos when approaching the end (within 2 photos of visible limit)
+            // Same trigger as WizardRecordCard for consistency
+            if hasMorePhotos && newIndex >= visibleCount - 2 {
+                loadMorePhotos()
+            }
+        }
+    }
+
+    /// Load more photos when user swipes near the end
+    private func loadMorePhotos() {
+        // Use same batch size as WizardRecordCard
+        let newCount = min(visibleCount + wizardMaxCandidatesPerType, region.photoAssets.count)
+        if newCount > visibleCount {
+            visibleCount = newCount
+        }
     }
 }
 
@@ -255,6 +323,9 @@ struct RegionPhotoThumbnail: View {
         regionType: .country,
         regions: .constant([]),
         onNext: {},
-        onBack: {}
+        onBack: {},
+        isLastStep: false,
+        backTitle: "Monthly",
+        nextTitle: "States"
     )
 }

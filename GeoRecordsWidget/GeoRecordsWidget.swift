@@ -95,6 +95,14 @@ private func loadWidgetCoreData(completion: @escaping (NSManagedObjectContext?) 
     }
 
     let storeURL = appGroupURL.appendingPathComponent("GeoRecordsModel.sqlite")
+
+    // Check if database file exists - widget can't create it (read-only)
+    guard FileManager.default.fileExists(atPath: storeURL.path) else {
+        print("Widget: Database not created yet - open the main app first")
+        completion(nil)
+        return
+    }
+
     let container = NSPersistentContainer(name: "GeoRecordsModel")
     let storeDescription = NSPersistentStoreDescription(url: storeURL)
 

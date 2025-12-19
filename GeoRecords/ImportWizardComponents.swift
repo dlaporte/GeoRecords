@@ -8,19 +8,35 @@ struct WizardProgressIndicator: View {
     let currentStep: ImportWizardStep
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                WizardStepItem(step: .allTime, currentStep: currentStep)
-                WizardStepConnector(isCompleted: currentStep.rawValue > 0)
-                WizardStepItem(step: .yearly, currentStep: currentStep)
-                WizardStepConnector(isCompleted: currentStep.rawValue > 1)
-                WizardStepItem(step: .monthly, currentStep: currentStep)
-                WizardStepConnector(isCompleted: currentStep.rawValue > 2)
-                WizardStepItem(step: .countries, currentStep: currentStep)
-                WizardStepConnector(isCompleted: currentStep.rawValue > 3)
-                WizardStepItem(step: .states, currentStep: currentStep)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    WizardStepItem(step: .allTime, currentStep: currentStep)
+                        .id(ImportWizardStep.allTime)
+                    WizardStepConnector(isCompleted: currentStep.rawValue > 0)
+                    WizardStepItem(step: .yearly, currentStep: currentStep)
+                        .id(ImportWizardStep.yearly)
+                    WizardStepConnector(isCompleted: currentStep.rawValue > 1)
+                    WizardStepItem(step: .monthly, currentStep: currentStep)
+                        .id(ImportWizardStep.monthly)
+                    WizardStepConnector(isCompleted: currentStep.rawValue > 2)
+                    WizardStepItem(step: .states, currentStep: currentStep)
+                        .id(ImportWizardStep.states)
+                    WizardStepConnector(isCompleted: currentStep.rawValue > 3)
+                    WizardStepItem(step: .countries, currentStep: currentStep)
+                        .id(ImportWizardStep.countries)
+                }
+                .padding(.horizontal, 12)
             }
-            .padding(.horizontal, 12)
+            .onChange(of: currentStep) { _, newStep in
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(newStep, anchor: .center)
+                }
+            }
+            .onAppear {
+                // Center on current step when view appears
+                proxy.scrollTo(currentStep, anchor: .center)
+            }
         }
         .padding(.vertical, 10)
         .background(Color(UIColor.systemBackground))
@@ -181,6 +197,12 @@ struct WizardRecordCard: View {
     let unitSystem: UnitSystem
     let onSelect: (Int) -> Void
 
+    /// Whether this is a new record (no existing record for this timeframe)
+    var isNew: Bool = false
+
+    /// Called when user modifies the selection (swipes to a different photo)
+    var onModified: (() -> Void)? = nil
+
     @State private var internalIndex: Int
     @State private var loadedImages: [String: UIImage] = [:]
     @State private var visibleCount: Int
@@ -228,12 +250,14 @@ struct WizardRecordCard: View {
         logicalIndex == skipIndex
     }
 
-    init(recordType: String, candidates: [DiscoveredRecord], selectedIndex: Int, unitSystem: UnitSystem, onSelect: @escaping (Int) -> Void) {
+    init(recordType: String, candidates: [DiscoveredRecord], selectedIndex: Int, unitSystem: UnitSystem, onSelect: @escaping (Int) -> Void, isNew: Bool = false, onModified: (() -> Void)? = nil) {
         self.recordType = recordType
         self.candidates = candidates
         self.selectedIndex = selectedIndex
         self.unitSystem = unitSystem
         self.onSelect = onSelect
+        self.isNew = isNew
+        self.onModified = onModified
 
         // Determine initial visible count - if selected index is beyond initial batch, expand to include it
         let initialVisible: Int
@@ -329,6 +353,17 @@ struct WizardRecordCard: View {
                         .foregroundColor(isSkipped ? .secondary : .primary)
                         .lineLimit(1)
 
+                    // NEW badge for records that don't exist yet
+                    if isNew {
+                        Text("NEW")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(Color.green)
+                            .cornerRadius(4)
+                    }
+
                     Spacer()
                 }
 
@@ -412,6 +447,9 @@ struct WizardRecordCard: View {
 
         // Notify selection change with logical index
         onSelect(logicalIndex)
+
+        // Notify that user modified the selection (for tracking changes from default)
+        onModified?()
     }
 
     /// Auto-load more photos when user swipes near the end

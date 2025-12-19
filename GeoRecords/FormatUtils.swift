@@ -174,9 +174,9 @@ enum FormatUtils {
         case .fromHome:
             // Value is stored in meters (consistent with altitude)
             if unitSystem == .imperial {
-                return formatMiles(value / metersPerMile, decimals: 2)
+                return formatMiles(value / metersPerMile, decimals: 0)
             } else {
-                return formatKilometers(value / metersPerKm, decimals: 2)
+                return formatKilometers(value / metersPerKm, decimals: 0)
             }
         }
     }
@@ -201,10 +201,10 @@ enum FormatUtils {
         let distanceMeters = distanceBetween(from: coordinate, to: homeCoord)
 
         if unitSystem == .imperial {
-            return formatMiles(distanceMeters / metersPerMile, decimals: 2)
+            return formatMiles(distanceMeters / metersPerMile, decimals: 0)
         } else {
             if distanceMeters >= metersPerKm {
-                return formatKilometers(distanceMeters / metersPerKm, decimals: 2)
+                return formatKilometers(distanceMeters / metersPerKm, decimals: 0)
             } else {
                 return formatMeters(distanceMeters)
             }
@@ -244,9 +244,9 @@ enum FormatUtils {
             let distance = distanceBetween(from: coordinate, to: homeCoord)
 
             if unitSystem == .imperial {
-                return formatMiles(distance / metersPerMile, decimals: 2)
+                return formatMiles(distance / metersPerMile, decimals: 0)
             } else {
-                return formatKilometers(distance / metersPerKm, decimals: 2)
+                return formatKilometers(distance / metersPerKm, decimals: 0)
             }
         }
     }
@@ -284,9 +284,9 @@ enum FormatUtils {
         case .fromHome:
             // Value is stored in meters
             if unitSystem == .imperial {
-                return formatMiles(value / metersPerMile, decimals: 2)
+                return formatMiles(value / metersPerMile, decimals: 0)
             } else {
-                return formatKilometers(value / metersPerKm, decimals: 2)
+                return formatKilometers(value / metersPerKm, decimals: 0)
             }
         }
     }
@@ -327,5 +327,38 @@ enum FormatUtils {
         }
 
         return components.isEmpty ? "Unknown Location" : components.joined(separator: ", ")
+    }
+}
+
+// MARK: - Photo Library Utilities
+
+import Photos
+
+/// Shared utility for getting cloud identifiers from photo assets
+/// Consolidates duplicate implementations from PhotoLibraryScanner, RegionTrackingManager, ManualRecordImportView
+extension PHPhotoLibrary {
+    /// Get the cloud identifier for a photo asset (for cross-device photo matching via iCloud Photo Library)
+    /// - Parameter asset: The PHAsset to get the cloud identifier for
+    /// - Returns: The cloud identifier string, or nil if not available
+    static func cloudIdentifier(for asset: PHAsset) -> String? {
+        cloudIdentifier(forLocalIdentifier: asset.localIdentifier)
+    }
+
+    /// Get the cloud identifier for a local identifier string
+    /// - Parameter localIdentifier: The local identifier of the asset
+    /// - Returns: The cloud identifier string, or nil if not available
+    static func cloudIdentifier(forLocalIdentifier localIdentifier: String) -> String? {
+        let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: [localIdentifier])
+
+        guard let mapping = mappings[localIdentifier] else {
+            return nil
+        }
+
+        switch mapping {
+        case .success(let cloudId):
+            return cloudId.stringValue
+        case .failure:
+            return nil
+        }
     }
 }

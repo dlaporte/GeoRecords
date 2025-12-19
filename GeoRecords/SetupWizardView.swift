@@ -203,6 +203,7 @@ struct SetupWizardView: View {
             ImportPreviewView()
                 .environmentObject(photoScanner)
                 .environmentObject(settings)
+                .interactiveDismissDisabled()  // Prevent accidental dismissal
         }
     }
 

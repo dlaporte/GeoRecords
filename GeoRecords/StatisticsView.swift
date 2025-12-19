@@ -87,13 +87,8 @@ struct StatisticsView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     // Time Frame Picker
-                    Picker("Time Frame", selection: $selectedTimeFrame) {
-                        Text("Month").tag(TimeFrame.month)
-                        Text("Year").tag(TimeFrame.year)
-                        Text("All Years").tag(TimeFrame.allTime)
-                    }
-                    .pickerStyle(SegmentedPickerStyle())
-                    .padding(.horizontal)
+                    StyledTimeFramePicker(selection: $selectedTimeFrame)
+                        .padding(.horizontal)
 
                     if isLoading {
                         ProgressView("Loading statistics...")
@@ -1478,6 +1473,48 @@ struct HomeNotSetCard: View {
                 .fill(Color(UIColor.secondarySystemBackground))
         )
         .padding(.horizontal)
+    }
+}
+
+// MARK: - Styled TimeFrame Picker
+
+/// Styled segmented picker for TimeFrame that matches the Records page styling
+private struct StyledTimeFramePicker: View {
+    @Binding var selection: TimeFrame
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach([TimeFrame.allTime, .year, .month], id: \.self) { timeFrame in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selection = timeFrame
+                    }
+                } label: {
+                    Text(label(for: timeFrame))
+                        .font(.subheadline)
+                        .fontWeight(selection == timeFrame ? .semibold : .regular)
+                        .foregroundColor(selection == timeFrame ? .primary : .secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(
+                            selection == timeFrame ? Color(UIColor.systemBackground) : Color.clear
+                        )
+                        .cornerRadius(6)
+                        .padding(2)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(Color(UIColor.systemGray5))
+        .cornerRadius(8)
+    }
+
+    private func label(for timeFrame: TimeFrame) -> String {
+        switch timeFrame {
+        case .allTime: return "All Years"
+        case .year: return "This Year"
+        case .month: return "This Month"
+        }
     }
 }
 

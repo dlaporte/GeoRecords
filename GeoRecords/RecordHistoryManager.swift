@@ -452,24 +452,41 @@ class RecordHistoryManager: ObservableObject {
     /// Clear all records from history (both locally and iCloud)
     /// Uses individual deletes instead of batch delete to ensure proper CloudKit sync
     func clearHistory() {
-        let fetchRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-
         do {
-            let allRecords = try context.fetch(fetchRequest)
+            // Delete RecordHistoryEntry records
+            let recordRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+            let allRecords = try context.fetch(recordRequest)
             let recordCount = allRecords.count
-
-            // Delete each record individually to ensure CloudKit tracks the deletions
             for record in allRecords {
                 context.delete(record)
             }
 
-            try context.save()
-            debugLog("✅ Deleted \(recordCount) records (will sync deletion to iCloud)")
+            // Delete VisitedRegion records
+            let regionRequest: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
+            let allRegions = try context.fetch(regionRequest)
+            let regionCount = allRegions.count
+            for region in allRegions {
+                context.delete(region)
+            }
 
-            // Also reset in-memory records so that Records screen updates.
+            // Delete PhotoRegionCache records
+            let cacheRequest: NSFetchRequest<PhotoRegionCache> = PhotoRegionCache.fetchRequest()
+            let allCache = try context.fetch(cacheRequest)
+            let cacheCount = allCache.count
+            for cache in allCache {
+                context.delete(cache)
+            }
+
+            try context.save()
+            debugLog("✅ Deleted \(recordCount) records, \(regionCount) visited regions, \(cacheCount) cache entries (will sync to iCloud)")
+
+            // Reset in-memory records
             RecordManager.shared.resetRecords()
 
-            // Clear daily statistics as well
+            // Reload visited regions (now empty)
+            RegionTrackingManager.shared.loadVisitedRegions()
+
+            // Clear daily statistics
             DailyStatisticManager.shared.clearAllStatistics()
 
             // Clear cached thumbnails
@@ -610,6 +627,264 @@ class RecordHistoryManager: ObservableObject {
             return duplicatesRemoved
         } catch {
             debugLog("❌ Error removing duplicates: \(error.localizedDescription)")
+            return 0
+        }
+    }
+
+    /// Delete all records that are within the home radius
+    /// These are typically test/bogus data from when the user was at home
+    /// - Returns: Number of records deleted
+    @discardableResult
+    func deleteRecordsAtHome() -> Int {
+        guard let homeCoord = SettingsManager.shared.homeCoordinate else {
+            debugLog("🏠 No home location set, skipping at-home record cleanup")
+            return 0
+        }
+
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        do {
+            let allRecords = try context.fetch(request)
+            let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
+            var recordsDeleted = 0
+
+            for record in allRecords {
+                let recordLocation = CLLocation(latitude: record.latitude, longitude: record.longitude)
+                let distance = recordLocation.distance(from: homeLocation)
+
+                if distance <= atHomeRadiusMeters {
+                    debugLog("🏠 Deleting record at home: \(record.recordType ?? "unknown") (\(record.timeFrame ?? "unknown")) - \(Int(distance))m from home")
+                    context.delete(record)
+                    recordsDeleted += 1
+                }
+            }
+
+            if recordsDeleted > 0 {
+                try context.save()
+                debugLog("🏠 Deleted \(recordsDeleted) record(s) within \(Int(atHomeRadiusMeters))m of home")
+
+                // Reload in-memory records to reflect changes
+                RecordManager.shared.loadRecordsFromHistory()
+            } else {
+                debugLog("🏠 No records at home to delete")
+            }
+
+            return recordsDeleted
+        } catch {
+            debugLog("❌ Error deleting records at home: \(error.localizedDescription)")
+            return 0
+        }
+    }
+
+    /// Perform all data cleanup operations
+    /// Call this at startup and after imports to ensure data consistency
+    /// - Returns: Total number of records cleaned up
+    @discardableResult
+    func performDataCleanup() -> Int {
+        debugLog("🧹 Starting data cleanup...")
+
+        var totalCleaned = 0
+
+        // 1. Remove exact duplicates
+        let duplicatesRemoved = removeDuplicates()
+        totalCleaned += duplicatesRemoved
+
+        // 2. Delete records at home (bogus/test data)
+        let atHomeDeleted = deleteRecordsAtHome()
+        totalCleaned += atHomeDeleted
+
+        // Note: consolidateRecords() is NOT called automatically
+        // It should only be run on explicit user request since it removes history
+
+        if totalCleaned > 0 {
+            debugLog("🧹 Data cleanup complete: \(totalCleaned) total record(s) cleaned")
+        } else {
+            debugLog("🧹 Data cleanup complete: no issues found")
+        }
+
+        return totalCleaned
+    }
+
+    // MARK: - Historical Record Lookup
+
+    /// Get the best (most extreme) record for a given type and year
+    /// Used for checking if a historical yearly record exists
+    func getBestRecord(type: String, year: Int) -> RecordDetail? {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        let calendar = Calendar.current
+        var components = DateComponents()
+        components.year = year
+        components.month = 1
+        components.day = 1
+
+        guard let yearStart = calendar.date(from: components),
+              let yearEnd = calendar.date(byAdding: .year, value: 1, to: yearStart) else {
+            return nil
+        }
+
+        request.predicate = NSPredicate(
+            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+            type,
+            yearStart as NSDate,
+            yearEnd as NSDate
+        )
+
+        // Sort by extremeness based on record type
+        let ascending = type == RecordType.south.rawValue || type == RecordType.west.rawValue
+        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
+        request.fetchLimit = 1
+
+        do {
+            let results = try context.fetch(request)
+            if let entry = results.first {
+                return RecordDetail(
+                    value: entry.value,
+                    timestamp: entry.timestamp ?? Date(),
+                    coordinate: CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude),
+                    altitude: entry.altitude,
+                    locationName: entry.locationName,
+                    recordType: entry.recordType ?? "",
+                    timeFrame: TimeFrame(rawValue: entry.timeFrame ?? "") ?? .allTime,
+                    photoAssetIdentifier: entry.photoAssetIdentifier,
+                    photoCloudIdentifier: entry.photoCloudIdentifier
+                )
+            }
+        } catch {
+            debugLog("❌ Error fetching best record for \(type) in \(year): \(error.localizedDescription)")
+        }
+
+        return nil
+    }
+
+    /// Get the best (most extreme) record for a given type, year, and month
+    /// Used for checking if a historical monthly record exists
+    func getBestRecord(type: String, year: Int, month: Int) -> RecordDetail? {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        let calendar = Calendar.current
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = 1
+
+        guard let monthStart = calendar.date(from: components),
+              let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart) else {
+            return nil
+        }
+
+        request.predicate = NSPredicate(
+            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+            type,
+            monthStart as NSDate,
+            monthEnd as NSDate
+        )
+
+        // Sort by extremeness based on record type
+        let ascending = type == RecordType.south.rawValue || type == RecordType.west.rawValue
+        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
+        request.fetchLimit = 1
+
+        do {
+            let results = try context.fetch(request)
+            if let entry = results.first {
+                return RecordDetail(
+                    value: entry.value,
+                    timestamp: entry.timestamp ?? Date(),
+                    coordinate: CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude),
+                    altitude: entry.altitude,
+                    locationName: entry.locationName,
+                    recordType: entry.recordType ?? "",
+                    timeFrame: TimeFrame(rawValue: entry.timeFrame ?? "") ?? .month,
+                    photoAssetIdentifier: entry.photoAssetIdentifier,
+                    photoCloudIdentifier: entry.photoCloudIdentifier
+                )
+            }
+        } catch {
+            debugLog("❌ Error fetching best record for \(type) in \(year)-\(month): \(error.localizedDescription)")
+        }
+
+        return nil
+    }
+
+    /// Delete records for a specific type and time period
+    /// Used when user skips an existing record (to clear it)
+    @discardableResult
+    func deleteRecords(type: String, year: Int, month: Int? = nil) -> Int {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        let calendar = Calendar.current
+        var components = DateComponents()
+        components.year = year
+
+        let startDate: Date
+        let endDate: Date
+
+        if let month = month {
+            components.month = month
+            components.day = 1
+            guard let monthStart = calendar.date(from: components),
+                  let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart) else {
+                return 0
+            }
+            startDate = monthStart
+            endDate = monthEnd
+        } else {
+            components.month = 1
+            components.day = 1
+            guard let yearStart = calendar.date(from: components),
+                  let yearEnd = calendar.date(byAdding: .year, value: 1, to: yearStart) else {
+                return 0
+            }
+            startDate = yearStart
+            endDate = yearEnd
+        }
+
+        request.predicate = NSPredicate(
+            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+            type,
+            startDate as NSDate,
+            endDate as NSDate
+        )
+
+        do {
+            let results = try context.fetch(request)
+            let count = results.count
+            for record in results {
+                context.delete(record)
+            }
+            if count > 0 {
+                try context.save()
+                debugLog("🗑️ Deleted \(count) record(s) for \(type) in \(year)\(month != nil ? "-\(month!)" : "")")
+            }
+            return count
+        } catch {
+            debugLog("❌ Error deleting records: \(error.localizedDescription)")
+            return 0
+        }
+    }
+
+    /// Delete all records of a specific type (for clearing all-time records)
+    /// - Parameter type: The record type (e.g., "Furthest North")
+    /// - Returns: The number of records deleted
+    @discardableResult
+    func deleteAllRecords(type: String) -> Int {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "recordType == %@", type)
+
+        do {
+            let results = try context.fetch(request)
+            let count = results.count
+            for record in results {
+                context.delete(record)
+            }
+            if count > 0 {
+                try context.save()
+                debugLog("🗑️ Deleted all \(count) record(s) for \(type)")
+            }
+            return count
+        } catch {
+            debugLog("❌ Error deleting all records: \(error.localizedDescription)")
             return 0
         }
     }

@@ -75,11 +75,11 @@ struct GeoRecords: App {
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)  // Wait 2 seconds after launch
 
-            // Remove any duplicate records
+            // Perform data cleanup (duplicates, at-home records, etc.)
             await MainActor.run {
-                let removed = RecordHistoryManager.shared.removeDuplicates()
-                if removed > 0 {
-                    debugLog("🧹 Startup cleanup: removed \(removed) duplicate records")
+                let cleaned = RecordHistoryManager.shared.performDataCleanup()
+                if cleaned > 0 {
+                    debugLog("🧹 Startup cleanup: cleaned \(cleaned) record(s)")
                 }
             }
 

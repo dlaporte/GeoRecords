@@ -107,7 +107,7 @@ class RegionTrackingManager: ObservableObject {
     /// Uses 3-tier fallback matching: cloud ID → local ID → timestamp+location
     func isPhotoProcessed(asset: PHAsset) -> String? {
         // Get cloud identifier if available
-        let cloudId = getCloudIdentifier(for: asset)
+        let cloudId = PHPhotoLibrary.cloudIdentifier(for: asset)
 
         // 1. Try cloud identifier match
         if let cloudId = cloudId {
@@ -163,7 +163,7 @@ class RegionTrackingManager: ObservableObject {
         let cache = PhotoRegionCache(context: context)
         cache.id = UUID()
         cache.photoLocalIdentifier = asset.localIdentifier
-        cache.photoCloudIdentifier = getCloudIdentifier(for: asset)
+        cache.photoCloudIdentifier = PHPhotoLibrary.cloudIdentifier(for: asset)
         cache.photoDate = asset.creationDate ?? Date()
         cache.photoLatitude = asset.location?.coordinate.latitude ?? 0
         cache.photoLongitude = asset.location?.coordinate.longitude ?? 0
@@ -407,21 +407,6 @@ class RegionTrackingManager: ObservableObject {
             try context.save()
         } catch {
             debugLog("⚠️ RegionTrackingManager: Failed to save context: \(error.localizedDescription)")
-        }
-    }
-
-    private func getCloudIdentifier(for asset: PHAsset) -> String? {
-        let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: [asset.localIdentifier])
-
-        guard let mapping = mappings[asset.localIdentifier] else {
-            return nil
-        }
-
-        switch mapping {
-        case .success(let cloudId):
-            return cloudId.stringValue
-        case .failure:
-            return nil
         }
     }
 

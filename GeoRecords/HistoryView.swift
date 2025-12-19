@@ -137,16 +137,8 @@ struct CompactHistoryRow: View {
     }
 
     private var iconColor: Color {
-        guard let type = entry.recordType,
-              let recordType = RecordType.from(string: type) else { return .gray }
-        switch recordType {
-        case .north: return .blue
-        case .south: return .blue
-        case .east: return .orange
-        case .west: return .orange
-        case .up: return .green
-        case .fromHome: return .red
-        }
+        guard let type = entry.recordType else { return .gray }
+        return FormatUtils.colorForRecordType(type)
     }
 
     private var timeFrameColor: Color {

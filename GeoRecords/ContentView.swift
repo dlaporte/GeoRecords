@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreData
 import CoreLocation
 import Photos
 
@@ -95,15 +96,19 @@ struct ContentView: View {
     @EnvironmentObject var persistenceController: PersistenceController
     @EnvironmentObject var settings: SettingsManager
     @ObservedObject var locationManager = LocationManager.shared
+    @StateObject private var photoScanner = PhotoLibraryScanner()
     @State private var selectedTab = 0
     @State private var setupFlowState: SetupFlowState = .none
+    @State private var showPhotoImportWizard = false
+    @State private var showNoRecordsView = false
 
     // Backup import state
     @State private var showBackupImportConfirm = false
     @State private var backupImportURL: URL?
-    @State private var backupInfo: (recordCount: Int, exportDate: Date, deviceName: String)?
+    @State private var backupInfo: (recordCount: Int, regionCount: Int, exportDate: Date, deviceName: String)?
     @State private var showBackupImportResult = false
     @State private var backupImportResultMessage = ""
+    @State private var isImportingBackup = false  // Prevents photo wizard from showing during import
 
     var body: some View {
         ZStack {
@@ -145,6 +150,28 @@ struct ContentView: View {
         .sheet(isPresented: $recordManager.showPhotoPrompt) {
             photoPromptSheet
         }
+        .sheet(isPresented: $showPhotoImportWizard) {
+            ImportPreviewView()
+                .environmentObject(photoScanner)
+                .environmentObject(settings)
+                .interactiveDismissDisabled()
+                .onAppear {
+                    // Start scan if not already scanning
+                    if !photoScanner.isScanning && !photoScanner.hasWizardRecords {
+                        Task {
+                            await photoScanner.scanPhotoLibrary(homeCoordinate: settings.homeCoordinate)
+                        }
+                    }
+                }
+        }
+        .sheet(isPresented: $showNoRecordsView) {
+            NoRecordsView(onScanPhotos: {
+                // Small delay to let the NoRecordsView dismiss first
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    showPhotoImportWizard = true
+                }
+            })
+        }
         .modifier(ContentViewAlertsModifier(
             setupFlowState: $setupFlowState,
             showBackupImportConfirm: $showBackupImportConfirm,
@@ -166,14 +193,14 @@ struct ContentView: View {
             RecordsView()
                 .tabItem { Label("Records", systemImage: "doc.text") }
                 .tag(0)
-            HistoryView()
-                .tabItem { Label("History", systemImage: "clock") }
+            MapsTabView()
+                .tabItem { Label("Regions", systemImage: "map.fill") }
                 .tag(1)
             StatisticsView()
                 .tabItem { Label("Stats", systemImage: "chart.bar.fill") }
                 .tag(2)
-            MapsTabView()
-                .tabItem { Label("Maps", systemImage: "map.fill") }
+            HistoryView()
+                .tabItem { Label("History", systemImage: "clock") }
                 .tag(3)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gear") }
@@ -260,11 +287,75 @@ struct ContentView: View {
     private func handleOnAppear() {
         if !settings.hasCompletedSetup && setupFlowState == .none {
             checkForCloudRestore()
+        } else if settings.hasCompletedSetup && setupFlowState == .none {
+            // Setup was marked complete, but check if there's actually any data
+            // This handles the case where user deleted all data but hasCompletedSetup was synced from iCloud
+            checkIfDataExistsOrShowWizard()
         }
         if PersistenceController.shared.loadError != nil {
             setupFlowState = .databaseError
         }
         locationManager.updateHealthStatus()
+    }
+
+    /// Check if local data exists - if not, check iCloud and show photo import if no data anywhere
+    private func checkIfDataExistsOrShowWizard() {
+        // Skip this check if we're in the middle of a backup import
+        guard !isImportingBackup else {
+            debugLog("⏭️ Skipping data check - backup import in progress")
+            return
+        }
+
+        let context = PersistenceController.shared.container.viewContext
+
+        // Check for RecordHistoryEntry
+        let recordRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        recordRequest.fetchLimit = 1
+        let recordCount = (try? context.count(for: recordRequest)) ?? 0
+
+        // Check for VisitedRegion
+        let regionRequest: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
+        regionRequest.fetchLimit = 1
+        let regionCount = (try? context.count(for: regionRequest)) ?? 0
+
+        if recordCount == 0 && regionCount == 0 {
+            debugLog("⚠️ hasCompletedSetup is true but no local data found - checking iCloud...")
+            // Check iCloud for data - if found, restore; if not, show photo import
+            checkForCloudRestoreOrShowPhotoImport()
+        } else {
+            debugLog("✅ Local data exists: \(recordCount) records, \(regionCount) regions")
+        }
+    }
+
+    /// Check iCloud for data - restore if found, show no records view if not
+    private func checkForCloudRestoreOrShowPhotoImport() {
+        setupFlowState = .checkingCloud
+
+        Task {
+            debugLog("☁️ Checking iCloud for existing data...")
+
+            do {
+                let hasCloudData = try await persistenceController.hasExistingCloudDataThrowing()
+
+                await MainActor.run {
+                    setupFlowState = .none
+                    if hasCloudData {
+                        debugLog("☁️ iCloud records found, auto-restoring")
+                        restoreFromiCloud()
+                    } else {
+                        debugLog("☁️ No iCloud records found, showing no records view")
+                        showNoRecordsView = true
+                    }
+                }
+            } catch {
+                debugLog("☁️ Error checking iCloud data: \(error.localizedDescription)")
+                await MainActor.run {
+                    setupFlowState = .none
+                    // On error, show no records view as fallback
+                    showNoRecordsView = true
+                }
+            }
+        }
     }
 
     private func checkForCloudRestore() {
@@ -279,11 +370,11 @@ struct ContentView: View {
 
                 await MainActor.run {
                     if hasCloudData {
-                        debugLog("☁️ iCloud data detected (zone exists), auto-restoring")
+                        debugLog("☁️ iCloud records found, auto-restoring")
                         // Always restore from iCloud automatically - skip the choice dialog
                         restoreFromiCloud()
                     } else {
-                        debugLog("☁️ No iCloud data found, showing setup wizard")
+                        debugLog("☁️ No iCloud records found, showing setup wizard")
                         setupFlowState = .showingSetupWizard
                     }
                 }
@@ -308,16 +399,9 @@ struct ContentView: View {
         let cleared = RecordHistoryManager.shared.clearLocalOnly()
         debugLog("☁️ Local database cleared: \(cleared)")
 
-        // Set reasonable defaults for settings (user can customize later)
-        // Keep notifications disabled by default to respect privacy
-        settings.notifyOnMonthlyRecords = false
-        settings.notifyOnYearlyRecords = false
-        settings.notifyOnAllTimeRecords = false
-        settings.summaryNotificationsEnabled = false
-        settings.photoPromptsEnabled = false
-
-        // Don't set home location - let it sync from iCloud
-        // (Home location is already synced via NSUbiquitousKeyValueStore)
+        // NOTE: Settings (alerts, reminders, home location) are already synced via iCloud Key-Value Store
+        // and were loaded correctly in SettingsManager.init(). Do NOT reset them here, as that would
+        // overwrite the user's actual settings that synced from iCloud.
 
         // Mark setup as complete
         settings.hasCompletedSetup = true
@@ -457,16 +541,28 @@ struct ContentView: View {
     private func performBackupImport() {
         guard let url = backupImportURL else { return }
 
+        isImportingBackup = true
+
         Task {
-            if let count = await BackupManager.shared.importBackup(from: url) {
+            if let result = await BackupManager.shared.importBackup(from: url) {
                 await MainActor.run {
-                    backupImportResultMessage = "Successfully imported \(count) records from backup."
+                    isImportingBackup = false
+                    var parts: [String] = []
+                    if result.records > 0 {
+                        parts.append("\(result.records) record\(result.records == 1 ? "" : "s")")
+                    }
+                    if result.regions > 0 {
+                        parts.append("\(result.regions) visited region\(result.regions == 1 ? "" : "s")")
+                    }
+                    let summary = parts.isEmpty ? "backup data" : parts.joined(separator: " and ")
+                    backupImportResultMessage = "Successfully imported \(summary) from backup."
                     showBackupImportResult = true
                     backupImportURL = nil
                     backupInfo = nil
                 }
             } else {
                 await MainActor.run {
+                    isImportingBackup = false
                     backupImportResultMessage = "Failed to import backup. The file may be corrupted or incompatible."
                     showBackupImportResult = true
                     backupImportURL = nil
@@ -487,7 +583,7 @@ private struct ContentViewAlertsModifier: ViewModifier {
     @Binding var showBackupImportConfirm: Bool
     @Binding var showBackupImportResult: Bool
     let backupImportResultMessage: String
-    let backupInfo: (recordCount: Int, exportDate: Date, deviceName: String)?
+    let backupInfo: (recordCount: Int, regionCount: Int, exportDate: Date, deviceName: String)?
     let recordHistoryManager: RecordHistoryManager
     let persistenceController: PersistenceController
     let restoreFromiCloud: () -> Void
@@ -582,9 +678,19 @@ private struct ContentViewAlertsModifier: ViewModifier {
             dateFormatter.dateStyle = .medium
             dateFormatter.timeStyle = .short
             let dateString = dateFormatter.string(from: info.exportDate)
-            return "This backup contains \(info.recordCount) records from \(info.deviceName), exported on \(dateString).\n\nExisting records will be preserved. Duplicate records will be skipped."
+
+            var contents: [String] = []
+            if info.recordCount > 0 {
+                contents.append("\(info.recordCount) record\(info.recordCount == 1 ? "" : "s")")
+            }
+            if info.regionCount > 0 {
+                contents.append("\(info.regionCount) visited region\(info.regionCount == 1 ? "" : "s")")
+            }
+
+            let contentsString = contents.isEmpty ? "no data" : contents.joined(separator: " and ")
+            return "This backup contains \(contentsString) from \(info.deviceName), exported on \(dateString).\n\nThis will replace all existing records and settings."
         } else {
-            return "Import records from this backup file?"
+            return "Restore from this backup file? This will replace all existing data."
         }
     }
 }

@@ -7,13 +7,13 @@ import CoreData
 extension Notification.Name {
     static let navigateToiCloudSync = Notification.Name("navigateToiCloudSync")
     static let scrollToiCloudSync = Notification.Name("scrollToiCloudSync")
+    static let showSetupWizard = Notification.Name("showSetupWizard")
 }
 
 // MARK: - Layout Constants
 
 private let mapHeightRatio: CGFloat = 0.5
 private let cardHeightOffset: CGFloat = 100
-private let pickerWidth: CGFloat = 280
 
 struct RecordsView: View {
     @EnvironmentObject var recordManager: RecordManager
@@ -49,6 +49,24 @@ struct RecordsView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // Timeframe picker below title
+                TimeFramePickerWithBadges(
+                    selectedTimeFrame: $selectedTimeFrame,
+                    selectedYear: $selectedYear,
+                    availableYears: availableYears,
+                    timeFrameLabel: { timeFrame in
+                        switch timeFrame {
+                        case .allTime: return "All Years"
+                        case .year: return "This Year"
+                        case .month: return "This Month"
+                        }
+                    },
+                    yearString: { year in
+                        String(format: "%d", year)
+                    }
+                )
+                .padding()
+
                 if allRecords.isEmpty {
                     // Empty state - show different content if syncing
                     VStack(spacing: 20) {
@@ -80,7 +98,7 @@ struct RecordsView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    // Map in upper half showing all records
+                    // Map in upper portion
                     Map(position: $mapPosition) {
                         ForEach(allRecords, id: \.id) { record in
                             Marker(record.recordType, coordinate: record.coordinate)
@@ -88,9 +106,8 @@ struct RecordsView: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(height: UIScreen.main.bounds.height * mapHeightRatio)
 
-                    // Swipeable cards in lower half
+                    // Swipeable cards in lower portion
                     TabView(selection: $currentRecordIndex) {
                         ForEach(Array(allRecords.enumerated()), id: \.element.id) { index, record in
                             RecordCardView(record: record)
@@ -103,7 +120,7 @@ struct RecordsView: View {
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .frame(maxWidth: .infinity)
-                    .frame(height: UIScreen.main.bounds.height * mapHeightRatio - cardHeightOffset)
+                    .frame(height: 280)
                     .onChange(of: currentRecordIndex) { _, newIndex in
                         // Update map when swiping to new record
                         if let record = allRecords[safe: newIndex] {
@@ -119,16 +136,6 @@ struct RecordsView: View {
             }
             .navigationTitle("Records")
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    TimeFramePickerWithBadges(
-                        selectedTimeFrame: $selectedTimeFrame,
-                        selectedYear: $selectedYear,
-                        availableYears: availableYears,
-                        timeFrameLabel: timeFrameLabel,
-                        yearString: yearString
-                    )
-                    .environmentObject(recordManager)
-                }
                 // Show sync indicator when iCloud is syncing - tapping goes to iCloud Sync section
                 if persistenceController.isSyncing {
                     ToolbarItem(placement: .navigationBarTrailing) {
@@ -246,14 +253,6 @@ struct RecordsView: View {
     /// Format year as plain string without locale-specific formatting (no commas)
     private func yearString(_ year: Int) -> String {
         return String(format: "%d", year)
-    }
-
-    /// Get label for timeframe, showing selected year if applicable
-    private func timeFrameLabel(for timeFrame: TimeFrame) -> String {
-        if timeFrame == .allTime, let year = selectedYear {
-            return yearString(year)
-        }
-        return timeFrame.displayName
     }
 
     /// Fetch the best records for a specific year from Core Data history
@@ -545,7 +544,7 @@ struct RecordCardView: View {
     }
 }
 
-// MARK: - Time Frame Picker with Badges
+// MARK: - Custom TimeFrame Picker with Badges
 
 private struct TimeFramePickerWithBadges: View {
     @Binding var selectedTimeFrame: TimeFrame
@@ -558,7 +557,7 @@ private struct TimeFramePickerWithBadges: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(TimeFrame.allCases, id: \.self) { timeFrame in
+            ForEach([TimeFrame.allTime, .year, .month], id: \.self) { timeFrame in
                 TimeFrameSegment(
                     timeFrame: timeFrame,
                     isSelected: selectedTimeFrame == timeFrame,
@@ -573,7 +572,6 @@ private struct TimeFramePickerWithBadges: View {
         }
         .background(Color(UIColor.systemGray5))
         .cornerRadius(8)
-        .frame(width: pickerWidth)
         .contextMenu {
             if selectedTimeFrame == .allTime && !availableYears.isEmpty {
                 Button {

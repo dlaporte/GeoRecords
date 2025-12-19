@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State private var showClearRecordsSheet = false
     @State private var deleteFromiCloud = false
     @State private var showImportView = false
+    @State private var showNoRecordsView = false
     @State private var showPermissionAlert = false
     @State private var showManualImport = false
     @State private var showSetupWizard = false
@@ -97,9 +98,8 @@ struct SettingsView: View {
                         Text("Imperial").tag(UnitSystem.imperial)
                         Text("Metric").tag(UnitSystem.metric)
                     }
-                    .pickerStyle(SegmentedPickerStyle())
+                    .pickerStyle(.segmented)
                     .onChange(of: settings.unitSystem) { _, _ in
-                        // Settings automatically switch to the appropriate values via computed properties
                         settings.saveSettings()
                     }
                 }
@@ -275,19 +275,6 @@ struct SettingsView: View {
                         }
                     }
 
-                    // Show last export time if available
-                    if let exportTime = persistenceController.lastExportTime {
-                        HStack {
-                            Text("Last upload")
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text(exportTime, style: .relative)
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        }
-                        .font(.caption)
-                    }
-
                     if let error = persistenceController.lastSyncError {
                         Text(error.localizedDescription)
                             .font(.caption)
@@ -329,7 +316,7 @@ struct SettingsView: View {
                         showManualImport = true
                     }) {
                         HStack {
-                            Label("Add Individual Record", systemImage: "plus.circle")
+                            Label("Add Location", systemImage: "plus.circle")
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption)
@@ -404,12 +391,24 @@ struct SettingsView: View {
                     persistenceController: persistenceController,
                     onComplete: {
                         showClearRecordsSheet = false
+                        // Small delay to let sheet dismiss, then show no records view
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            showNoRecordsView = true
+                        }
                     },
                     onCancel: {
                         showClearRecordsSheet = false
+                    },
+                    onFullReset: {
+                        showClearRecordsSheet = false
+                        // Small delay to let sheet dismiss, then show setup wizard
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            showSetupWizard = true
+                        }
                     }
                 )
-                .presentationDetents([.height(320)])
+                .environmentObject(settings)
+                .presentationDetents([.height(440)])
             }
             .fullScreenCover(isPresented: $showSetupWizard) {
                 SetupWizardView()
@@ -429,10 +428,27 @@ struct SettingsView: View {
                 ImportPreviewView()
                     .environmentObject(photoScanner)
                     .environmentObject(settings)
+                    .interactiveDismissDisabled()  // Prevent accidental swipe-down dismissal
+                    .onAppear {
+                        // Start scan if not already scanning (may have been triggered by requestPhotoAccess)
+                        if !photoScanner.isScanning && !photoScanner.hasWizardRecords {
+                            Task {
+                                await photoScanner.scanPhotoLibrary(homeCoordinate: settings.homeCoordinate)
+                            }
+                        }
+                    }
             }
             .sheet(isPresented: $showManualImport) {
                 ManualRecordImportView()
                     .environmentObject(settings)
+            }
+            .sheet(isPresented: $showNoRecordsView) {
+                NoRecordsView(onScanPhotos: {
+                    // Small delay to let the NoRecordsView dismiss first
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        showImportView = true
+                    }
+                })
             }
             .sheet(isPresented: $showBackupShareSheet) {
                 if let url = backupURL {
@@ -457,8 +473,16 @@ struct SettingsView: View {
                     defer { url.stopAccessingSecurityScopedResource() }
 
                     Task {
-                        if let count = await BackupManager.shared.importBackup(from: url) {
-                            importResultMessage = "Successfully imported \(count) records from backup."
+                        if let result = await BackupManager.shared.importBackup(from: url) {
+                            var parts: [String] = []
+                            if result.records > 0 {
+                                parts.append("\(result.records) record\(result.records == 1 ? "" : "s")")
+                            }
+                            if result.regions > 0 {
+                                parts.append("\(result.regions) visited region\(result.regions == 1 ? "" : "s")")
+                            }
+                            let summary = parts.isEmpty ? "backup data" : parts.joined(separator: " and ")
+                            importResultMessage = "Successfully imported \(summary) from backup."
                         } else {
                             importResultMessage = "Failed to import backup. The file may be corrupted or incompatible."
                         }
@@ -500,12 +524,16 @@ struct SettingsView: View {
 
 struct ClearRecordsSheet: View {
     @Binding var deleteFromiCloud: Bool
+    @EnvironmentObject var settings: SettingsManager
     @ObservedObject var persistenceController: PersistenceController
     let onComplete: () -> Void
     let onCancel: () -> Void
+    let onFullReset: () -> Void  // Called when full app reset is performed
 
     @State private var isDeleting = false
     @State private var statusMessage = ""
+    @State private var deleteZone = false  // Complete iCloud reset
+    @State private var fullAppReset = false  // Factory reset
 
     var body: some View {
         VStack(spacing: 24) {
@@ -516,7 +544,7 @@ struct ClearRecordsSheet: View {
                     .scaleEffect(1.5)
                     .padding(.bottom, 8)
 
-                Text("Deleting records...")
+                Text(fullAppReset ? "Resetting app..." : "Deleting records...")
                     .font(.title2)
                     .fontWeight(.semibold)
 
@@ -526,26 +554,56 @@ struct ClearRecordsSheet: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
             } else {
-                Image(systemName: "trash.circle.fill")
+                Image(systemName: fullAppReset ? "arrow.counterclockwise.circle.fill" : "trash.circle.fill")
                     .font(.system(size: 56))
                     .foregroundColor(.red)
 
-                Text("Delete all records?")
+                Text(fullAppReset ? "Reset app completely?" : "Delete all records?")
                     .font(.title2)
                     .fontWeight(.semibold)
 
-                Toggle(isOn: $deleteFromiCloud) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Also delete from iCloud")
-                            .font(.body)
-                        Text(deleteFromiCloud
-                             ? "Permanently removes records from all devices"
-                             : "Records will sync back from iCloud")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                VStack(spacing: 16) {
+                    Toggle(isOn: $deleteFromiCloud) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Also delete from iCloud")
+                                .font(.body)
+                            Text(deleteFromiCloud
+                                 ? "Permanently removes records from all devices"
+                                 : "Records will sync back from iCloud")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .tint(.red)
+                    .disabled(deleteZone)
+
+                    if deleteFromiCloud {
+                        Toggle(isOn: $deleteZone) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Complete iCloud reset")
+                                    .font(.body)
+                                Text("Deletes the iCloud sync zone entirely")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .tint(.red)
+                        .disabled(fullAppReset)
+                    }
+
+                    if deleteZone {
+                        Toggle(isOn: $fullAppReset) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Complete app reset")
+                                    .font(.body)
+                                Text("Resets everything as if freshly installed")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .tint(.red)
                     }
                 }
-                .tint(.red)
                 .padding(.horizontal, 24)
             }
 
@@ -562,7 +620,7 @@ struct ClearRecordsSheet: View {
                     .foregroundColor(.primary)
                     .cornerRadius(12)
 
-                    Button("Delete") {
+                    Button(fullAppReset ? "Reset" : "Delete") {
                         performDelete()
                     }
                     .frame(maxWidth: .infinity)
@@ -576,52 +634,116 @@ struct ClearRecordsSheet: View {
                 .padding(.bottom, 16)
             }
         }
+        .onChange(of: deleteZone) { _, newValue in
+            // If turning off deleteZone, also turn off fullAppReset
+            if !newValue {
+                fullAppReset = false
+            }
+        }
+        .onChange(of: deleteFromiCloud) { _, newValue in
+            // If turning off deleteFromiCloud, also turn off deleteZone and fullAppReset
+            if !newValue {
+                deleteZone = false
+                fullAppReset = false
+            }
+        }
     }
 
     private func performDelete() {
         if deleteFromiCloud {
             // Delete from iCloud - need to wait for sync
             isDeleting = true
-            statusMessage = "Syncing deletions to iCloud..."
+            statusMessage = "Deleting local records..."
 
-            // Capture current export time to detect new export
-            let exportTimeBefore = persistenceController.lastExportTime
-
-            // Perform the deletion
+            // Perform the local deletion first
             RecordHistoryManager.shared.clearHistory()
 
-            // Wait for CloudKit export to complete
             Task {
-                // Wait up to 30 seconds for export to complete
-                let timeout = Date().addingTimeInterval(30)
+                if deleteZone {
+                    // Complete reset - delete the CloudKit zone entirely
+                    await MainActor.run {
+                        statusMessage = "Deleting iCloud zone..."
+                    }
 
-                while Date() < timeout {
-                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                    let zoneDeleted = await persistenceController.deleteCloudKitZone()
 
-                    // Check if a new export completed
-                    if let newExportTime = persistenceController.lastExportTime,
-                       exportTimeBefore == nil || newExportTime > exportTimeBefore! {
-                        await MainActor.run {
-                            statusMessage = "Deletion synced to iCloud"
+                    await MainActor.run {
+                        if zoneDeleted {
+                            statusMessage = "iCloud zone deleted"
+                        } else {
+                            statusMessage = "Zone deletion failed, but local data cleared"
                         }
-                        try? await Task.sleep(nanoseconds: 500_000_000) // Brief pause to show success
+                    }
+
+                    // If full app reset, also reset settings
+                    if fullAppReset {
+                        await MainActor.run {
+                            statusMessage = "Resetting settings..."
+                        }
+
+                        await MainActor.run {
+                            // Reset all settings to defaults
+                            settings.resetToDefaults()
+
+                            // Clear iCloud Key-Value store
+                            let store = NSUbiquitousKeyValueStore.default
+                            for key in store.dictionaryRepresentation.keys {
+                                store.removeObject(forKey: key)
+                            }
+                            store.synchronize()
+
+                            statusMessage = "App reset complete"
+                        }
+
+                        try? await Task.sleep(nanoseconds: 500_000_000) // Brief pause
+                        await MainActor.run {
+                            onFullReset()
+                        }
+                    } else {
+                        try? await Task.sleep(nanoseconds: 500_000_000) // Brief pause
                         await MainActor.run {
                             onComplete()
                         }
-                        return
+                    }
+                } else {
+                    // Normal iCloud delete - wait for sync
+                    let exportTimeBefore = persistenceController.lastExportTime
+
+                    await MainActor.run {
+                        statusMessage = "Syncing deletions to iCloud..."
                     }
 
-                    // Update status if still syncing
-                    if persistenceController.pendingExport {
-                        await MainActor.run {
-                            statusMessage = "Syncing deletions to iCloud..."
+                    // Wait up to 30 seconds for export to complete
+                    let timeout = Date().addingTimeInterval(30)
+
+                    while Date() < timeout {
+                        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+
+                        // Check if a new export completed
+                        if let newExportTime = persistenceController.lastExportTime,
+                           exportTimeBefore == nil || newExportTime > exportTimeBefore! {
+                            await MainActor.run {
+                                statusMessage = "Deletion synced to iCloud"
+                            }
+                            try? await Task.sleep(nanoseconds: 500_000_000) // Brief pause
+                            await MainActor.run {
+                                onComplete()
+                            }
+                            return
+                        }
+
+                        // Update status if still syncing
+                        if persistenceController.pendingExport {
+                            await MainActor.run {
+                                statusMessage = "Syncing deletions to iCloud..."
+                            }
                         }
                     }
-                }
 
-                // Timeout - complete anyway
-                await MainActor.run {
-                    onComplete()
+                    // Timeout - complete anyway
+                    await MainActor.run {
+                        onComplete()
+                    }
                 }
             }
         } else {

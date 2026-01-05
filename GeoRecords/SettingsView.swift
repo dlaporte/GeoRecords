@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 
 // Custom UTType for GeoRecords backup files
 extension UTType {
@@ -28,6 +29,7 @@ struct SettingsView: View {
     @State private var showImportResult = false
     @State private var importResultMessage = ""
     @State private var isExporting = false
+    @State private var notificationPermissionStatus: UNAuthorizationStatus = .notDetermined
 
     // Available options for Latitude/Longitude deltas.
     let deltaOptions: [Double] = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
@@ -187,32 +189,77 @@ struct SettingsView: View {
                     Text("New records must exceed current records by at least these amounts. Higher values reduce noise from minor location changes.")
                 }
 
+                // MARK: - Notification Permission Status
+                if notificationPermissionStatus == .denied {
+                    Section {
+                        Label {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Notifications Disabled")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                Text("Enable notifications in Settings to receive alerts")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "bell.slash.fill")
+                                .foregroundColor(.orange)
+                        }
+
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                    }
+                }
+
                 // MARK: - Record Alerts Section
                 Section {
                     Toggle("Monthly Records", isOn: $settings.notifyOnMonthlyRecords)
-                        .onChange(of: settings.notifyOnMonthlyRecords) { _, _ in
+                        .onChange(of: settings.notifyOnMonthlyRecords) { _, newValue in
+                            if newValue {
+                                requestNotificationPermissionsIfNeeded()
+                            }
                             settings.saveSettings()
                         }
 
                     Toggle("Yearly Records", isOn: $settings.notifyOnYearlyRecords)
-                        .onChange(of: settings.notifyOnYearlyRecords) { _, _ in
+                        .onChange(of: settings.notifyOnYearlyRecords) { _, newValue in
+                            if newValue {
+                                requestNotificationPermissionsIfNeeded()
+                            }
                             settings.saveSettings()
                         }
 
                     Toggle("All-Time Records", isOn: $settings.notifyOnAllTimeRecords)
-                        .onChange(of: settings.notifyOnAllTimeRecords) { _, _ in
+                        .onChange(of: settings.notifyOnAllTimeRecords) { _, newValue in
+                            if newValue {
+                                requestNotificationPermissionsIfNeeded()
+                            }
+                            settings.saveSettings()
+                        }
+
+                    Toggle("New Region", isOn: $settings.notifyOnNewRegion)
+                        .onChange(of: settings.notifyOnNewRegion) { _, newValue in
+                            if newValue {
+                                requestNotificationPermissionsIfNeeded()
+                            }
                             settings.saveSettings()
                         }
                 } header: {
                     Text("Record Alerts")
                 } footer: {
-                    Text("Get notified when you set a new geographical record.")
+                    Text("Get notified when you set a new geographical record or enter a new state/country.")
                 }
 
                 // MARK: - Reminders Section
                 Section {
                     Toggle("Summary Notifications", isOn: $settings.summaryNotificationsEnabled)
-                        .onChange(of: settings.summaryNotificationsEnabled) { _, _ in
+                        .onChange(of: settings.summaryNotificationsEnabled) { _, newValue in
+                            if newValue {
+                                requestNotificationPermissionsIfNeeded()
+                            }
                             settings.saveSettings()
                             SummaryNotificationManager.shared.scheduleSummaryNotifications()
                         }
@@ -223,7 +270,10 @@ struct SettingsView: View {
                         }
 
                     Toggle("Inactivity Reminder", isOn: $settings.inactivityReminderEnabled)
-                        .onChange(of: settings.inactivityReminderEnabled) { _, _ in
+                        .onChange(of: settings.inactivityReminderEnabled) { _, newValue in
+                            if newValue {
+                                requestNotificationPermissionsIfNeeded()
+                            }
                             settings.saveSettings()
                             // Reschedule or cancel the reminder
                             Task { @MainActor in
@@ -385,6 +435,11 @@ struct SettingsView: View {
             }
             } // ScrollViewReader
             .navigationTitle("Settings")
+            .task {
+                // Check notification permission status
+                let settings = await UNUserNotificationCenter.current().notificationSettings()
+                notificationPermissionStatus = settings.authorizationStatus
+            }
             .sheet(isPresented: $showClearRecordsSheet) {
                 ClearRecordsSheet(
                     deleteFromiCloud: $deleteFromiCloud,
@@ -515,6 +570,30 @@ struct SettingsView: View {
                 }
             } else {
                 showPermissionAlert = true
+            }
+        }
+    }
+
+    /// Request notification permissions if they haven't been requested yet
+    private func requestNotificationPermissionsIfNeeded() {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+
+            // Only request if permissions haven't been requested yet
+            if settings.authorizationStatus == .notDetermined {
+                do {
+                    let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+                    debugLog("📱 Notification permissions requested - granted: \(granted)")
+
+                    // Refresh the status indicator
+                    notificationPermissionStatus = granted ? .authorized : .denied
+                } catch {
+                    debugLog("❌ Failed to request notification permissions: \(error.localizedDescription)")
+                }
+            } else if settings.authorizationStatus == .denied {
+                // Permission was previously denied - show the banner by refreshing status
+                notificationPermissionStatus = .denied
             }
         }
     }

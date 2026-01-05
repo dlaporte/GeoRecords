@@ -135,7 +135,7 @@ struct ContentView: View {
         }
         .onChange(of: deepLinkManager.navigateToStats) { _, shouldNavigate in
             if shouldNavigate {
-                selectedTab = 2
+                selectedTab = 1  // Stats tab
                 deepLinkManager.navigateToStats = false
             }
         }
@@ -191,13 +191,13 @@ struct ContentView: View {
     private var tabView: some View {
         TabView(selection: $selectedTab) {
             RecordsView()
-                .tabItem { Label("Records", systemImage: "doc.text") }
+                .tabItem { Label("Records", systemImage: "location.north.fill") }
                 .tag(0)
-            MapsTabView()
-                .tabItem { Label("Regions", systemImage: "map.fill") }
-                .tag(1)
             StatisticsView()
                 .tabItem { Label("Stats", systemImage: "chart.bar.fill") }
+                .tag(1)
+            MapsTabView()
+                .tabItem { Label("Regions", systemImage: "map.fill") }
                 .tag(2)
             HistoryView()
                 .tabItem { Label("History", systemImage: "clock") }

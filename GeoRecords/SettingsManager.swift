@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CoreLocation
+import UserNotifications
 
 // UnitSystem enum is now in Constants.swift (shared with widget)
 
@@ -13,6 +14,7 @@ protocol SettingsManaging: ObservableObject {
     var notifyOnMonthlyRecords: Bool { get set }
     var notifyOnYearlyRecords: Bool { get set }
     var notifyOnAllTimeRecords: Bool { get set }
+    var notifyOnNewRegion: Bool { get set }
     var summaryNotificationsEnabled: Bool { get set }
     var photoPromptsEnabled: Bool { get set }
     var inactivityReminderEnabled: Bool { get set }
@@ -39,6 +41,7 @@ class SettingsManager: ObservableObject, SettingsManaging {
     @Published var notifyOnMonthlyRecords: Bool
     @Published var notifyOnYearlyRecords: Bool
     @Published var notifyOnAllTimeRecords: Bool
+    @Published var notifyOnNewRegion: Bool
     @Published var summaryNotificationsEnabled: Bool
     @Published var photoPromptsEnabled: Bool
     @Published var inactivityReminderEnabled: Bool
@@ -84,6 +87,7 @@ class SettingsManager: ObservableObject, SettingsManaging {
     private static let defaultNotifyOnMonthlyRecords = false
     private static let defaultNotifyOnYearlyRecords = false
     private static let defaultNotifyOnAllTimeRecords = false  // Set by user in wizard
+    private static let defaultNotifyOnNewRegion = false  // Off by default
     private static let defaultSummaryNotificationsEnabled = true  // Set by user in wizard
     private static let defaultPhotoPromptsEnabled = true
     private static let defaultInactivityReminderEnabled = false  // Set by wizard based on notification permission
@@ -174,6 +178,7 @@ class SettingsManager: ObservableObject, SettingsManaging {
             self.notifyOnAllTimeRecords = loadBool(key: .notifyOnAllTimeRecords, defaultValue: Self.defaultNotifyOnAllTimeRecords)
         }
 
+        self.notifyOnNewRegion = loadBool(key: .notifyOnNewRegion, defaultValue: Self.defaultNotifyOnNewRegion)
         self.photoPromptsEnabled = loadBool(key: .photoPromptsEnabled, defaultValue: Self.defaultPhotoPromptsEnabled)
 
         // Load inactivity reminder settings
@@ -279,6 +284,9 @@ class SettingsManager: ObservableObject, SettingsManaging {
         // Start syncing
         ubiquitousStore.synchronize()
         debugLog("☁️ Settings iCloud sync initialized")
+
+        // If any notification settings came from iCloud, request permissions if needed
+        requestNotificationPermissionsIfNeeded()
     }
 
     // MARK: - iCloud Sync
@@ -310,6 +318,9 @@ class SettingsManager: ObservableObject, SettingsManaging {
         }
         if let value = ubiquitousStore.object(forKey: UserDefaultsKey.notifyOnAllTimeRecords.rawValue) as? Bool {
             notifyOnAllTimeRecords = value
+        }
+        if let value = ubiquitousStore.object(forKey: UserDefaultsKey.notifyOnNewRegion.rawValue) as? Bool {
+            notifyOnNewRegion = value
         }
         if let value = ubiquitousStore.object(forKey: UserDefaultsKey.summaryNotificationsEnabled.rawValue) as? Bool {
             summaryNotificationsEnabled = value
@@ -363,6 +374,9 @@ class SettingsManager: ObservableObject, SettingsManaging {
 
         // Also update local UserDefaults to keep them in sync
         saveToUserDefaults()
+
+        // If notifications were enabled from another device, request permissions if needed
+        requestNotificationPermissionsIfNeeded()
     }
 
     /// Save settings to local UserDefaults only (without triggering iCloud sync)
@@ -373,6 +387,7 @@ class SettingsManager: ObservableObject, SettingsManaging {
         defaults.set(notifyOnMonthlyRecords, forKey: UserDefaultsKey.notifyOnMonthlyRecords.rawValue)
         defaults.set(notifyOnYearlyRecords, forKey: UserDefaultsKey.notifyOnYearlyRecords.rawValue)
         defaults.set(notifyOnAllTimeRecords, forKey: UserDefaultsKey.notifyOnAllTimeRecords.rawValue)
+        defaults.set(notifyOnNewRegion, forKey: UserDefaultsKey.notifyOnNewRegion.rawValue)
         defaults.set(summaryNotificationsEnabled, forKey: UserDefaultsKey.summaryNotificationsEnabled.rawValue)
         defaults.set(photoPromptsEnabled, forKey: UserDefaultsKey.photoPromptsEnabled.rawValue)
         defaults.set(inactivityReminderEnabled, forKey: UserDefaultsKey.inactivityReminderEnabled.rawValue)
@@ -406,6 +421,7 @@ class SettingsManager: ObservableObject, SettingsManaging {
         ubiquitousStore.set(notifyOnMonthlyRecords, forKey: UserDefaultsKey.notifyOnMonthlyRecords.rawValue)
         ubiquitousStore.set(notifyOnYearlyRecords, forKey: UserDefaultsKey.notifyOnYearlyRecords.rawValue)
         ubiquitousStore.set(notifyOnAllTimeRecords, forKey: UserDefaultsKey.notifyOnAllTimeRecords.rawValue)
+        ubiquitousStore.set(notifyOnNewRegion, forKey: UserDefaultsKey.notifyOnNewRegion.rawValue)
         ubiquitousStore.set(summaryNotificationsEnabled, forKey: UserDefaultsKey.summaryNotificationsEnabled.rawValue)
         ubiquitousStore.set(photoPromptsEnabled, forKey: UserDefaultsKey.photoPromptsEnabled.rawValue)
         ubiquitousStore.set(inactivityReminderEnabled, forKey: UserDefaultsKey.inactivityReminderEnabled.rawValue)
@@ -440,6 +456,7 @@ class SettingsManager: ObservableObject, SettingsManaging {
         notifyOnMonthlyRecords = Self.defaultNotifyOnMonthlyRecords
         notifyOnYearlyRecords = Self.defaultNotifyOnYearlyRecords
         notifyOnAllTimeRecords = Self.defaultNotifyOnAllTimeRecords
+        notifyOnNewRegion = Self.defaultNotifyOnNewRegion
         summaryNotificationsEnabled = Self.defaultSummaryNotificationsEnabled
         photoPromptsEnabled = Self.defaultPhotoPromptsEnabled
         inactivityReminderEnabled = Self.defaultInactivityReminderEnabled
@@ -476,5 +493,35 @@ class SettingsManager: ObservableObject, SettingsManaging {
         minDistanceDeltaMetersMetric = Self.defaultMinDistanceDeltaMetersMetric
 
         saveSettings()
+    }
+
+    /// Request notification permissions if any notification settings are enabled but permissions haven't been determined
+    private func requestNotificationPermissionsIfNeeded() {
+        // Check if any notification settings are enabled
+        let hasNotificationsEnabled = notifyOnMonthlyRecords ||
+                                     notifyOnYearlyRecords ||
+                                     notifyOnAllTimeRecords ||
+                                     notifyOnNewRegion ||
+                                     summaryNotificationsEnabled ||
+                                     inactivityReminderEnabled
+
+        guard hasNotificationsEnabled else {
+            return // No notifications enabled, nothing to do
+        }
+
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+
+            // Only request if permissions haven't been determined yet
+            if settings.authorizationStatus == .notDetermined {
+                do {
+                    let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+                    debugLog("📱 Notification permissions requested (from iCloud sync) - granted: \(granted)")
+                } catch {
+                    debugLog("❌ Failed to request notification permissions: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 }

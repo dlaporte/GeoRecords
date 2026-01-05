@@ -235,9 +235,10 @@ struct SetupWizardView: View {
         // Save settings
         settings.unitSystem = selectedUnitSystem
         // homeCoordinate already saved directly to settings during selection
-        // Enable yearly and all-time record notifications (not monthly - too noisy)
+        // Enable yearly, all-time, and new region notifications (not monthly - too noisy)
         settings.notifyOnYearlyRecords = notificationsEnabled
         settings.notifyOnAllTimeRecords = notificationsEnabled
+        settings.notifyOnNewRegion = notificationsEnabled
         settings.summaryNotificationsEnabled = summaryNotificationsEnabled
         settings.photoPromptsEnabled = photoPromptsEnabled
         // Enable inactivity reminder if user granted notification permission

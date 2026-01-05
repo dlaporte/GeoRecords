@@ -84,7 +84,14 @@ class RegionLookupService {
         let lat = coordinate.latitude
         let lon = coordinate.longitude
 
-        // First check US states (more specific)
+        // First check overseas territories (before parent countries claim them)
+        // These territories are part of parent country MultiPolygons in the GeoJSON,
+        // but should be tracked as separate regions
+        if let overseasTerritory = checkOverseasTerritories(latitude: lat, longitude: lon) {
+            return overseasTerritory
+        }
+
+        // Then check US states (more specific)
         for state in usStates {
             if state.containsInBoundingBox(latitude: lat, longitude: lon) {
                 if pointInRegion(latitude: lat, longitude: lon, region: state) {
@@ -495,6 +502,83 @@ class RegionLookupService {
                 return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
             }]
         }
+    }
+
+    // MARK: - Overseas Territories Detection
+
+    /// Check if coordinates fall within known overseas territories
+    /// These are geographically separate from their parent countries but share the same
+    /// country code in the GeoJSON data. We detect them by bounding box to give them
+    /// distinct region codes.
+    private func checkOverseasTerritories(latitude lat: Double, longitude lon: Double) -> RegionInfo? {
+        // Define overseas territories with their bounding boxes and info
+        // Format: (minLat, maxLat, minLon, maxLon, code, name, continent)
+        let territories: [(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double,
+                          code: String, name: String, continent: Continent)] = [
+            // French Overseas Territories
+            (2.0, 6.0, -55.0, -51.0, "GF", "French Guiana", .southAmerica),
+            (14.35, 14.9, -61.3, -60.8, "MQ", "Martinique", .northAmerica),
+            (15.8, 16.55, -61.85, -61.0, "GP", "Guadeloupe", .northAmerica),
+            (-21.4, -20.85, 55.2, 55.85, "RE", "Réunion", .africa),
+            (-13.05, -12.6, 45.0, 45.35, "YT", "Mayotte", .africa),
+            (-22.4, -22.2, 166.3, 166.5, "NC", "New Caledonia", .oceania),  // Main island area
+            (-17.9, -17.45, -149.95, -149.1, "PF", "French Polynesia", .oceania),  // Tahiti area
+
+            // Dutch Overseas Territories
+            (12.0, 12.65, -68.5, -68.0, "CW", "Curaçao", .northAmerica),
+            (12.4, 12.65, -70.1, -69.85, "AW", "Aruba", .northAmerica),
+            (17.45, 18.07, -63.15, -62.95, "SX", "Sint Maarten", .northAmerica),
+
+            // British Overseas Territories
+            (32.25, 32.4, -64.9, -64.65, "BM", "Bermuda", .northAmerica),
+            (18.15, 19.4, -64.85, -64.25, "VG", "British Virgin Islands", .northAmerica),
+            (19.25, 19.4, -81.45, -81.05, "KY", "Cayman Islands", .northAmerica),
+            (-54.9, -51.0, -61.5, -57.5, "FK", "Falkland Islands", .southAmerica),
+            (-4.75, -4.65, 55.45, 55.55, "SC", "Seychelles", .africa),  // Main island area
+            (36.1, 36.16, -5.37, -5.33, "GI", "Gibraltar", .europe),
+
+            // Portuguese Overseas Territories
+            (36.9, 39.75, -31.3, -25.0, "PT-20", "Azores", .europe),  // Use PT-20 to distinguish
+            (32.6, 33.15, -17.3, -16.25, "PT-30", "Madeira", .europe),  // Use PT-30 to distinguish
+
+            // Spanish Overseas Territories
+            (27.6, 29.5, -18.2, -13.3, "ES-CN", "Canary Islands", .europe),  // Use ES-CN to distinguish
+
+            // Danish Overseas Territories
+            (61.35, 62.45, -7.7, -6.2, "FO", "Faroe Islands", .europe),
+            (59.5, 83.7, -73.0, -11.0, "GL", "Greenland", .northAmerica),
+
+            // US Territories (not states)
+            (17.9, 18.55, -67.95, -65.2, "PR", "Puerto Rico", .northAmerica),
+            (17.65, 18.45, -65.1, -64.55, "VI", "U.S. Virgin Islands", .northAmerica),
+            (13.2, 13.7, 144.6, 145.0, "GU", "Guam", .oceania),
+            (-14.45, -14.15, -170.85, -170.5, "AS", "American Samoa", .oceania),
+            (14.1, 20.6, 144.85, 146.1, "MP", "Northern Mariana Islands", .oceania),
+
+            // Australian Overseas Territories
+            (-10.7, -10.35, 105.5, 105.75, "CX", "Christmas Island", .oceania),
+            (-12.25, -11.8, 96.8, 96.95, "CC", "Cocos (Keeling) Islands", .oceania),
+            (-29.15, -29.0, 167.9, 168.0, "NF", "Norfolk Island", .oceania),
+
+            // New Zealand Overseas Territories
+            (-21.3, -21.15, -159.85, -159.7, "CK", "Cook Islands", .oceania),  // Rarotonga area
+            (-19.15, -18.95, -169.95, -169.75, "NU", "Niue", .oceania),
+            (-9.25, -8.5, -172.0, -171.0, "TK", "Tokelau", .oceania),
+        ]
+
+        for territory in territories {
+            if lat >= territory.minLat && lat <= territory.maxLat &&
+               lon >= territory.minLon && lon <= territory.maxLon {
+                return RegionInfo(
+                    code: territory.code,
+                    name: territory.name,
+                    type: .country,
+                    continent: territory.continent
+                )
+            }
+        }
+
+        return nil
     }
 
     // MARK: - Point-in-Polygon Algorithm

@@ -27,15 +27,12 @@ func deleteRecordFromStorage(_ record: RecordDetail, recordManager: RecordManage
     }
 
     // Clear from RecordManager in-memory for all timeframes
-    for timeFrame in TimeFrame.allCases {
+    for timeFrame in TimeFrame.userVisibleCases {
         if let existing = recordManager.getRecord(type: record.recordType, timeFrame: timeFrame),
            existing.timestamp == record.timestamp {
             recordManager.setRecord(type: record.recordType, timeFrame: timeFrame, record: nil)
         }
     }
-
-    // Recalculate daily statistics for the affected day
-    DailyStatisticManager.shared.recalculateStatisticsForDay(record.timestamp)
 
     // Reload records from history to get the next best record
     recordManager.loadRecordsFromHistory()

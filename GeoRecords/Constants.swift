@@ -13,6 +13,7 @@ enum UnitSystem: String, Codable {
 
 /// Time frame for records
 enum TimeFrame: String, CaseIterable {
+    case daily = "Daily"      // Hidden daily extremes for chart granularity
     case month = "Monthly"
     case year = "Yearly"
     case allTime = "All Time"
@@ -20,6 +21,7 @@ enum TimeFrame: String, CaseIterable {
     /// Display name for picker UI (e.g., "This Month" instead of "Monthly")
     var displayName: String {
         switch self {
+        case .daily: return "Daily"  // Not shown in UI
         case .month: return "This Month"
         case .year: return "This Year"
         case .allTime: return "All Years"
@@ -29,10 +31,24 @@ enum TimeFrame: String, CaseIterable {
     /// Sort order for displaying timeframes (Monthly first, then Yearly, then All Time)
     var sortOrder: Int {
         switch self {
+        case .daily: return -1  // Not shown in UI
         case .month: return 0
         case .year: return 1
         case .allTime: return 2
         }
+    }
+
+    /// Whether this timeframe should be shown in the UI picker
+    var isUserVisible: Bool {
+        switch self {
+        case .daily: return false
+        case .month, .year, .allTime: return true
+        }
+    }
+
+    /// User-visible timeframes for pickers
+    static var userVisibleCases: [TimeFrame] {
+        return allCases.filter { $0.isUserVisible }
     }
 }
 
@@ -123,6 +139,7 @@ enum UserDefaultsKey: String {
     case notifyOnMonthlyRecords
     case notifyOnYearlyRecords
     case notifyOnAllTimeRecords
+    case notifyOnNewRegion
     case summaryNotificationsEnabled
     case photoPromptsEnabled
 
@@ -181,6 +198,22 @@ let metersPerMile = 1609.344
 
 /// Meters per kilometer
 let metersPerKm = 1000.0
+
+// MARK: - Photo Import Configuration
+
+/// Maximum number of photos to consider per region during import
+/// Higher values increase thoroughness but take longer to process
+let maxPhotosPerRegionDuringImport = 50
+
+/// Maximum number of candidate records to keep per time period during photo scanning
+/// Limits memory usage during large photo library scans
+let maxCandidatesPerTimeFrameDuringImport = 50
+
+// MARK: - Region Tracking Configuration
+
+/// Minimum distance threshold in meters for considering a location significant
+/// Locations within this distance of a previous visit are considered the same place
+let regionTrackingDistanceThresholdMeters: Double = 100.0
 
 // MARK: - Distance Utilities
 
@@ -368,8 +401,8 @@ let coordinatePairFormat = "%.4f,%.4f"
 
 // MARK: - Threshold Constants
 
-/// Batch save threshold for DailyStatisticManager
-let dailyStatisticBatchThreshold = 100
+/// Batch save threshold for daily record operations
+let dailyRecordBatchThreshold = 100
 
 /// Geocoding throttle interval in seconds
 let geocodingThrottleInterval: TimeInterval = 60
@@ -483,6 +516,9 @@ extension Date {
         let now = Date()
 
         switch timeFrame {
+        case .daily:
+            let yesterday = calendar.date(byAdding: .day, value: -1, to: now) ?? now
+            return calendar.startOfDay(for: yesterday)
         case .month:
             let lastMonth = calendar.date(byAdding: .month, value: -1, to: now) ?? now
             return calendar.dateInterval(of: .month, for: lastMonth)?.start ?? now

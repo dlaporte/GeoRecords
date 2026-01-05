@@ -2,6 +2,13 @@ import CoreData
 import CoreLocation
 import SwiftUI
 
+/// RecordHistoryManager: Core Data persistence for geographical records
+///
+/// **Error Handling Policy:**
+/// - **Data consistency errors** (save failures, constraint violations): Show alert to user via showError/errorMessage
+/// - **Transient errors** (fetch failures, temporary issues): Log only with debugLog()
+/// - **Expected conditions** (duplicate records, no data): Silent or info-level logging
+/// - **User-facing operations** (import, delete, restore): Always alert on failure
 @MainActor
 class RecordHistoryManager: ObservableObject {
     static let shared = RecordHistoryManager()
@@ -14,11 +21,14 @@ class RecordHistoryManager: ObservableObject {
         return PersistenceController.shared.container.viewContext
     }
 
-    func addRecord(recordType: String, detail: RecordDetail) {
+    /// Add a record to Core Data history
+    /// - Returns: true if successful, false if failed (duplicate or save error)
+    @discardableResult
+    func addRecord(recordType: String, detail: RecordDetail) -> Bool {
         // Check if this record already exists to prevent duplicates
         if recordExists(recordType: recordType, detail: detail) {
             debugLog("⚠️ Duplicate record detected and skipped: \(recordType) (\(detail.timeFrame.rawValue)) at \(detail.timestamp)")
-            return
+            return false
         }
 
         let newEntry = RecordHistoryEntry(context: context)
@@ -48,10 +58,12 @@ class RecordHistoryManager: ObservableObject {
 
         do {
             try context.save()
+            return true
         } catch {
             let message = "Failed to save record: \(error.localizedDescription)"
             debugLog(message)
             showErrorAlert(message)
+            return false
         }
     }
 
@@ -195,7 +207,7 @@ class RecordHistoryManager: ObservableObject {
     /// - Parameters:
     ///   - type: The record type (e.g., "Furthest North")
     ///   - timeFrame: The time frame to query
-    /// - Returns: A simple struct with value and location name, or nil if no record found
+    /// - Returns: A tuple with value and location name, or nil if no record found
     func getFurthestRecord(type: String, timeFrame: TimeFrame) -> (value: Double, locationName: String?)? {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
@@ -204,6 +216,13 @@ class RecordHistoryManager: ObservableObject {
         let now = Date()
 
         switch timeFrame {
+        case .daily:
+            let dayStart = calendar.startOfDay(for: now)
+            let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)!
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
+                type, TimeFrame.daily.rawValue, dayStart as NSDate, dayEnd as NSDate
+            )
         case .month:
             let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
             let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart)!
@@ -227,10 +246,9 @@ class RecordHistoryManager: ObservableObject {
             )
         }
 
-        // Sort to get the most extreme value
-        // North/East/Up: highest value; South/West: lowest value
-        let isHighestWins = type.contains("North") || type.contains("East") || type.contains("Up") || type.contains("Furthest from Home")
-        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: !isHighestWins)]
+        // Sort to get the most extreme value using RecordType.isAscending
+        let isAscending = RecordType.from(string: type)?.isAscending ?? true
+        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: !isAscending)]
         request.fetchLimit = 1
 
         do {
@@ -240,6 +258,43 @@ class RecordHistoryManager: ObservableObject {
             }
         } catch {
             debugLog("❌ Failed to get furthest record: \(error.localizedDescription)")
+        }
+
+        return nil
+    }
+
+    /// Get the furthest record for a given type within a specific year
+    /// Used for displaying location summaries when a specific year is selected
+    /// - Parameters:
+    ///   - type: The record type (e.g., "Furthest North")
+    ///   - year: The year to query
+    /// - Returns: A tuple with value and location name, or nil if no record found
+    func getFurthestRecordForYear(type: String, year: Int) -> (value: Double, locationName: String?)? {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        let calendar = Calendar.current
+        guard let yearStart = calendar.date(from: DateComponents(year: year, month: 1, day: 1)),
+              let yearEnd = calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1)) else {
+            return nil
+        }
+
+        request.predicate = NSPredicate(
+            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+            type, yearStart as NSDate, yearEnd as NSDate
+        )
+
+        // Sort to get the most extreme value using RecordType.isAscending
+        let isAscending = RecordType.from(string: type)?.isAscending ?? true
+        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: !isAscending)]
+        request.fetchLimit = 1
+
+        do {
+            let results = try context.fetch(request)
+            if let record = results.first {
+                return (value: record.value, locationName: record.locationName)
+            }
+        } catch {
+            debugLog("❌ Failed to get furthest record for year: \(error.localizedDescription)")
         }
 
         return nil
@@ -486,8 +541,8 @@ class RecordHistoryManager: ObservableObject {
             // Reload visited regions (now empty)
             RegionTrackingManager.shared.loadVisitedRegions()
 
-            // Clear daily statistics
-            DailyStatisticManager.shared.clearAllStatistics()
+            // Note: Daily records are stored in RecordHistoryEntry with timeFrame="Daily"
+            // and are cleared along with other records above
 
             // Clear cached thumbnails
             ThumbnailCache.shared.clearAllThumbnails()
@@ -508,8 +563,7 @@ class RecordHistoryManager: ObservableObject {
         // Reset in-memory records first
         RecordManager.shared.resetRecords()
 
-        // Clear daily statistics as well (even for local-only clear)
-        DailyStatisticManager.shared.clearAllStatistics()
+        // Note: Daily records are stored in RecordHistoryEntry and will be cleared with the database
 
         // Clear cached thumbnails (will regenerate on app launch after iCloud sync)
         ThumbnailCache.shared.clearAllThumbnails()
@@ -888,4 +942,444 @@ class RecordHistoryManager: ObservableObject {
             return 0
         }
     }
+
+    // MARK: - Aggregate Queries for Statistics
+
+    /// Get all years that have record history data
+    /// - Returns: Array of years sorted descending (most recent first)
+    func getAvailableYears() -> [Int] {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+
+        do {
+            let results = try context.fetch(request)
+            let calendar = Calendar.current
+            let years = Set(results.compactMap { entry -> Int? in
+                guard let date = entry.timestamp else { return nil }
+                return calendar.component(.year, from: date)
+            })
+            return years.sorted(by: >)
+        } catch {
+            debugLog("❌ Error fetching available years: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Get monthly aggregates for a specific year from RecordHistoryEntry
+    /// Groups records by month and finds the extreme value for each record type
+    /// - Parameter year: The year to query
+    /// - Returns: Array of MonthlyAggregate sorted by month
+    func getMonthlyAggregates(for year: Int) -> [MonthlyAggregate] {
+        let calendar = Calendar.current
+        guard let yearStart = calendar.date(from: DateComponents(year: year, month: 1, day: 1)),
+              let yearEnd = calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1)) else {
+            return []
+        }
+
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "timestamp >= %@ AND timestamp < %@",
+            yearStart as NSDate,
+            yearEnd as NSDate
+        )
+
+        do {
+            let records = try context.fetch(request)
+
+            // Group by month
+            var monthlyData: [Int: [RecordHistoryEntry]] = [:]
+            for record in records {
+                guard let timestamp = record.timestamp else { continue }
+                let month = calendar.component(.month, from: timestamp)
+                monthlyData[month, default: []].append(record)
+            }
+
+            // Build aggregates for each month
+            return monthlyData.map { month, monthRecords in
+                buildMonthlyAggregate(year: year, month: month, records: monthRecords)
+            }.sorted { $0.month < $1.month }
+        } catch {
+            debugLog("❌ Error fetching monthly aggregates: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Get yearly aggregates from all RecordHistoryEntry records
+    /// Groups records by year and finds the extreme value for each record type
+    /// - Returns: Array of YearlyAggregate sorted by year
+    func getYearlyAggregates() -> [YearlyAggregate] {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        let calendar = Calendar.current
+
+        do {
+            let records = try context.fetch(request)
+
+            // Group by year
+            var yearlyData: [Int: [RecordHistoryEntry]] = [:]
+            for record in records {
+                guard let timestamp = record.timestamp else { continue }
+                let year = calendar.component(.year, from: timestamp)
+                yearlyData[year, default: []].append(record)
+            }
+
+            // Build aggregates for each year
+            return yearlyData.map { year, yearRecords in
+                buildYearlyAggregate(year: year, records: yearRecords)
+            }.sorted { $0.year < $1.year }
+        } catch {
+            debugLog("❌ Error fetching yearly aggregates: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Build a MonthlyAggregate from a set of records
+    private func buildMonthlyAggregate(year: Int, month: Int, records: [RecordHistoryEntry]) -> MonthlyAggregate {
+        let extremes = ExtractedExtremes.extract(from: records)
+        return MonthlyAggregate(
+            year: year,
+            month: month,
+            maxNorth: extremes.maxNorth,
+            maxSouth: extremes.maxSouth,
+            maxEast: extremes.maxEast,
+            maxWest: extremes.maxWest,
+            maxUp: extremes.maxUp,
+            maxDistanceFromHome: extremes.maxDistanceFromHome
+        )
+    }
+
+    /// Build a YearlyAggregate from a set of records
+    private func buildYearlyAggregate(year: Int, records: [RecordHistoryEntry]) -> YearlyAggregate {
+        let extremes = ExtractedExtremes.extract(from: records)
+        return YearlyAggregate(
+            year: year,
+            maxNorth: extremes.maxNorth,
+            maxSouth: extremes.maxSouth,
+            maxEast: extremes.maxEast,
+            maxWest: extremes.maxWest,
+            maxUp: extremes.maxUp,
+            maxDistanceFromHome: extremes.maxDistanceFromHome
+        )
+    }
+
+    // MARK: - Daily Record Management
+
+    /// Update or create a daily record for a specific date and record type
+    /// Daily records track the extreme value for each day (used for "This Month" charts)
+    /// - Parameters:
+    ///   - recordType: The record type (e.g., .north)
+    ///   - value: The new value to compare against existing
+    ///   - location: The location where this value was recorded
+    ///   - locationName: Optional reverse-geocoded name
+    ///   - date: The date for this daily record (defaults to today)
+    func updateDailyRecord(
+        recordType: RecordType,
+        value: Double,
+        location: CLLocation,
+        locationName: String?,
+        date: Date = Date()
+    ) {
+        let calendar = Calendar.current
+        let dayStart = calendar.startOfDay(for: date)
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)!
+
+        // Check if we already have a daily record for this type and date
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
+            recordType.rawValue,
+            TimeFrame.daily.rawValue,
+            dayStart as NSDate,
+            dayEnd as NSDate
+        )
+        request.fetchLimit = 1
+
+        do {
+            let existing = try context.fetch(request).first
+
+            if let existing = existing {
+                // Check if new value is better
+                let shouldUpdate = recordType.shouldReplace(newValue: value, oldValue: existing.value)
+                if shouldUpdate {
+                    existing.value = value
+                    existing.latitude = location.coordinate.latitude
+                    existing.longitude = location.coordinate.longitude
+                    existing.altitude = location.altitude
+                    existing.locationName = locationName
+                    try context.save()
+                }
+            } else {
+                // Create new daily record
+                let newEntry = RecordHistoryEntry(context: context)
+                newEntry.id = UUID()
+                newEntry.timestamp = date
+                newEntry.dateAdded = Date()
+                newEntry.recordType = recordType.rawValue
+                newEntry.timeFrame = TimeFrame.daily.rawValue
+                newEntry.value = value
+                newEntry.latitude = location.coordinate.latitude
+                newEntry.longitude = location.coordinate.longitude
+                newEntry.altitude = location.altitude
+                newEntry.locationName = locationName
+                try context.save()
+            }
+        } catch {
+            debugLog("❌ Error updating daily record: \(error.localizedDescription)")
+        }
+    }
+
+    /// Updates all daily records for a location (N, S, E, W, altitude, distance from home)
+    ///
+    /// This is the single source of truth for daily record updates - called by both:
+    /// - `RecordManager` for live location updates
+    /// - `PhotoLibraryScanner` for photo imports
+    ///
+    /// Daily records track the extreme value for each day and are used for "This Month" charts.
+    /// Old daily records (older than current month) are automatically cleaned up.
+    ///
+    /// - Parameters:
+    ///   - location: The location to record
+    ///   - locationName: Optional reverse-geocoded name
+    ///   - date: The date for the record (defaults to now)
+    ///   - homeCoordinate: Optional home coordinate for distance calculation
+    func updateAllDailyRecords(
+        location: CLLocation,
+        locationName: String? = nil,
+        date: Date = Date(),
+        homeCoordinate: CLLocationCoordinate2D? = nil
+    ) {
+        let lat = location.coordinate.latitude
+        let lon = location.coordinate.longitude
+        let alt = location.altitude
+
+        // Update directional extremes
+        updateDailyRecord(recordType: .north, value: lat, location: location, locationName: locationName, date: date)
+        updateDailyRecord(recordType: .south, value: lat, location: location, locationName: locationName, date: date)
+        updateDailyRecord(recordType: .east, value: lon, location: location, locationName: locationName, date: date)
+        updateDailyRecord(recordType: .west, value: lon, location: location, locationName: locationName, date: date)
+
+        // Update altitude (skip unrealistic values)
+        if alt <= maxRealisticAltitudeMeters {
+            updateDailyRecord(recordType: .up, value: alt, location: location, locationName: locationName, date: date)
+        }
+
+        // Update distance from home
+        if let homeCoord = homeCoordinate {
+            let distance = distanceBetween(from: location.coordinate, to: homeCoord)
+            updateDailyRecord(recordType: .fromHome, value: distance, location: location, locationName: locationName, date: date)
+        }
+    }
+
+    /// Fetch daily records for the current month (for "This Month" charts)
+    /// - Returns: Dictionary mapping day of month to array of records for that day
+    func getDailyRecordsForCurrentMonth() -> [Int: [RecordHistoryEntry]] {
+        let calendar = Calendar.current
+        guard let monthStart = calendar.dateInterval(of: .month, for: Date())?.start,
+              let monthEnd = calendar.dateInterval(of: .month, for: Date())?.end else {
+            return [:]
+        }
+
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
+            TimeFrame.daily.rawValue,
+            monthStart as NSDate,
+            monthEnd as NSDate
+        )
+
+        do {
+            let records = try context.fetch(request)
+
+            // Group by day of month
+            var result: [Int: [RecordHistoryEntry]] = [:]
+            for record in records {
+                guard let timestamp = record.timestamp else { continue }
+                let day = calendar.component(.day, from: timestamp)
+                result[day, default: []].append(record)
+            }
+            return result
+        } catch {
+            debugLog("❌ Error fetching daily records: \(error.localizedDescription)")
+            return [:]
+        }
+    }
+
+    /// Clean up old daily records (older than current month)
+    /// Called on Stats tab appearance and app launch
+    func cleanupOldDailyRecords() {
+        let calendar = Calendar.current
+        guard let monthStart = calendar.dateInterval(of: .month, for: Date())?.start else {
+            return
+        }
+
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "timeFrame == %@ AND timestamp < %@",
+            TimeFrame.daily.rawValue,
+            monthStart as NSDate
+        )
+
+        do {
+            let oldRecords = try context.fetch(request)
+            if oldRecords.isEmpty { return }
+
+            let count = oldRecords.count
+            for record in oldRecords {
+                context.delete(record)
+            }
+            try context.save()
+            debugLog("🧹 Cleaned up \(count) old daily records (before \(monthStart))")
+        } catch {
+            debugLog("❌ Error cleaning up old daily records: \(error.localizedDescription)")
+        }
+    }
+
+    /// Get a structured daily aggregate for a specific day (for chart display)
+    /// - Parameter day: Day of month (1-31)
+    /// - Parameter records: Dictionary from getDailyRecordsForCurrentMonth()
+    /// - Returns: A DailyAggregate with extreme values for that day
+    func getDailyAggregate(for day: Int, from records: [Int: [RecordHistoryEntry]]) -> DailyAggregate {
+        guard let dayRecords = records[day] else {
+            return DailyAggregate(day: day)
+        }
+
+        // Daily records have one entry per type, so no comparison needed
+        let extremes = ExtractedExtremes.extract(from: dayRecords, compareExtremes: false)
+        return DailyAggregate(
+            day: day,
+            maxNorth: extremes.maxNorth,
+            maxSouth: extremes.maxSouth,
+            maxEast: extremes.maxEast,
+            maxWest: extremes.maxWest,
+            maxUp: extremes.maxUp,
+            maxDistanceFromHome: extremes.maxDistanceFromHome
+        )
+    }
+}
+
+// MARK: - Aggregate Extraction Helper
+
+/// Extracted extreme values from a set of records (internal helper)
+private struct ExtractedExtremes {
+    var maxNorth: Double?
+    var maxSouth: Double?
+    var maxEast: Double?
+    var maxWest: Double?
+    var maxUp: Double?
+    var maxDistanceFromHome: Double?
+
+    /// Extract extreme values from records, optionally comparing against existing values
+    /// - Parameters:
+    ///   - records: The records to extract from
+    ///   - compareExtremes: If true, keeps the most extreme value when multiple records exist for a type
+    ///                     If false, just takes the last value (for daily records where there's one per type)
+    static func extract(from records: [RecordHistoryEntry], compareExtremes: Bool = true) -> ExtractedExtremes {
+        var result = ExtractedExtremes()
+
+        for record in records {
+            guard let recordType = record.recordType,
+                  let type = RecordType.from(string: recordType) else { continue }
+
+            let value = record.value
+
+            switch type {
+            case .north:
+                if !compareExtremes || result.maxNorth == nil || value > result.maxNorth! {
+                    result.maxNorth = value
+                }
+            case .south:
+                if !compareExtremes || result.maxSouth == nil || value < result.maxSouth! {
+                    result.maxSouth = value
+                }
+            case .east:
+                if !compareExtremes || result.maxEast == nil || value > result.maxEast! {
+                    result.maxEast = value
+                }
+            case .west:
+                if !compareExtremes || result.maxWest == nil || value < result.maxWest! {
+                    result.maxWest = value
+                }
+            case .up:
+                if !compareExtremes || result.maxUp == nil || value > result.maxUp! {
+                    result.maxUp = value
+                }
+            case .fromHome:
+                if !compareExtremes || result.maxDistanceFromHome == nil || value > result.maxDistanceFromHome! {
+                    result.maxDistanceFromHome = value
+                }
+            }
+        }
+
+        return result
+    }
+}
+
+// MARK: - Aggregate Data Structures
+
+/// Aggregate of daily extreme values (for "This Month" charts)
+struct DailyAggregate {
+    let day: Int  // Day of month (1-31)
+    let maxNorth: Double?
+    let maxSouth: Double?
+    let maxEast: Double?
+    let maxWest: Double?
+    let maxUp: Double?
+    let maxDistanceFromHome: Double?
+
+    init(
+        day: Int,
+        maxNorth: Double? = nil,
+        maxSouth: Double? = nil,
+        maxEast: Double? = nil,
+        maxWest: Double? = nil,
+        maxUp: Double? = nil,
+        maxDistanceFromHome: Double? = nil
+    ) {
+        self.day = day
+        self.maxNorth = maxNorth
+        self.maxSouth = maxSouth
+        self.maxEast = maxEast
+        self.maxWest = maxWest
+        self.maxUp = maxUp
+        self.maxDistanceFromHome = maxDistanceFromHome
+    }
+}
+
+/// Aggregate of monthly extreme values (for "This Year" charts)
+struct MonthlyAggregate: Identifiable {
+    let id = UUID()
+    let year: Int
+    let month: Int
+    let maxNorth: Double?
+    let maxSouth: Double?
+    let maxEast: Double?
+    let maxWest: Double?
+    let maxUp: Double?
+    let maxDistanceFromHome: Double?
+
+    /// Cached month name formatter
+    private static let monthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM"
+        return formatter
+    }()
+
+    var monthName: String {
+        var components = DateComponents()
+        components.month = month
+        if let date = Calendar.current.date(from: components) {
+            return MonthlyAggregate.monthFormatter.string(from: date)
+        }
+        return "\(month)"
+    }
+}
+
+/// Aggregate of yearly extreme values (for "All Years" charts)
+struct YearlyAggregate: Identifiable {
+    let id = UUID()
+    let year: Int
+    let maxNorth: Double?
+    let maxSouth: Double?
+    let maxEast: Double?
+    let maxWest: Double?
+    let maxUp: Double?
+    let maxDistanceFromHome: Double?
 }

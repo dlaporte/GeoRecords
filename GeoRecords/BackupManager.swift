@@ -1,6 +1,7 @@
 import Foundation
 import CoreData
 import UIKit
+import UserNotifications
 
 /// Manager for exporting and importing GeoRecords data backups
 /// Backups are JSON files containing record metadata and photo asset identifiers
@@ -44,6 +45,7 @@ class BackupManager {
         let notifyOnMonthlyRecords: Bool
         let notifyOnYearlyRecords: Bool
         let notifyOnAllTimeRecords: Bool
+        let notifyOnNewRegion: Bool?  // Optional for backward compatibility with older backups
         let photoPromptsEnabled: Bool
         let inactivityReminderEnabled: Bool
         let summaryNotificationsEnabled: Bool
@@ -140,6 +142,7 @@ class BackupManager {
                 notifyOnMonthlyRecords: settingsManager.notifyOnMonthlyRecords,
                 notifyOnYearlyRecords: settingsManager.notifyOnYearlyRecords,
                 notifyOnAllTimeRecords: settingsManager.notifyOnAllTimeRecords,
+                notifyOnNewRegion: settingsManager.notifyOnNewRegion,
                 photoPromptsEnabled: settingsManager.photoPromptsEnabled,
                 inactivityReminderEnabled: settingsManager.inactivityReminderEnabled,
                 summaryNotificationsEnabled: settingsManager.summaryNotificationsEnabled,
@@ -263,6 +266,7 @@ class BackupManager {
             let previousNotifyMonthly = settingsManager.notifyOnMonthlyRecords
             let previousNotifyYearly = settingsManager.notifyOnYearlyRecords
             let previousNotifyAllTime = settingsManager.notifyOnAllTimeRecords
+            let previousNotifyNewRegion = settingsManager.notifyOnNewRegion
             let previousPhotoPrompts = settingsManager.photoPromptsEnabled
             let previousInactivityReminder = settingsManager.inactivityReminderEnabled
             let previousSummaryNotifications = settingsManager.summaryNotificationsEnabled
@@ -288,6 +292,7 @@ class BackupManager {
                 settingsManager.notifyOnMonthlyRecords = backupSettings.notifyOnMonthlyRecords
                 settingsManager.notifyOnYearlyRecords = backupSettings.notifyOnYearlyRecords
                 settingsManager.notifyOnAllTimeRecords = backupSettings.notifyOnAllTimeRecords
+                settingsManager.notifyOnNewRegion = backupSettings.notifyOnNewRegion ?? false  // Default for older backups
                 settingsManager.photoPromptsEnabled = backupSettings.photoPromptsEnabled
                 settingsManager.inactivityReminderEnabled = backupSettings.inactivityReminderEnabled
                 settingsManager.summaryNotificationsEnabled = backupSettings.summaryNotificationsEnabled
@@ -299,6 +304,33 @@ class BackupManager {
 
                 settingsManager.saveSettings()
                 debugLog("⚙️ Settings restored from backup")
+
+                // Request notification permissions if any notification settings are enabled
+                let hasNotificationsEnabled = backupSettings.notifyOnMonthlyRecords ||
+                                             backupSettings.notifyOnYearlyRecords ||
+                                             backupSettings.notifyOnAllTimeRecords ||
+                                             (backupSettings.notifyOnNewRegion ?? false) ||
+                                             backupSettings.summaryNotificationsEnabled ||
+                                             backupSettings.inactivityReminderEnabled
+
+                if hasNotificationsEnabled {
+                    Task {
+                        let center = UNUserNotificationCenter.current()
+                        let notificationSettings = await center.notificationSettings()
+
+                        // Only request if permissions haven't been determined yet
+                        if notificationSettings.authorizationStatus == .notDetermined {
+                            do {
+                                let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+                                debugLog("📱 Notification permissions requested after backup restore - granted: \(granted)")
+                            } catch {
+                                debugLog("❌ Failed to request notification permissions after restore: \(error.localizedDescription)")
+                            }
+                        } else {
+                            debugLog("📱 Notification status after restore: \(notificationSettings.authorizationStatus.rawValue)")
+                        }
+                    }
+                }
             }
 
             // PHASE 6: Import all validated records
@@ -335,6 +367,7 @@ class BackupManager {
                 settingsManager.notifyOnMonthlyRecords = previousNotifyMonthly
                 settingsManager.notifyOnYearlyRecords = previousNotifyYearly
                 settingsManager.notifyOnAllTimeRecords = previousNotifyAllTime
+                settingsManager.notifyOnNewRegion = previousNotifyNewRegion
                 settingsManager.photoPromptsEnabled = previousPhotoPrompts
                 settingsManager.inactivityReminderEnabled = previousInactivityReminder
                 settingsManager.summaryNotificationsEnabled = previousSummaryNotifications
@@ -353,8 +386,9 @@ class BackupManager {
                 debugLog("🧹 Post-backup-import cleanup: cleaned \(cleaned) record(s)")
             }
 
-            // Regenerate daily statistics for graphs
-            DailyStatisticManager.shared.regenerateAllStatistics()
+            // Clean up old daily records (daily records are now stored in RecordHistoryEntry)
+            // Old daily records from previous months will be cleaned up automatically
+            RecordHistoryManager.shared.cleanupOldDailyRecords()
 
             // PHASE 10: Trigger CloudKit sync
             do {

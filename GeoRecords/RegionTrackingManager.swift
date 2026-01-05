@@ -2,6 +2,7 @@ import Foundation
 import CoreLocation
 import Photos
 import CoreData
+import UserNotifications
 
 // MARK: - Discovered Region (for confirmation UI)
 
@@ -144,11 +145,10 @@ class RegionTrackingManager: ObservableObject {
 
             if let results = try? context.fetch(fuzzyRequest) {
                 let targetLocation = CLLocation(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
-                let threshold: Double = 100.0  // 100 meters
 
                 for cached in results {
                     let cachedLocation = CLLocation(latitude: cached.photoLatitude, longitude: cached.photoLongitude)
-                    if cachedLocation.distance(from: targetLocation) < threshold {
+                    if cachedLocation.distance(from: targetLocation) < regionTrackingDistanceThresholdMeters {
                         return cached.regionCode
                     }
                 }
@@ -200,6 +200,9 @@ class RegionTrackingManager: ObservableObject {
             // Deduplicate regions with same code
             deduplicateRegions()
 
+            // Migrate: Add US country if US states exist but US country doesn't
+            migrateUSCountryIfNeeded()
+
             // Re-fetch after cleanup
             let cleanedResults = try context.fetch(request)
 
@@ -214,6 +217,42 @@ class RegionTrackingManager: ObservableObject {
         } catch {
             debugLog("⚠️ RegionTrackingManager: Failed to load visited regions: \(error.localizedDescription)")
         }
+    }
+
+    /// Migrate: If US states exist but US country doesn't, add the US country
+    private func migrateUSCountryIfNeeded() {
+        // Check if US country already exists
+        let usRequest: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
+        usRequest.predicate = NSPredicate(format: "regionCode == %@", "US")
+        usRequest.fetchLimit = 1
+
+        if let _ = try? context.fetch(usRequest).first {
+            return  // US country already exists
+        }
+
+        // Check if any US states exist
+        let statesRequest: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
+        statesRequest.predicate = NSPredicate(format: "regionCode BEGINSWITH %@ AND regionType == %@", "US-", RegionType.state.rawValue)
+
+        guard let usStates = try? context.fetch(statesRequest), !usStates.isEmpty else {
+            return  // No US states
+        }
+
+        // Collect all visit dates from US states
+        var allDates: [Date] = []
+        for state in usStates {
+            allDates.append(contentsOf: state.visitDatesArray)
+        }
+
+        // Add US country with all the state visit dates
+        let usCountry = VisitedRegion(context: context)
+        usCountry.regionCode = "US"
+        usCountry.regionName = "United States"
+        usCountry.regionType = RegionType.country.rawValue
+        usCountry.visitDates = Array(Set(allDates)).sorted() as NSArray
+
+        saveContext()
+        debugLog("📍 Migrated: Added US country with \(allDates.count) visit dates from \(usStates.count) states")
     }
 
     /// Deduplicate regions with the same regionCode, merging visit dates
@@ -374,14 +413,17 @@ class RegionTrackingManager: ObservableObject {
         request.fetchLimit = 1
 
         let region: VisitedRegion
+        let isNewRegion: Bool
         if let existing = try? context.fetch(request).first {
             region = existing
+            isNewRegion = false
         } else {
             region = VisitedRegion(context: context)
             region.regionCode = code
             region.regionName = name
             region.regionType = type.rawValue
             region.visitDates = NSArray()
+            isNewRegion = true
         }
 
         // Add date if not already present (dedupe by calendar day)
@@ -399,6 +441,16 @@ class RegionTrackingManager: ObservableObject {
         }
 
         saveContext()
+
+        // Send notification if this is a new region
+        if isNewRegion && SettingsManager.shared.notifyOnNewRegion {
+            sendNewRegionNotification(name: name, type: type)
+        }
+
+        // If this is a US state, also record a visit to the US country
+        if type == .state && code.hasPrefix("US-") {
+            addVisitToRegion(code: "US", name: "United States", type: .country, date: date)
+        }
     }
 
     private func saveContext() {
@@ -407,6 +459,46 @@ class RegionTrackingManager: ObservableObject {
             try context.save()
         } catch {
             debugLog("⚠️ RegionTrackingManager: Failed to save context: \(error.localizedDescription)")
+        }
+    }
+
+    /// Send a notification when entering a new region
+    private func sendNewRegionNotification(name: String, type: RegionType) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+
+            guard settings.authorizationStatus == .authorized else {
+                debugLog("⚠️ Cannot send new region notification - authorization status: \(settings.authorizationStatus.rawValue)")
+                return
+            }
+
+            let content = UNMutableNotificationContent()
+
+            switch type {
+            case .state:
+                content.title = "New State Visited!"
+                content.body = "Welcome to \(name)"
+            case .country:
+                content.title = "New Country Visited!"
+                content.body = "Welcome to \(name)"
+            }
+
+            content.sound = .default
+            content.categoryIdentifier = "NEW_REGION"
+
+            let request = UNNotificationRequest(
+                identifier: "new-region-\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            )
+
+            do {
+                try await center.add(request)
+                debugLog("📍 Sent new region notification for \(name)")
+            } catch {
+                debugLog("❌ Failed to send new region notification: \(error.localizedDescription)")
+            }
         }
     }
 

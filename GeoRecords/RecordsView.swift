@@ -8,6 +8,8 @@ extension Notification.Name {
     static let navigateToiCloudSync = Notification.Name("navigateToiCloudSync")
     static let scrollToiCloudSync = Notification.Name("scrollToiCloudSync")
     static let showSetupWizard = Notification.Name("showSetupWizard")
+    static let statisticsDidChange = Notification.Name("statisticsDidChange")
+    static let recordsDidChange = Notification.Name("recordsDidChange")
 }
 
 // MARK: - Layout Constants
@@ -56,6 +58,7 @@ struct RecordsView: View {
                     availableYears: availableYears,
                     timeFrameLabel: { timeFrame in
                         switch timeFrame {
+                        case .daily: return "Daily"
                         case .allTime: return "All Years"
                         case .year: return "This Year"
                         case .month: return "This Month"
@@ -593,6 +596,8 @@ private struct TimeFramePickerWithBadges: View {
 
     private func badgeCount(for timeFrame: TimeFrame) -> Int {
         switch timeFrame {
+        case .daily:
+            return 0  // No badge for daily records
         case .month:
             return recordManager.newMonthlyRecordCount
         case .year:

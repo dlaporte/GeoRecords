@@ -320,6 +320,7 @@ class PhotoLibraryScanner: ObservableObject {
             let batchEnd = min(batchStart + batchSize, count)
             var batchPhotosWithLocation = 0
             var batchRegionUpdates: [(code: String, asset: PHAsset, info: RegionInfo?)] = []
+            var batchPhotoLocations: [(location: CLLocation, timestamp: Date)] = []
 
             // Process batch with autoreleasepool to prevent memory buildup
             autoreleasepool {
@@ -341,6 +342,11 @@ class PhotoLibraryScanner: ObservableObject {
                     }
 
                     batchPhotosWithLocation += 1
+
+                    // Collect photo location for daily statistics
+                    if let photoDate = asset.creationDate {
+                        batchPhotoLocations.append((location: location, timestamp: photoDate))
+                    }
 
                     // Collect ALL candidates for each direction
                     northCandidates.append((lat, asset, location))
@@ -383,12 +389,11 @@ class PhotoLibraryScanner: ObservableObject {
             self.photosWithLocation += batchPhotosWithLocation
 
             // Apply region updates
-            let maxPhotosPerRegion = 50
             for (code, asset, info) in batchRegionUpdates {
                 let isNewRegion = self.regionPhotoMap[code] == nil
                 let currentCount = self.regionPhotoMap[code]?.assets.count ?? 0
 
-                if currentCount < maxPhotosPerRegion {
+                if currentCount < maxPhotosPerRegionDuringImport {
                     if self.regionPhotoMap[code] != nil {
                         self.regionPhotoMap[code]?.assets.append(asset)
                     } else if let info = info ?? regionInfoCache[code] {
@@ -406,12 +411,46 @@ class PhotoLibraryScanner: ObservableObject {
                 }
             }
 
+            // Update daily records for photos from the current month only
+            // Historical chart data comes from RecordHistoryEntry, not daily records
+            let calendar = Calendar.current
+            guard let currentMonthStart = calendar.dateInterval(of: .month, for: Date())?.start else {
+                continue
+            }
+
+            for (photoLocation, photoTimestamp) in batchPhotoLocations {
+                // Only create daily records for current month photos
+                if photoTimestamp >= currentMonthStart {
+                    await MainActor.run {
+                        updateDailyRecordsForPhoto(location: photoLocation, date: photoTimestamp)
+                    }
+                }
+            }
+
             // Brief yield to UI
             try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
         }
 
-        // Daily statistics are recorded during import (not scan)
-        // This ensures only user-selected records affect the charts
+        debugLog("📊 Processed daily records for current month photos")
+
+        // Create monthly RecordHistoryEntry records for all historical months
+        // This enables the Stats tab to show location names when dragging over chart bars
+        let monthlyRecordsCreated = await createMonthlyHistoricalRecords(
+            northCandidates: northCandidates,
+            southCandidates: southCandidates,
+            eastCandidates: eastCandidates,
+            westCandidates: westCandidates,
+            upCandidates: upCandidates,
+            fromHomeCandidates: fromHomeCandidates
+        )
+        debugLog("📊 Created \(monthlyRecordsCreated) monthly historical records for statistics")
+
+        // Start background geocoding for the newly created monthly records
+        if monthlyRecordsCreated > 0 {
+            Task {
+                await BackgroundGeocoder.shared.geocodeMissingLocations()
+            }
+        }
 
         // Scanning complete, now processing results
         isScanning = false
@@ -429,7 +468,6 @@ class PhotoLibraryScanner: ObservableObject {
         // Sort candidates by extremeness and keep top N PER YEAR and PER MONTH (current year)
         // This ensures each year AND each month has candidates for all record types
         // Same limit for all time periods - consistent infinite carousel behavior
-        let maxCandidatesPerPeriod = 50
         let calendar = Calendar.current
         let currentYear = calendar.component(.year, from: Date())
 
@@ -463,7 +501,7 @@ class PhotoLibraryScanner: ObservableObject {
 
             // Add top N per year (for past years)
             for (year, yearCandidates) in byYear where year != currentYear {
-                for candidate in yearCandidates.prefix(maxCandidatesPerPeriod) {
+                for candidate in yearCandidates.prefix(maxCandidatesPerTimeFrameDuringImport) {
                     if !addedIdentifiers.contains(candidate.asset.localIdentifier) {
                         limited.append(candidate)
                         addedIdentifiers.insert(candidate.asset.localIdentifier)
@@ -473,7 +511,7 @@ class PhotoLibraryScanner: ObservableObject {
 
             // Add top N per month for current year (ensures monthly buckets have data)
             for (_, monthCandidates) in byMonth {
-                for candidate in monthCandidates.prefix(maxCandidatesPerPeriod) {
+                for candidate in monthCandidates.prefix(maxCandidatesPerTimeFrameDuringImport) {
                     if !addedIdentifiers.contains(candidate.asset.localIdentifier) {
                         limited.append(candidate)
                         addedIdentifiers.insert(candidate.asset.localIdentifier)
@@ -483,7 +521,7 @@ class PhotoLibraryScanner: ObservableObject {
 
             // Also add top N for current year overall (for yearly bucket)
             if let currentYearCandidates = byYear[currentYear] {
-                for candidate in currentYearCandidates.prefix(maxCandidatesPerPeriod) {
+                for candidate in currentYearCandidates.prefix(maxCandidatesPerTimeFrameDuringImport) {
                     if !addedIdentifiers.contains(candidate.asset.localIdentifier) {
                         limited.append(candidate)
                         addedIdentifiers.insert(candidate.asset.localIdentifier)
@@ -522,6 +560,8 @@ class PhotoLibraryScanner: ObservableObject {
                 // Filter by timeframe
                 let qualifies: Bool
                 switch timeFrame {
+                case .daily:
+                    qualifies = false  // Daily is not used for photo scanning
                 case .month:
                     qualifies = timestamp >= startOfMonth
                 case .year:
@@ -650,6 +690,8 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         switch currentTF {
+        case .daily:
+            currentTimeFrame = .month  // Skip daily, move to month
         case .month:
             currentTimeFrame = .year
         case .year:
@@ -807,20 +849,8 @@ class PhotoLibraryScanner: ObservableObject {
                 importProgress = (index, selectedRecords.count)
             }
 
-            // Record daily statistics ONLY for this specific record type
-            // This prevents a "Furthest North" import from also recording its altitude
-            let location = CLLocation(latitude: record.coordinate.latitude, longitude: record.coordinate.longitude)
-            await MainActor.run {
-                let homeCoord = SettingsManager.shared.homeCoordinate
-                DailyStatisticManager.shared.recordForRecordType(
-                    record.recordType,
-                    location: location,
-                    altitude: record.altitude,
-                    date: record.timestamp,
-                    homeCoordinate: homeCoord,
-                    batchMode: true
-                )
-            }
+            // Note: Daily statistics are now recorded for ALL geotagged photos during scan,
+            // so we don't need to record them again here during import.
 
             // Get photo asset identifier (reference to Apple Photos library)
             let photoAssetIdentifier = record.photoAsset.localIdentifier
@@ -857,7 +887,7 @@ class PhotoLibraryScanner: ObservableObject {
                 )
 
                 // Always add to history (for stats and historical tracking)
-                await MainActor.run {
+                _ = await MainActor.run {
                     RecordHistoryManager.shared.addRecord(recordType: record.recordType, detail: detail)
                 }
 
@@ -871,6 +901,8 @@ class PhotoLibraryScanner: ObservableObject {
                 // RecordManager tracks current records, not historical ones
                 let shouldUpdateRecordManager: Bool
                 switch timeFrame {
+                case .daily:
+                    shouldUpdateRecordManager = false  // Daily records are handled separately
                 case .allTime:
                     shouldUpdateRecordManager = true
                 case .year:
@@ -889,10 +921,6 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         await MainActor.run {
-            // Flush batched daily statistics
-            DailyStatisticManager.shared.flushBatchChanges()
-            debugLog("📊 Daily statistics recorded for \(successCount) imported records")
-
             importProgress = (selectedRecords.count, selectedRecords.count)
             isImporting = false
 
@@ -980,7 +1008,9 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         // Sort each year's candidates by extremeness and create buckets
+        // Exclude current year since it's covered by monthly buckets
         yearlyBuckets = yearDict.keys.sorted(by: >).compactMap { year in
+            guard year != currentYear else { return nil }  // Skip current year
             guard let yearData = yearDict[year] else { return nil }
             var records: [String: [DiscoveredRecord]] = [:]
             for (recordType, candidates) in yearData {
@@ -1354,6 +1384,104 @@ class PhotoLibraryScanner: ObservableObject {
         recordsToDelete = []
     }
 
+    // MARK: - Monthly Historical Records for Statistics
+
+    /// Create RecordHistoryEntry records for each month's extremes
+    /// This enables the Stats tab to show location names when dragging over chart bars
+    /// - Returns: Number of records created
+    private func createMonthlyHistoricalRecords(
+        northCandidates: [PhotoCandidate],
+        southCandidates: [PhotoCandidate],
+        eastCandidates: [PhotoCandidate],
+        westCandidates: [PhotoCandidate],
+        upCandidates: [PhotoCandidate],
+        fromHomeCandidates: [PhotoCandidate]
+    ) async -> Int {
+        let calendar = Calendar.current
+        var recordsCreated = 0
+
+        // Helper to group candidates by year-month and find the extreme for each
+        func findMonthlyExtremes(
+            _ candidates: [PhotoCandidate],
+            ascending: Bool
+        ) -> [String: PhotoCandidate] {
+            var byMonth: [String: [PhotoCandidate]] = [:]
+
+            for candidate in candidates {
+                guard let date = candidate.asset.creationDate else { continue }
+                let year = calendar.component(.year, from: date)
+                let month = calendar.component(.month, from: date)
+                let key = "\(year)-\(String(format: "%02d", month))"
+                byMonth[key, default: []].append(candidate)
+            }
+
+            // Find extreme for each month
+            var extremes: [String: PhotoCandidate] = [:]
+            for (key, monthCandidates) in byMonth {
+                if ascending {
+                    if let extreme = monthCandidates.min(by: { $0.value < $1.value }) {
+                        extremes[key] = extreme
+                    }
+                } else {
+                    if let extreme = monthCandidates.max(by: { $0.value < $1.value }) {
+                        extremes[key] = extreme
+                    }
+                }
+            }
+            return extremes
+        }
+
+        // Find monthly extremes for each record type
+        let recordTypes: [(type: String, candidates: [PhotoCandidate], ascending: Bool)] = [
+            (RecordType.north.rawValue, northCandidates, false),  // Highest latitude
+            (RecordType.south.rawValue, southCandidates, true),   // Lowest latitude
+            (RecordType.east.rawValue, eastCandidates, false),    // Highest longitude
+            (RecordType.west.rawValue, westCandidates, true),     // Lowest longitude
+            (RecordType.up.rawValue, upCandidates, false),        // Highest altitude
+            (RecordType.fromHome.rawValue, fromHomeCandidates, false)  // Furthest distance
+        ]
+
+        for (recordType, candidates, ascending) in recordTypes {
+            let monthlyExtremes = findMonthlyExtremes(candidates, ascending: ascending)
+
+            for (_, candidate) in monthlyExtremes {
+                guard let timestamp = candidate.asset.creationDate else { continue }
+
+                // Check if a record already exists for this type/month
+                let year = calendar.component(.year, from: timestamp)
+                let month = calendar.component(.month, from: timestamp)
+
+                if RecordHistoryManager.shared.getBestRecord(type: recordType, year: year, month: month) != nil {
+                    // Record already exists for this month, skip
+                    continue
+                }
+
+                // Get cloud identifier for cross-device access
+                let photoCloudIdentifier = PHPhotoLibrary.cloudIdentifier(for: candidate.asset)
+
+                // Create the record
+                let detail = RecordDetail(
+                    value: candidate.value,
+                    timestamp: timestamp,
+                    coordinate: candidate.location.coordinate,
+                    altitude: candidate.location.altitude,
+                    locationName: nil,  // Will be geocoded by BackgroundGeocoder
+                    recordType: recordType,
+                    timeFrame: .month,
+                    photoAssetIdentifier: candidate.asset.localIdentifier,
+                    photoCloudIdentifier: photoCloudIdentifier
+                )
+
+                _ = await MainActor.run {
+                    RecordHistoryManager.shared.addRecord(recordType: recordType, detail: detail)
+                }
+                recordsCreated += 1
+            }
+        }
+
+        return recordsCreated
+    }
+
     // MARK: - Region Discovery
 
     /// Convert collected regionPhotoMap to discoveredCountries and discoveredStates arrays
@@ -1401,5 +1529,17 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         debugLog("📍 Confirmed \(confirmedCountries.count) countries, \(confirmedStates.count) states")
+    }
+
+    // MARK: - Daily Record Helpers
+
+    /// Update daily records for a photo location (called for current month photos only)
+    @MainActor
+    private func updateDailyRecordsForPhoto(location: CLLocation, date: Date) {
+        RecordHistoryManager.shared.updateAllDailyRecords(
+            location: location,
+            date: date,
+            homeCoordinate: SettingsManager.shared.homeCoordinate
+        )
     }
 }

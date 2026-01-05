@@ -20,6 +20,9 @@ struct HistoryView: View {
     private var filteredEntries: [RecordHistoryEntry] {
         var entries = Array(historyEntries)
 
+        // Filter out daily records (internal use only for "This Month" charts)
+        entries = entries.filter { $0.timeFrame != TimeFrame.daily.rawValue }
+
         // Filter out records at home (likely test/bogus data)
         if let homeCoord = settings.homeCoordinate {
             let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
@@ -147,6 +150,7 @@ struct CompactHistoryRow: View {
             return .gray
         }
         switch timeFrame {
+        case .daily: return .gray  // Daily records are filtered out, but handle case
         case .month: return .green
         case .year: return .orange
         case .allTime: return .blue

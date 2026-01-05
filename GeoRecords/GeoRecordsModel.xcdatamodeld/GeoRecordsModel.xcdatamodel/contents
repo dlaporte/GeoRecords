@@ -36,6 +36,18 @@
         <attribute name="timeFrame" optional="YES" attributeType="String"/>
         <attribute name="timestamp" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="value" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <fetchIndex name="byRecordTypeAndTimeFrame">
+            <fetchIndexElement property="recordType" type="Binary" order="ascending"/>
+            <fetchIndexElement property="timeFrame" type="Binary" order="ascending"/>
+            <fetchIndexElement property="timestamp" type="Binary" order="descending"/>
+        </fetchIndex>
+        <fetchIndex name="byTimestamp">
+            <fetchIndexElement property="timestamp" type="Binary" order="descending"/>
+        </fetchIndex>
+        <fetchIndex name="byRecordType">
+            <fetchIndexElement property="recordType" type="Binary" order="ascending"/>
+            <fetchIndexElement property="timestamp" type="Binary" order="descending"/>
+        </fetchIndex>
     </entity>
     <entity name="VisitedRegion" representedClassName="VisitedRegion" syncable="YES" codeGenerationType="class">
         <attribute name="regionCode" optional="YES" attributeType="String"/>

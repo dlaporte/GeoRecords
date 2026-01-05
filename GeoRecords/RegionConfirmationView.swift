@@ -45,9 +45,6 @@ struct RegionConfirmationView: View {
                     }
                     .padding()
                 }
-
-                // Select All / Deselect All buttons
-                selectionButtons
             }
 
             // Navigation
@@ -81,27 +78,6 @@ struct RegionConfirmationView: View {
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var selectionButtons: some View {
-        HStack(spacing: 12) {
-            Button("Select All") {
-                for i in regions.indices {
-                    regions[i].confirmed = true
-                }
-            }
-            .buttonStyle(.bordered)
-
-            Button("Deselect All") {
-                for i in regions.indices {
-                    regions[i].confirmed = false
-                }
-            }
-            .buttonStyle(.bordered)
-            .tint(.secondary)
-        }
-        .padding()
-        .background(Color(UIColor.systemBackground))
     }
 
     private var navigationBar: some View {

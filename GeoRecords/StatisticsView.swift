@@ -39,9 +39,9 @@ private func fetchMostExtremeRecord(recordType: String, from startDate: Date, to
         endDate as NSDate
     )
 
-    // Sort by value to get the most extreme
-    let ascending = recordType == RecordType.south.rawValue || recordType == RecordType.west.rawValue
-    request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
+    // Sort by value to get the most extreme using RecordType.isAscending
+    let isAscending = RecordType.from(string: recordType)?.isAscending ?? true
+    request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: !isAscending)]
     request.fetchLimit = 1
 
     do {
@@ -50,6 +50,16 @@ private func fetchMostExtremeRecord(recordType: String, from startDate: Date, to
         debugLog("Error fetching record for chart: \(error.localizedDescription)")
         return nil
     }
+}
+
+/// Formats a date as "Jun 2024" - used for overlay when dragging on charts
+private func formatMonthYear(from date: Date) -> String {
+    let calendar = Calendar.current
+    let month = calendar.component(.month, from: date)
+    let year = calendar.component(.year, from: date)
+    let shortMonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    guard month >= 1 && month <= 12 else { return "?" }
+    return "\(shortMonthNames[month - 1]) \(year)"
 }
 
 /// Determines if an x-axis label should be shown to avoid overcrowding
@@ -77,18 +87,26 @@ private func shouldShowXAxisLabel(for value: AxisValue, dataCount: Int, timeFram
 struct StatisticsView: View {
     @EnvironmentObject var settings: SettingsManager
     @State private var selectedTimeFrame: TimeFrame = .allTime
-    @State private var dailyStats: [DailyStatistic] = []
+    @State private var selectedYear: Int?
+    @State private var availableYears: [Int] = []
+    @State private var dailyRecordsCache: [Int: [RecordHistoryEntry]] = [:]  // Day -> Records
     @State private var monthlyAggregates: [MonthlyAggregate] = []
     @State private var yearlyAggregates: [YearlyAggregate] = []
+    @State private var monthlyAggregatesCache: [Int: MonthlyAggregate] = [:]
+    @State private var yearlyAggregatesCache: [Int: YearlyAggregate] = [:]
     @State private var isLoading = true
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
-                    // Time Frame Picker
-                    StyledTimeFramePicker(selection: $selectedTimeFrame)
-                        .padding(.horizontal)
+                    // Time Frame Picker with year selection
+                    StyledTimeFramePicker(
+                        selection: $selectedTimeFrame,
+                        selectedYear: $selectedYear,
+                        availableYears: availableYears
+                    )
+                    .padding(.horizontal)
 
                     if isLoading {
                         ProgressView("Loading statistics...")
@@ -113,10 +131,11 @@ struct StatisticsView: View {
                                     positiveLabel: "N",
                                     negativeLabel: "S",
                                     data: chartDataForNS,
-                                    timeFrame: selectedTimeFrame,
+                                    timeFrame: effectiveTimeFrame,
                                     positiveRecordType: RecordType.north.rawValue,
                                     negativeRecordType: RecordType.south.rawValue,
-                                    unitSystem: settings.unitSystem
+                                    unitSystem: settings.unitSystem,
+                                    homeCoordinate: settings.homeCoordinate
                                 )
 
                                 // E-W Chart (relative to home, in miles/km)
@@ -129,10 +148,11 @@ struct StatisticsView: View {
                                     positiveLabel: "E",
                                     negativeLabel: "W",
                                     data: chartDataForEW,
-                                    timeFrame: selectedTimeFrame,
+                                    timeFrame: effectiveTimeFrame,
                                     positiveRecordType: RecordType.east.rawValue,
                                     negativeRecordType: RecordType.west.rawValue,
-                                    unitSystem: settings.unitSystem
+                                    unitSystem: settings.unitSystem,
+                                    homeCoordinate: settings.homeCoordinate
                                 )
 
                                 // Distance from Home Chart
@@ -142,7 +162,7 @@ struct StatisticsView: View {
                                     unit: settings.unitSystem == .imperial ? "mi" : "km",
                                     color: .red,
                                     data: chartDataForDistance,
-                                    timeFrame: selectedTimeFrame,
+                                    timeFrame: effectiveTimeFrame,
                                     recordTypeToQuery: RecordType.fromHome.rawValue,
                                     unitSystem: settings.unitSystem
                                 )
@@ -164,7 +184,7 @@ struct StatisticsView: View {
                                 unit: settings.unitSystem == .imperial ? "ft" : "m",
                                 color: .green,
                                 data: chartDataForElevation,
-                                timeFrame: selectedTimeFrame,
+                                timeFrame: effectiveTimeFrame,
                                 recordTypeToQuery: RecordType.up.rawValue,
                                 unitSystem: settings.unitSystem
                             )
@@ -175,9 +195,38 @@ struct StatisticsView: View {
             }
             .navigationTitle("Statistics")
             .onAppear {
+                // Clean up old daily records (older than current month)
+                RecordHistoryManager.shared.cleanupOldDailyRecords()
+
+                loadAvailableYears()
+                loadStatistics()
+
+                // Check geocoding status and trigger if needed
+                let pendingCount = BackgroundGeocoder.shared.pendingGeocodingCount()
+                if pendingCount > 0 {
+                    debugLog("📍 Stats tab: \(pendingCount) records still waiting for geocoding")
+                    Task {
+                        await BackgroundGeocoder.shared.geocodeMissingLocations()
+                        // Reload statistics after geocoding completes to show updated location names
+                        await MainActor.run {
+                            loadStatistics()
+                        }
+                    }
+                }
+            }
+            .onChange(of: selectedTimeFrame) { _, newValue in
+                // Reset year selection when switching away from All Years
+                if newValue != .allTime {
+                    selectedYear = nil
+                }
                 loadStatistics()
             }
-            .onChange(of: selectedTimeFrame) { _, _ in
+            .onChange(of: selectedYear) { _, _ in
+                loadStatistics()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .statisticsDidChange)) { _ in
+                // Reload statistics when data changes (e.g., record deleted)
+                loadAvailableYears()
                 loadStatistics()
             }
         }
@@ -185,33 +234,72 @@ struct StatisticsView: View {
 
     // MARK: - Data Loading
 
+    private func loadAvailableYears() {
+        // Use RecordHistoryEntry as the source of truth for available years
+        availableYears = RecordHistoryManager.shared.getAvailableYears()
+    }
+
     private func loadStatistics() {
         isLoading = true
 
         Task { @MainActor in
-            let manager = DailyStatisticManager.shared
+            let historyManager = RecordHistoryManager.shared
 
             switch selectedTimeFrame {
             case .month:
-                dailyStats = manager.fetchCurrentMonthStatistics()
+                // Current month uses daily records for day-by-day granularity
+                dailyRecordsCache = historyManager.getDailyRecordsForCurrentMonth()
                 monthlyAggregates = []
                 yearlyAggregates = []
+                monthlyAggregatesCache = [:]
+                yearlyAggregatesCache = [:]
 
             case .year:
-                let yearStats = manager.fetchCurrentYearStatistics()
-                monthlyAggregates = manager.aggregateByMonth(yearStats)
-                dailyStats = []
+                // Current year uses RecordHistoryEntry aggregated by month
+                let currentYear = Calendar.current.component(.year, from: Date())
+                monthlyAggregates = historyManager.getMonthlyAggregates(for: currentYear)
+                monthlyAggregatesCache = monthlyAggregates.reduce(into: [:]) { $0[$1.month] = $1 }
+                dailyRecordsCache = [:]
                 yearlyAggregates = []
+                yearlyAggregatesCache = [:]
 
             case .allTime:
-                let allStats = manager.fetchAllStatistics()
-                yearlyAggregates = manager.aggregateByYear(allStats)
-                dailyStats = []
-                monthlyAggregates = []
+                if let year = selectedYear {
+                    // Specific year selected - show month by month from RecordHistoryEntry
+                    monthlyAggregates = historyManager.getMonthlyAggregates(for: year)
+                    monthlyAggregatesCache = monthlyAggregates.reduce(into: [:]) { $0[$1.month] = $1 }
+                    dailyRecordsCache = [:]
+                    yearlyAggregates = []
+                    yearlyAggregatesCache = [:]
+                } else {
+                    // All years - aggregate by year from RecordHistoryEntry
+                    yearlyAggregates = historyManager.getYearlyAggregates()
+                    yearlyAggregatesCache = yearlyAggregates.reduce(into: [:]) { $0[$1.year] = $1 }
+                    dailyRecordsCache = [:]
+                    monthlyAggregates = []
+                    monthlyAggregatesCache = [:]
+                }
+
+            case .daily:
+                // Daily is not a user-visible timeframe, should not be selected
+                break
             }
 
             isLoading = false
         }
+    }
+
+    /// Get daily aggregate for a specific day from the cache
+    private func dailyAggregate(for day: Int) -> DailyAggregate {
+        return RecordHistoryManager.shared.getDailyAggregate(for: day, from: dailyRecordsCache)
+    }
+
+    /// The effective time frame for display - when a specific year is selected, display like .year
+    private var effectiveTimeFrame: TimeFrame {
+        if selectedTimeFrame == .allTime && selectedYear != nil {
+            return .year  // Show month-by-month like "This Year"
+        }
+        return selectedTimeFrame
     }
 
     // MARK: - Computed Properties for Current Values
@@ -219,34 +307,37 @@ struct StatisticsView: View {
     private var hasNoData: Bool {
         switch selectedTimeFrame {
         case .month:
-            return dailyStats.isEmpty
+            return dailyRecordsCache.isEmpty
         case .year:
             return monthlyAggregates.isEmpty
         case .allTime:
+            // When a specific year is selected, we use monthlyAggregates
+            if selectedYear != nil {
+                return monthlyAggregates.isEmpty
+            }
             return yearlyAggregates.isEmpty
+        case .daily:
+            return true  // Daily is not a user-visible timeframe
         }
     }
 
-    private var currentNSSummary: DirectionSummary? {
-        let timeFrame: TimeFrame = selectedTimeFrame
+    /// Helper to get furthest record by recordType
+    private func getFurthestRecord(type: String) -> (value: Double, locationName: String?)? {
+        if selectedTimeFrame == .allTime, let year = selectedYear {
+            return RecordHistoryManager.shared.getFurthestRecordForYear(type: type, year: year)
+        }
+        return RecordHistoryManager.shared.getFurthestRecord(type: type, timeFrame: selectedTimeFrame)
+    }
 
+    private var currentNSSummary: DirectionSummary? {
         // Get the furthest north and south records for current period
-        let northRecord = RecordHistoryManager.shared.getFurthestRecord(
-            type: RecordType.north.rawValue,
-            timeFrame: timeFrame
-        )
-        let southRecord = RecordHistoryManager.shared.getFurthestRecord(
-            type: RecordType.south.rawValue,
-            timeFrame: timeFrame
-        )
+        let northRecord = getFurthestRecord(type: RecordType.north.rawValue)
+        let southRecord = getFurthestRecord(type: RecordType.south.rawValue)
 
         guard northRecord != nil || southRecord != nil else { return nil }
 
         // Calculate great-circle distances from home
-        // North: positive if north of home, negative if south
         let northDistance = northRecord.map { nsDistanceFromHome(latitude: $0.value) } ?? 0
-        // South: we want positive distance for display, but nsDistanceFromHome returns negative for south
-        // So we negate it to get positive distance south of home
         let southDistance = southRecord.map { -nsDistanceFromHome(latitude: $0.value) } ?? 0
 
         // Show records if they have significant distance
@@ -262,25 +353,14 @@ struct StatisticsView: View {
     }
 
     private var currentEWSummary: DirectionSummary? {
-        let timeFrame: TimeFrame = selectedTimeFrame
-
         // Get the furthest east and west records for current period
-        let eastRecord = RecordHistoryManager.shared.getFurthestRecord(
-            type: RecordType.east.rawValue,
-            timeFrame: timeFrame
-        )
-        let westRecord = RecordHistoryManager.shared.getFurthestRecord(
-            type: RecordType.west.rawValue,
-            timeFrame: timeFrame
-        )
+        let eastRecord = getFurthestRecord(type: RecordType.east.rawValue)
+        let westRecord = getFurthestRecord(type: RecordType.west.rawValue)
 
         guard eastRecord != nil || westRecord != nil else { return nil }
 
         // Calculate great-circle distances from home
-        // East: positive if east of home, negative if west
         let eastDistance = eastRecord.map { ewDistanceFromHome(longitude: $0.value) } ?? 0
-        // West: we want positive distance for display, but ewDistanceFromHome returns negative for west
-        // So we negate it to get positive distance west of home
         let westDistance = westRecord.map { -ewDistanceFromHome(longitude: $0.value) } ?? 0
 
         // Show records if they have significant distance
@@ -296,13 +376,8 @@ struct StatisticsView: View {
     }
 
     private var currentElevationSummary: SingleDirectionSummary? {
-        let timeFrame: TimeFrame = selectedTimeFrame
-
         // Get the highest elevation record for current period
-        let elevationRecord = RecordHistoryManager.shared.getFurthestRecord(
-            type: RecordType.up.rawValue,
-            timeFrame: timeFrame
-        )
+        let elevationRecord = getFurthestRecord(type: RecordType.up.rawValue)
 
         guard let record = elevationRecord else { return nil }
 
@@ -320,13 +395,8 @@ struct StatisticsView: View {
     }
 
     private var currentDistanceSummary: SingleDirectionSummary? {
-        let timeFrame: TimeFrame = selectedTimeFrame
-
         // Get the furthest from home record for current period
-        let distanceRecord = RecordHistoryManager.shared.getFurthestRecord(
-            type: RecordType.fromHome.rawValue,
-            timeFrame: timeFrame
-        )
+        let distanceRecord = getFurthestRecord(type: RecordType.fromHome.rawValue)
 
         guard let record = distanceRecord else { return nil }
 
@@ -341,30 +411,6 @@ struct StatisticsView: View {
             locationName: record.locationName,
             formattedValue: formattedValue
         )
-    }
-
-    // MARK: - Aggregate Calculations for Current Period
-
-    private var currentElevation: Double? {
-        switch selectedTimeFrame {
-        case .month:
-            return dailyStats.compactMap { $0.maxUp != 0 ? $0.maxUp : nil }.max()
-        case .year:
-            return monthlyAggregates.compactMap { $0.maxUp }.max()
-        case .allTime:
-            return yearlyAggregates.compactMap { $0.maxUp }.max()
-        }
-    }
-
-    private var currentDistance: Double? {
-        switch selectedTimeFrame {
-        case .month:
-            return dailyStats.map { $0.maxDistanceFromHome }.max()
-        case .year:
-            return monthlyAggregates.compactMap { $0.maxDistanceFromHome }.max()
-        case .allTime:
-            return yearlyAggregates.compactMap { $0.maxDistanceFromHome }.max()
-        }
     }
 
     // MARK: - Chart Data (Bidirectional)
@@ -400,11 +446,17 @@ struct StatisticsView: View {
 
     /// Calculate E/W distance from home to a longitude (in display units: miles or km)
     /// Returns positive for east, negative for west
+    /// Uses simple longitude comparison (not shortest-path) so Japan shows as "east" of US
     private func ewDistanceFromHome(longitude: Double) -> Double {
         guard longitude != 0 else { return 0 }
         let destination = CLLocationCoordinate2D(latitude: homeCoord.latitude, longitude: longitude)
-        let distanceMeters = eastWestDistance(from: homeCoord, to: destination)
-        return distanceMeters * distanceUnitFactor
+        let distanceMeters = distanceBetween(from: homeCoord, to: destination)
+
+        // Determine direction based on simple longitude comparison
+        // East = higher longitude, West = lower longitude
+        // This is more intuitive for users (Japan is "east" of US on a map)
+        let isEast = longitude > homeCoord.longitude
+        return (isEast ? distanceMeters : -distanceMeters) * distanceUnitFactor
     }
 
     private var chartDataForNS: [BidirectionalChartDataPoint] {
@@ -417,17 +469,12 @@ struct StatisticsView: View {
                 return []
             }
 
-            let statsDict = Dictionary(uniqueKeysWithValues: dailyStats.compactMap { stat -> (Int, DailyStatistic)? in
-                guard stat.date != nil else { return nil }
-                return (stat.dayOfMonth, stat)
-            })
-
             return monthRange.compactMap { day in
                 guard let date = calendar.date(byAdding: .day, value: day - 1, to: monthStart) else { return nil }
-                let stat = statsDict[day]
+                let agg = dailyAggregate(for: day)
 
-                let rawPositive = nsDistanceFromHome(latitude: stat?.maxNorth ?? 0)
-                let rawNegative = nsDistanceFromHome(latitude: stat?.maxSouth ?? 0)
+                let rawPositive = nsDistanceFromHome(latitude: agg.maxNorth ?? 0)
+                let rawNegative = nsDistanceFromHome(latitude: agg.maxSouth ?? 0)
 
                 return BidirectionalChartDataPoint(
                     label: "\(day)",
@@ -439,12 +486,16 @@ struct StatisticsView: View {
             }
 
         case .year:
-            return monthlyAggregates.map { agg in
-                let (start, end) = dateRangeForMonth(year: agg.year, month: agg.month)
-                let rawPositive = nsDistanceFromHome(latitude: agg.maxNorth ?? homeLat)
-                let rawNegative = nsDistanceFromHome(latitude: agg.maxSouth ?? homeLat)
+            // Show all 12 months for current year
+            let currentYear = Calendar.current.component(.year, from: Date())
+            let dict = monthlyAggregatesDict
+            return (1...12).map { month in
+                let (start, end) = dateRangeForMonth(year: currentYear, month: month)
+                let agg = dict[month]
+                let rawPositive = nsDistanceFromHome(latitude: agg?.maxNorth ?? homeLat)
+                let rawNegative = nsDistanceFromHome(latitude: agg?.maxSouth ?? homeLat)
                 return BidirectionalChartDataPoint(
-                    label: agg.monthName,
+                    label: monthName(for: month),
                     positiveValue: max(0, rawPositive),
                     negativeValue: min(0, rawNegative),
                     startDate: start,
@@ -453,6 +504,23 @@ struct StatisticsView: View {
             }
 
         case .allTime:
+            // When a specific year is selected, show all 12 months
+            if let year = selectedYear {
+                let dict = monthlyAggregatesDict
+                return (1...12).map { month in
+                    let (start, end) = dateRangeForMonth(year: year, month: month)
+                    let agg = dict[month]
+                    let rawPositive = nsDistanceFromHome(latitude: agg?.maxNorth ?? homeLat)
+                    let rawNegative = nsDistanceFromHome(latitude: agg?.maxSouth ?? homeLat)
+                    return BidirectionalChartDataPoint(
+                        label: monthName(for: month),
+                        positiveValue: max(0, rawPositive),
+                        negativeValue: min(0, rawNegative),
+                        startDate: start,
+                        endDate: end
+                    )
+                }
+            }
             let dict = yearlyAggregatesDict
             return fullYearRange.map { year in
                 let (start, end) = dateRangeForYear(year)
@@ -467,6 +535,9 @@ struct StatisticsView: View {
                     endDate: end
                 )
             }
+
+        case .daily:
+            return []  // Daily is not a user-visible timeframe
         }
     }
 
@@ -480,17 +551,12 @@ struct StatisticsView: View {
                 return []
             }
 
-            let statsDict = Dictionary(uniqueKeysWithValues: dailyStats.compactMap { stat -> (Int, DailyStatistic)? in
-                guard stat.date != nil else { return nil }
-                return (stat.dayOfMonth, stat)
-            })
-
             return monthRange.compactMap { day in
                 guard let date = calendar.date(byAdding: .day, value: day - 1, to: monthStart) else { return nil }
-                let stat = statsDict[day]
+                let agg = dailyAggregate(for: day)
 
-                let rawPositive = ewDistanceFromHome(longitude: stat?.maxEast ?? 0)
-                let rawNegative = ewDistanceFromHome(longitude: stat?.maxWest ?? 0)
+                let rawPositive = ewDistanceFromHome(longitude: agg.maxEast ?? 0)
+                let rawNegative = ewDistanceFromHome(longitude: agg.maxWest ?? 0)
 
                 return BidirectionalChartDataPoint(
                     label: "\(day)",
@@ -502,12 +568,16 @@ struct StatisticsView: View {
             }
 
         case .year:
-            return monthlyAggregates.map { agg in
-                let (start, end) = dateRangeForMonth(year: agg.year, month: agg.month)
-                let rawPositive = ewDistanceFromHome(longitude: agg.maxEast ?? homeLon)
-                let rawNegative = ewDistanceFromHome(longitude: agg.maxWest ?? homeLon)
+            // Show all 12 months for current year
+            let currentYear = Calendar.current.component(.year, from: Date())
+            let dict = monthlyAggregatesDict
+            return (1...12).map { month in
+                let (start, end) = dateRangeForMonth(year: currentYear, month: month)
+                let agg = dict[month]
+                let rawPositive = ewDistanceFromHome(longitude: agg?.maxEast ?? homeLon)
+                let rawNegative = ewDistanceFromHome(longitude: agg?.maxWest ?? homeLon)
                 return BidirectionalChartDataPoint(
-                    label: agg.monthName,
+                    label: monthName(for: month),
                     positiveValue: max(0, rawPositive),
                     negativeValue: min(0, rawNegative),
                     startDate: start,
@@ -516,6 +586,23 @@ struct StatisticsView: View {
             }
 
         case .allTime:
+            // When a specific year is selected, show all 12 months
+            if let year = selectedYear {
+                let dict = monthlyAggregatesDict
+                return (1...12).map { month in
+                    let (start, end) = dateRangeForMonth(year: year, month: month)
+                    let agg = dict[month]
+                    let rawPositive = ewDistanceFromHome(longitude: agg?.maxEast ?? homeLon)
+                    let rawNegative = ewDistanceFromHome(longitude: agg?.maxWest ?? homeLon)
+                    return BidirectionalChartDataPoint(
+                        label: monthName(for: month),
+                        positiveValue: max(0, rawPositive),
+                        negativeValue: min(0, rawNegative),
+                        startDate: start,
+                        endDate: end
+                    )
+                }
+            }
             let dict = yearlyAggregatesDict
             return fullYearRange.map { year in
                 let (start, end) = dateRangeForYear(year)
@@ -530,6 +617,9 @@ struct StatisticsView: View {
                     endDate: end
                 )
             }
+
+        case .daily:
+            return []  // Daily is not a user-visible timeframe
         }
     }
 
@@ -546,18 +636,12 @@ struct StatisticsView: View {
                 return []
             }
 
-            // Create a lookup dictionary for existing stats
-            let statsDict = Dictionary(uniqueKeysWithValues: dailyStats.compactMap { stat -> (Int, DailyStatistic)? in
-                guard stat.date != nil else { return nil }
-                return (stat.dayOfMonth, stat)
-            })
-
             // Generate data for all days
             return monthRange.compactMap { day in
                 guard let date = calendar.date(byAdding: .day, value: day - 1, to: monthStart) else { return nil }
 
-                let stat = statsDict[day]
-                let value = (stat?.maxUp ?? 0) * conversionFactor
+                let agg = dailyAggregate(for: day)
+                let value = (agg.maxUp ?? 0) * conversionFactor
 
                 return ChartDataPoint(
                     label: "\(day)",
@@ -567,16 +651,34 @@ struct StatisticsView: View {
                 )
             }
         case .year:
-            return monthlyAggregates.map { agg in
-                let (start, end) = dateRangeForMonth(year: agg.year, month: agg.month)
+            // Show all 12 months for current year
+            let currentYear = Calendar.current.component(.year, from: Date())
+            let dictYear = monthlyAggregatesDict
+            return (1...12).map { month in
+                let (start, end) = dateRangeForMonth(year: currentYear, month: month)
+                let agg = dictYear[month]
                 return ChartDataPoint(
-                    label: agg.monthName,
-                    value: (agg.maxUp ?? 0) * conversionFactor,
+                    label: monthName(for: month),
+                    value: (agg?.maxUp ?? 0) * conversionFactor,
                     startDate: start,
                     endDate: end
                 )
             }
         case .allTime:
+            // When a specific year is selected, show all 12 months
+            if let year = selectedYear {
+                let dict = monthlyAggregatesDict
+                return (1...12).map { month in
+                    let (start, end) = dateRangeForMonth(year: year, month: month)
+                    let agg = dict[month]
+                    return ChartDataPoint(
+                        label: monthName(for: month),
+                        value: (agg?.maxUp ?? 0) * conversionFactor,
+                        startDate: start,
+                        endDate: end
+                    )
+                }
+            }
             let dict = yearlyAggregatesDict
             return fullYearRange.map { year in
                 let (start, end) = dateRangeForYear(year)
@@ -588,6 +690,9 @@ struct StatisticsView: View {
                     endDate: end
                 )
             }
+
+        case .daily:
+            return []  // Daily is not a user-visible timeframe
         }
     }
 
@@ -604,18 +709,12 @@ struct StatisticsView: View {
                 return []
             }
 
-            // Create a lookup dictionary for existing stats
-            let statsDict = Dictionary(uniqueKeysWithValues: dailyStats.compactMap { stat -> (Int, DailyStatistic)? in
-                guard stat.date != nil else { return nil }
-                return (stat.dayOfMonth, stat)
-            })
-
             // Generate data for all days
             return monthRange.compactMap { day in
                 guard let date = calendar.date(byAdding: .day, value: day - 1, to: monthStart) else { return nil }
 
-                let stat = statsDict[day]
-                let value = (stat?.maxDistanceFromHome ?? 0) * conversionFactor
+                let agg = dailyAggregate(for: day)
+                let value = (agg.maxDistanceFromHome ?? 0) * conversionFactor
 
                 return ChartDataPoint(
                     label: "\(day)",
@@ -625,16 +724,34 @@ struct StatisticsView: View {
                 )
             }
         case .year:
-            return monthlyAggregates.map { agg in
-                let (start, end) = dateRangeForMonth(year: agg.year, month: agg.month)
+            // Show all 12 months for current year
+            let currentYear = Calendar.current.component(.year, from: Date())
+            let dictYear = monthlyAggregatesDict
+            return (1...12).map { month in
+                let (start, end) = dateRangeForMonth(year: currentYear, month: month)
+                let agg = dictYear[month]
                 return ChartDataPoint(
-                    label: agg.monthName,
-                    value: (agg.maxDistanceFromHome ?? 0) * conversionFactor,
+                    label: monthName(for: month),
+                    value: (agg?.maxDistanceFromHome ?? 0) * conversionFactor,
                     startDate: start,
                     endDate: end
                 )
             }
         case .allTime:
+            // When a specific year is selected, show all 12 months
+            if let year = selectedYear {
+                let dict = monthlyAggregatesDict
+                return (1...12).map { month in
+                    let (start, end) = dateRangeForMonth(year: year, month: month)
+                    let agg = dict[month]
+                    return ChartDataPoint(
+                        label: monthName(for: month),
+                        value: (agg?.maxDistanceFromHome ?? 0) * conversionFactor,
+                        startDate: start,
+                        endDate: end
+                    )
+                }
+            }
             let dict = yearlyAggregatesDict
             return fullYearRange.map { year in
                 let (start, end) = dateRangeForYear(year)
@@ -646,6 +763,9 @@ struct StatisticsView: View {
                     endDate: end
                 )
             }
+
+        case .daily:
+            return []  // Daily is not a user-visible timeframe
         }
     }
 
@@ -659,9 +779,23 @@ struct StatisticsView: View {
         return Array(minYear...maxYear)
     }
 
-    /// Creates a lookup dictionary from yearly aggregates
+    /// Lookup dictionary from yearly aggregates (populated during loadStatistics)
     private var yearlyAggregatesDict: [Int: YearlyAggregate] {
-        Dictionary(uniqueKeysWithValues: yearlyAggregates.map { ($0.year, $0) })
+        yearlyAggregatesCache
+    }
+
+    /// Lookup dictionary from monthly aggregates keyed by month number (1-12) (populated during loadStatistics)
+    private var monthlyAggregatesDict: [Int: MonthlyAggregate] {
+        monthlyAggregatesCache
+    }
+
+    /// Short month names for chart labels
+    private static let shortMonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    /// Returns short month name for month number (1-12) - used for x-axis labels
+    private func monthName(for month: Int) -> String {
+        guard month >= 1 && month <= 12 else { return "?" }
+        return Self.shortMonthNames[month - 1]
     }
 
     // MARK: - Date Range Helpers
@@ -760,7 +894,7 @@ struct StatChartCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 // Title or period label when dragging
                 if isDragging, let point = selectedPoint {
-                    Text(point.label)
+                    Text(formatMonthYear(from: point.startDate))
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 } else {
@@ -908,14 +1042,48 @@ struct StatChartCard: View {
 
     private func preloadRecords() {
         Task { @MainActor in
-            for point in data {
-                if let record = fetchMostExtremeRecord(
-                    recordType: recordTypeToQuery,
-                    from: point.startDate,
-                    to: point.endDate
-                ) {
-                    recordCache[point.label] = record
+            guard !data.isEmpty else { return }
+
+            // Batch fetch: Get all records for the entire time range in one query
+            let minDate = data.map { $0.startDate }.min() ?? Date()
+            let maxDate = data.map { $0.endDate }.max() ?? Date()
+
+            let context = PersistenceController.shared.container.viewContext
+            let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND timestamp >= %@ AND timestamp <= %@",
+                recordTypeToQuery,
+                minDate as NSDate,
+                maxDate as NSDate
+            )
+
+            do {
+                let allRecords = try context.fetch(request)
+
+                // Filter in memory for each data point
+                let isAscending = RecordType.from(string: recordTypeToQuery)?.isAscending ?? true
+
+                for point in data {
+                    // Find records that fall within this point's date range
+                    let pointRecords = allRecords.filter { record in
+                        guard let timestamp = record.timestamp else { return false }
+                        return timestamp >= point.startDate && timestamp <= point.endDate
+                    }
+
+                    // Find the most extreme record for this point
+                    if !pointRecords.isEmpty {
+                        let sorted = pointRecords.sorted { record1, record2 in
+                            if isAscending {
+                                return record1.value < record2.value  // Lower is better (south, west)
+                            } else {
+                                return record1.value > record2.value  // Higher is better (north, east, up)
+                            }
+                        }
+                        recordCache[point.label] = sorted.first
+                    }
                 }
+            } catch {
+                debugLog("Error batch fetching records for chart: \(error.localizedDescription)")
             }
         }
     }
@@ -982,6 +1150,7 @@ struct BidirectionalStatChartCard: View {
     let positiveRecordType: String
     let negativeRecordType: String
     let unitSystem: UnitSystem
+    let homeCoordinate: CLLocationCoordinate2D?
 
     @State private var selectedPoint: BidirectionalChartDataPoint?
     @State private var isDragging = false
@@ -1019,7 +1188,7 @@ struct BidirectionalStatChartCard: View {
                 HStack {
                     // Title or period label when dragging
                     if isDragging, let point = selectedPoint {
-                        Text(point.label)
+                        Text(formatMonthYear(from: point.startDate))
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     } else {
@@ -1046,18 +1215,21 @@ struct BidirectionalStatChartCard: View {
                 // Two-row content - either dragging values or default summary
                 if isDragging, let point = selectedPoint {
                     // Show values for the dragged period
-                    // Both positive and negative values displayed as absolute distances
-                    let posValue = abs(point.positiveValue)
-                    let negValue = abs(point.negativeValue)
-                    let validPos = posValue > chartMinDistanceThreshold
-                    let validNeg = negValue > chartMinDistanceThreshold
+                    // Use record's actual coordinates for distance (not DailyStatistic aggregates)
+                    let isNS = positiveRecordType == RecordType.north.rawValue
+                    let posRecord = positiveRecordCache[point.label]
+                    let negRecord = negativeRecordCache[point.label]
+                    let posValue = distanceFromRecord(posRecord, isNorthSouth: isNS) ?? abs(point.positiveValue)
+                    let negValue = distanceFromRecord(negRecord, isNorthSouth: isNS) ?? abs(point.negativeValue)
+                    let validPos = posRecord != nil && posValue > chartMinDistanceThreshold
+                    let validNeg = negRecord != nil && negValue > chartMinDistanceThreshold
 
                     VStack(spacing: 4) {
                         // Positive direction row (N or E)
                         HStack {
                             HStack(spacing: 6) {
                                 Circle().fill(positiveColor).frame(width: 6, height: 6)
-                                Text(validPos ? locationText(for: positiveRecordCache[point.label]) : "—")
+                                Text(validPos ? locationText(for: posRecord) : "—")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
                                     .lineLimit(1)
@@ -1073,7 +1245,7 @@ struct BidirectionalStatChartCard: View {
                         HStack {
                             HStack(spacing: 6) {
                                 Circle().fill(negativeColor).frame(width: 6, height: 6)
-                                Text(validNeg ? locationText(for: negativeRecordCache[point.label]) : "—")
+                                Text(validNeg ? locationText(for: negRecord) : "—")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
                                     .lineLimit(1)
@@ -1238,13 +1410,60 @@ struct BidirectionalStatChartCard: View {
 
     private func preloadRecords() {
         Task { @MainActor in
-            for point in data {
-                if let record = fetchMostExtremeRecord(recordType: positiveRecordType, from: point.startDate, to: point.endDate) {
-                    positiveRecordCache[point.label] = record
+            guard !data.isEmpty else { return }
+
+            // Batch fetch: Get all records for both types in the entire time range
+            let minDate = data.map { $0.startDate }.min() ?? Date()
+            let maxDate = data.map { $0.endDate }.max() ?? Date()
+
+            let context = PersistenceController.shared.container.viewContext
+            let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+            request.predicate = NSPredicate(
+                format: "(recordType == %@ OR recordType == %@) AND timestamp >= %@ AND timestamp <= %@",
+                positiveRecordType,
+                negativeRecordType,
+                minDate as NSDate,
+                maxDate as NSDate
+            )
+
+            do {
+                let allRecords = try context.fetch(request)
+
+                // Separate records by type
+                let positiveRecords = allRecords.filter { $0.recordType == positiveRecordType }
+                let negativeRecords = allRecords.filter { $0.recordType == negativeRecordType }
+
+                let positiveIsAscending = RecordType.from(string: positiveRecordType)?.isAscending ?? true
+                let negativeIsAscending = RecordType.from(string: negativeRecordType)?.isAscending ?? true
+
+                // Filter and cache for each data point
+                for point in data {
+                    // Process positive records
+                    let posPointRecords = positiveRecords.filter { record in
+                        guard let timestamp = record.timestamp else { return false }
+                        return timestamp >= point.startDate && timestamp <= point.endDate
+                    }
+                    if !posPointRecords.isEmpty {
+                        let sorted = posPointRecords.sorted { r1, r2 in
+                            positiveIsAscending ? r1.value < r2.value : r1.value > r2.value
+                        }
+                        positiveRecordCache[point.label] = sorted.first
+                    }
+
+                    // Process negative records
+                    let negPointRecords = negativeRecords.filter { record in
+                        guard let timestamp = record.timestamp else { return false }
+                        return timestamp >= point.startDate && timestamp <= point.endDate
+                    }
+                    if !negPointRecords.isEmpty {
+                        let sorted = negPointRecords.sorted { r1, r2 in
+                            negativeIsAscending ? r1.value < r2.value : r1.value > r2.value
+                        }
+                        negativeRecordCache[point.label] = sorted.first
+                    }
                 }
-                if let record = fetchMostExtremeRecord(recordType: negativeRecordType, from: point.startDate, to: point.endDate) {
-                    negativeRecordCache[point.label] = record
-                }
+            } catch {
+                debugLog("Error batch fetching bidirectional records for chart: \(error.localizedDescription)")
             }
         }
     }
@@ -1259,6 +1478,26 @@ struct BidirectionalStatChartCard: View {
 
     private func formatDistance(_ value: Double) -> String {
         FormatUtils.formatDistance(value, unitSystem: unitSystem)
+    }
+
+    /// Calculate N/S or E/W distance from record's coordinates to home
+    /// Uses the record's actual latitude/longitude rather than DailyStatistic aggregates
+    private func distanceFromRecord(_ record: RecordHistoryEntry?, isNorthSouth: Bool) -> Double? {
+        guard let record = record, let home = homeCoordinate else { return nil }
+
+        let distanceUnitFactor = unitSystem == .imperial ? 1.0 / metersPerMile : 1.0 / metersPerKm
+
+        if isNorthSouth {
+            // N/S distance based on latitude
+            let destination = CLLocationCoordinate2D(latitude: record.latitude, longitude: home.longitude)
+            let distanceMeters = northSouthDistance(from: home, to: destination)
+            return abs(distanceMeters) * distanceUnitFactor
+        } else {
+            // E/W distance based on longitude
+            let destination = CLLocationCoordinate2D(latitude: home.latitude, longitude: record.longitude)
+            let distanceMeters = distanceBetween(from: home, to: destination)
+            return distanceMeters * distanceUnitFactor
+        }
     }
 
     private func fetchAndCacheRecords(for point: BidirectionalChartDataPoint) {
@@ -1272,156 +1511,6 @@ struct BidirectionalStatChartCard: View {
         }
     }
 
-}
-
-// MARK: - Bidirectional Location Overlay
-
-private struct BidirectionalLocationOverlay: View {
-    let point: BidirectionalChartDataPoint
-    let positiveRecord: RecordHistoryEntry?
-    let negativeRecord: RecordHistoryEntry?
-    let positiveLabel: String
-    let negativeLabel: String
-    let positiveColor: Color
-    let negativeColor: Color
-    let positiveRecordType: String
-    let negativeRecordType: String
-    let unitSystem: UnitSystem
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Period label
-            Text(point.label)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-
-            // Two-row location summary
-            VStack(spacing: 4) {
-                // Positive direction row (N or E)
-                HStack {
-                    HStack(spacing: 6) {
-                        Circle().fill(positiveColor).frame(width: 6, height: 6)
-                        Text(locationText(for: positiveRecord))
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    Text(formatDistance(point.positiveValue))
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(positiveColor)
-                }
-
-                // Negative direction row (S or W)
-                HStack {
-                    HStack(spacing: 6) {
-                        Circle().fill(negativeColor).frame(width: 6, height: 6)
-                        Text(locationText(for: negativeRecord))
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    Text(formatDistance(abs(point.negativeValue)))
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(negativeColor)
-                }
-            }
-        }
-    }
-
-    private func locationText(for record: RecordHistoryEntry?) -> String {
-        guard let record = record else { return "—" }
-        if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
-            return name
-        }
-        return String(format: "%.4f, %.4f", record.latitude, record.longitude)
-    }
-
-    private func formatDistance(_ value: Double) -> String {
-        FormatUtils.formatDistance(value, unitSystem: unitSystem)
-    }
-}
-
-// MARK: - Location Overlay (shown while dragging)
-
-private struct LocationOverlay: View {
-    let point: ChartDataPoint
-    let record: RecordHistoryEntry?
-    let recordType: String
-    let unitSystem: UnitSystem
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 8) {
-            // Period label
-            Text(point.label)
-                .font(.subheadline)
-                .fontWeight(.bold)
-                .foregroundColor(color)
-                .frame(minWidth: 50)
-
-            if let record = record {
-                Divider()
-                    .frame(height: 20)
-
-                // Location
-                Image(systemName: "mappin.circle.fill")
-                    .font(.caption)
-                    .foregroundColor(.red)
-
-                if let locationName = record.locationName, !locationName.isEmpty, locationName != unknownLocationString {
-                    Text(locationName)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else {
-                    Text(String(format: "%.4f, %.4f", record.latitude, record.longitude))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer()
-
-                // Value
-                Text(formatValue(record))
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(color)
-            } else {
-                Spacer()
-                Text("No record")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .frame(height: 44)
-    }
-
-    private func formatValue(_ record: RecordHistoryEntry) -> String {
-        switch recordType {
-        case RecordType.north.rawValue, RecordType.south.rawValue:
-            return String(format: "%.4f°", record.value)
-        case RecordType.east.rawValue, RecordType.west.rawValue:
-            return String(format: "%.4f°", record.value)
-        case RecordType.up.rawValue:
-            if unitSystem == .imperial {
-                return FormatUtils.formatFeet(record.value * metersToFeet)
-            } else {
-                return FormatUtils.formatMeters(record.value)
-            }
-        case RecordType.fromHome.rawValue:
-            if unitSystem == .imperial {
-                return FormatUtils.formatMiles(record.value / metersPerMile)
-            } else {
-                return FormatUtils.formatKilometers(record.value / metersPerKm)
-            }
-        default:
-            return FormatUtils.formatTwoDecimal(record.value)
-        }
-    }
 }
 
 // MARK: - No Data View
@@ -1481,6 +1570,8 @@ struct HomeNotSetCard: View {
 /// Styled segmented picker for TimeFrame that matches the Records page styling
 private struct StyledTimeFramePicker: View {
     @Binding var selection: TimeFrame
+    @Binding var selectedYear: Int?
+    let availableYears: [Int]
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1507,13 +1598,35 @@ private struct StyledTimeFramePicker: View {
         }
         .background(Color(UIColor.systemGray5))
         .cornerRadius(8)
+        .contextMenu {
+            if selection == .allTime && !availableYears.isEmpty {
+                Button {
+                    selectedYear = nil
+                } label: {
+                    Label("All Years", systemImage: selectedYear == nil ? "checkmark" : "calendar")
+                }
+                Divider()
+                ForEach(availableYears, id: \.self) { year in
+                    Button {
+                        selectedYear = year
+                    } label: {
+                        Label(String(format: "%d", year), systemImage: selectedYear == year ? "checkmark" : "calendar")
+                    }
+                }
+            }
+        }
     }
 
     private func label(for timeFrame: TimeFrame) -> String {
         switch timeFrame {
-        case .allTime: return "All Years"
+        case .allTime:
+            if let year = selectedYear {
+                return String(format: "%d", year)
+            }
+            return "All Years"
         case .year: return "This Year"
         case .month: return "This Month"
+        case .daily: return "Daily"  // Not shown in UI
         }
     }
 }

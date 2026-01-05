@@ -178,6 +178,9 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
         // Set the record
         records[type]?[timeFrame] = record
+
+        // Post notification so other views can react to record changes
+        NotificationCenter.default.post(name: .recordsDidChange, object: nil)
     }
 
     /// Clear a record by type and timeframe, both in-memory and in Core Data
@@ -192,6 +195,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
         // Delete from Core Data history
         switch timeFrame {
+        case .daily:
+            break  // Daily records are managed separately
         case .allTime:
             _ = RecordHistoryManager.shared.deleteAllRecords(type: type)
         case .year:
@@ -350,7 +355,138 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     
     // MARK: - Update Records
 
+    /// Parameters for checking all record types at a location
+    private struct RecordCheckParams {
+        let location: CLLocation
+        let lat: Double
+        let lon: Double
+        let alt: Double
+        let distanceMeters: Double?
+        let reverseGeocodedName: String?
+        let latThreshold: Double
+        let lonThreshold: Double
+        let altThreshold: Double
+        let distanceThreshold: Double
+    }
+
+    /// Check all record types for a given timeframe and return which ones were updated
+    /// - Parameters:
+    ///   - params: The location and threshold parameters
+    ///   - timeFrame: The timeframe to check
+    ///   - excludeTypes: Record types to skip (used in second pass)
+    ///   - logSecondPass: Whether to log second pass updates
+    /// - Returns: Set of record type strings that were updated
+    @discardableResult
+    private func checkAllRecordTypes(
+        params: RecordCheckParams,
+        timeFrame: TimeFrame,
+        excludeTypes: Set<String> = [],
+        logSecondPass: Bool = false
+    ) -> Set<String> {
+        var updated: Set<String> = []
+
+        // Furthest North
+        if !excludeTypes.contains(RecordType.north.rawValue) {
+            if checkAndUpdateRecord(
+                type: RecordType.north.rawValue,
+                newValue: params.lat,
+                threshold: params.latThreshold,
+                compareAscending: false,
+                location: params.location,
+                reverseGeocodedName: params.reverseGeocodedName,
+                timeFrame: timeFrame
+            ) {
+                updated.insert(RecordType.north.rawValue)
+                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.north.rawValue) record") }
+            }
+        }
+
+        // Furthest South
+        if !excludeTypes.contains(RecordType.south.rawValue) {
+            if checkAndUpdateRecord(
+                type: RecordType.south.rawValue,
+                newValue: params.lat,
+                threshold: params.latThreshold,
+                compareAscending: true,
+                location: params.location,
+                reverseGeocodedName: params.reverseGeocodedName,
+                timeFrame: timeFrame
+            ) {
+                updated.insert(RecordType.south.rawValue)
+                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.south.rawValue) record") }
+            }
+        }
+
+        // Furthest East
+        if !excludeTypes.contains(RecordType.east.rawValue) {
+            if checkAndUpdateRecord(
+                type: RecordType.east.rawValue,
+                newValue: params.lon,
+                threshold: params.lonThreshold,
+                compareAscending: false,
+                location: params.location,
+                reverseGeocodedName: params.reverseGeocodedName,
+                timeFrame: timeFrame
+            ) {
+                updated.insert(RecordType.east.rawValue)
+                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.east.rawValue) record") }
+            }
+        }
+
+        // Furthest West
+        if !excludeTypes.contains(RecordType.west.rawValue) {
+            if checkAndUpdateRecord(
+                type: RecordType.west.rawValue,
+                newValue: params.lon,
+                threshold: params.lonThreshold,
+                compareAscending: true,
+                location: params.location,
+                reverseGeocodedName: params.reverseGeocodedName,
+                timeFrame: timeFrame
+            ) {
+                updated.insert(RecordType.west.rawValue)
+                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.west.rawValue) record") }
+            }
+        }
+
+        // Furthest Up
+        if !excludeTypes.contains(RecordType.up.rawValue) {
+            if checkAndUpdateRecord(
+                type: RecordType.up.rawValue,
+                newValue: params.alt,
+                threshold: params.altThreshold,
+                compareAscending: false,
+                location: params.location,
+                reverseGeocodedName: params.reverseGeocodedName,
+                timeFrame: timeFrame
+            ) {
+                updated.insert(RecordType.up.rawValue)
+                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.up.rawValue) record") }
+            }
+        }
+
+        // Furthest from Home
+        if let distance = params.distanceMeters, !excludeTypes.contains(RecordType.fromHome.rawValue) {
+            if checkAndUpdateRecord(
+                type: RecordType.fromHome.rawValue,
+                newValue: distance,
+                threshold: params.distanceThreshold,
+                compareAscending: false,
+                location: params.location,
+                reverseGeocodedName: params.reverseGeocodedName,
+                timeFrame: timeFrame
+            ) {
+                updated.insert(RecordType.fromHome.rawValue)
+                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.fromHome.rawValue) record") }
+            }
+        }
+
+        return updated
+    }
+
     /// Helper to check and update a record for a specific timeframe
+    /// - Returns: true if the record was updated, false otherwise
+    @discardableResult
     private func checkAndUpdateRecord(
         type: String,
         newValue: Double,
@@ -359,7 +495,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         location: CLLocation,
         reverseGeocodedName: String?,
         timeFrame: TimeFrame
-    ) {
+    ) -> Bool {
         let currentRecord = getRecord(type: type, timeFrame: timeFrame)
         let now = Date()
         let settings = SettingsManager.shared
@@ -378,33 +514,44 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                     recordType: type,
                     timeFrame: timeFrame
                 )
-                setRecord(type: type, timeFrame: timeFrame, record: newRecord)
-                RecordHistoryManager.shared.addRecord(recordType: type, detail: newRecord)
 
-                // Increment badge for this timeframe
-                incrementBadge(for: timeFrame)
+                // Try to save to Core Data first - only update in-memory if successful
+                let saveSucceeded = RecordHistoryManager.shared.addRecord(recordType: type, detail: newRecord)
 
-                // Photo prompts only for all-time records
-                if timeFrame == .allTime {
-                    promptForPhoto(recordType: type, detail: newRecord)
+                if saveSucceeded {
+                    setRecord(type: type, timeFrame: timeFrame, record: newRecord)
+
+                    // Increment badge for this timeframe
+                    incrementBadge(for: timeFrame)
+
+                    // Photo prompts only for all-time records
+                    if timeFrame == .allTime {
+                        promptForPhoto(recordType: type, detail: newRecord)
+                    }
+
+                    // Check notification settings based on timeframe
+                    let shouldNotify: Bool
+                    switch timeFrame {
+                    case .daily:
+                        shouldNotify = false  // Never notify for daily records
+                    case .month:
+                        shouldNotify = settings.notifyOnMonthlyRecords
+                    case .year:
+                        shouldNotify = settings.notifyOnYearlyRecords
+                    case .allTime:
+                        shouldNotify = settings.notifyOnAllTimeRecords
+                    }
+
+                    if shouldNotify && !shouldSuppressNotifications {
+                        sendRecordNotification(recordType: type, detail: newRecord)
+                    }
+
+                    debugLog("NEW RECORD: \(type) (\(timeFrame.rawValue)) updated to \(newValue)")
+                    return true
+                } else {
+                    debugLog("❌ Failed to persist record to Core Data - in-memory state NOT updated")
+                    return false
                 }
-
-                // Check notification settings based on timeframe
-                let shouldNotify: Bool
-                switch timeFrame {
-                case .month:
-                    shouldNotify = settings.notifyOnMonthlyRecords
-                case .year:
-                    shouldNotify = settings.notifyOnYearlyRecords
-                case .allTime:
-                    shouldNotify = settings.notifyOnAllTimeRecords
-                }
-
-                if shouldNotify && !shouldSuppressNotifications {
-                    sendRecordNotification(recordType: type, detail: newRecord)
-                }
-
-                debugLog("NEW RECORD: \(type) (\(timeFrame.rawValue)) updated to \(newValue)")
             }
         } else {
             // Set initial record for this timeframe
@@ -417,10 +564,43 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                 recordType: type,
                 timeFrame: timeFrame
             )
-            setRecord(type: type, timeFrame: timeFrame, record: newRecord)
-            RecordHistoryManager.shared.addRecord(recordType: type, detail: newRecord)
-            // Don't prompt for photos or send notifications for initial records
+
+            // Try to save to Core Data first
+            let saveSucceeded = RecordHistoryManager.shared.addRecord(recordType: type, detail: newRecord)
+
+            if saveSucceeded {
+                setRecord(type: type, timeFrame: timeFrame, record: newRecord)
+
+                // Photo prompts only for all-time records
+                if timeFrame == .allTime {
+                    promptForPhoto(recordType: type, detail: newRecord)
+                }
+
+                // Send notification for initial monthly/yearly records (they're meaningful milestones)
+                // but not for all-time (first-time setup isn't noteworthy)
+                let shouldNotify: Bool
+                switch timeFrame {
+                case .daily:
+                    shouldNotify = false
+                case .month:
+                    shouldNotify = settings.notifyOnMonthlyRecords
+                case .year:
+                    shouldNotify = settings.notifyOnYearlyRecords
+                case .allTime:
+                    shouldNotify = false  // Don't notify for initial all-time records
+                }
+
+                if shouldNotify && !shouldSuppressNotifications {
+                    sendRecordNotification(recordType: type, detail: newRecord)
+                }
+
+                return true
+            } else {
+                debugLog("❌ Failed to persist initial record to Core Data - in-memory state NOT updated")
+                return false
+            }
         }
+        return false
     }
 
     // MARK: - Geocoding Helper
@@ -507,6 +687,21 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         }
     }
 
+    /// Update daily records for all directions based on current location
+    /// Daily records track the extreme values for each day (used for "This Month" charts)
+    private func updateDailyRecords(location: CLLocation, locationName: String?) {
+        RecordHistoryManager.shared.updateAllDailyRecords(
+            location: location,
+            locationName: locationName,
+            homeCoordinate: SettingsManager.shared.homeCoordinate
+        )
+    }
+
+    /// Updates all records with a new location, checking each timeframe for new extremes
+    /// - Parameters:
+    ///   - location: The location to check against current records
+    ///   - reverseGeocodedName: Optional location name (will geocode if nil)
+    /// - Note: Automatically persists to Core Data and sends notifications when records are broken
     func updateRecords(with location: CLLocation, reverseGeocodedName: String? = nil) {
         // Serialize updates to prevent race conditions
         switch updateState {
@@ -580,9 +775,9 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             return
         }
 
-        // Record this location for daily statistics (used for graphs)
+        // Record daily extremes for this location (used for "This Month" charts)
         let settings = SettingsManager.shared
-        DailyStatisticManager.shared.recordLocation(location, homeCoordinate: settings.homeCoordinate)
+        updateDailyRecords(location: location, locationName: reverseGeocodedName)
 
         let latDelta = settings.minLatitudeDelta
         let lonDelta = settings.minLongitudeDelta
@@ -591,75 +786,51 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
         let distanceMeters = distanceFromHome(location: location, settings: settings)
 
-        // Check all timeframes for each record type
+        // Build params struct for record checking
+        let params = RecordCheckParams(
+            location: location,
+            lat: lat,
+            lon: lon,
+            alt: alt,
+            distanceMeters: distanceMeters,
+            reverseGeocodedName: reverseGeocodedName,
+            latThreshold: latDelta,
+            lonThreshold: lonDelta,
+            altThreshold: altDeltaMeters,
+            distanceThreshold: distanceDeltaMeters
+        )
+
+        // FIRST PASS: Check all records with normal thresholds
+        var updatedRecords: [TimeFrame: Set<String>] = [:]
         for timeFrame in TimeFrame.allCases {
-            // Furthest North (higher latitude is better)
-            checkAndUpdateRecord(
-                type: RecordType.north.rawValue,
-                newValue: lat,
-                threshold: latDelta,
-                compareAscending: false,
-                location: location,
-                reverseGeocodedName: reverseGeocodedName,
-                timeFrame: timeFrame
-            )
+            updatedRecords[timeFrame] = checkAllRecordTypes(params: params, timeFrame: timeFrame)
+        }
 
-            // Furthest South (lower latitude is better)
-            checkAndUpdateRecord(
-                type: RecordType.south.rawValue,
-                newValue: lat,
-                threshold: latDelta,
-                compareAscending: true,
-                location: location,
-                reverseGeocodedName: reverseGeocodedName,
-                timeFrame: timeFrame
-            )
+        // SECOND PASS: If any record was set, check remaining record types with threshold=0
+        // This ensures that if we're at a location extreme enough to set one record,
+        // we also capture any other records that are "best so far" even without margin
+        let zeroThresholdParams = RecordCheckParams(
+            location: location,
+            lat: lat,
+            lon: lon,
+            alt: alt,
+            distanceMeters: distanceMeters,
+            reverseGeocodedName: reverseGeocodedName,
+            latThreshold: 0,
+            lonThreshold: 0,
+            altThreshold: 0,
+            distanceThreshold: 0
+        )
 
-            // Furthest East (higher longitude is better)
-            checkAndUpdateRecord(
-                type: RecordType.east.rawValue,
-                newValue: lon,
-                threshold: lonDelta,
-                compareAscending: false,
-                location: location,
-                reverseGeocodedName: reverseGeocodedName,
-                timeFrame: timeFrame
+        for timeFrame in TimeFrame.allCases {
+            guard let updated = updatedRecords[timeFrame], !updated.isEmpty else { continue }
+            debugLog("📍 Second pass for \(timeFrame.rawValue): checking remaining records at this extreme location")
+            checkAllRecordTypes(
+                params: zeroThresholdParams,
+                timeFrame: timeFrame,
+                excludeTypes: updated,
+                logSecondPass: true
             )
-
-            // Furthest West (lower longitude is better)
-            checkAndUpdateRecord(
-                type: RecordType.west.rawValue,
-                newValue: lon,
-                threshold: lonDelta,
-                compareAscending: true,
-                location: location,
-                reverseGeocodedName: reverseGeocodedName,
-                timeFrame: timeFrame
-            )
-
-            // Furthest Up (higher altitude is better)
-            checkAndUpdateRecord(
-                type: RecordType.up.rawValue,
-                newValue: alt,
-                threshold: altDeltaMeters,
-                compareAscending: false,
-                location: location,
-                reverseGeocodedName: reverseGeocodedName,
-                timeFrame: timeFrame
-            )
-
-            // Furthest from Home (greater distance is better)
-            if let distance = distanceMeters {
-                checkAndUpdateRecord(
-                    type: RecordType.fromHome.rawValue,
-                    newValue: distance,  // Store in meters (consistent with altitude)
-                    threshold: distanceDeltaMeters,
-                    compareAscending: false,
-                    location: location,
-                    reverseGeocodedName: reverseGeocodedName,
-                    timeFrame: timeFrame
-                )
-            }
         }
     }
     
@@ -674,20 +845,37 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     
     // MARK: - Send Notification with Deep Link Info
     func sendRecordNotification(recordType: String, detail: RecordDetail) {
-        let content = UNMutableNotificationContent()
+        // Check notification authorization before attempting to send
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
 
-        // Use shared formatting logic
-        let formattedValue = detail.formattedValue(unitSystem: SettingsManager.shared.unitSystem)
+            guard settings.authorizationStatus == .authorized else {
+                debugLog("⚠️ Cannot send notification - authorization status: \(settings.authorizationStatus.rawValue)")
+                return
+            }
 
-        // Updated notification: Split text into title and body for better wrapping.
-        content.title = "You've set a new \(recordType) record"
-        content.body = "(\(formattedValue))"
-        content.sound = .default
-        
-        content.userInfo = ["recordType": recordType]
+            let content = UNMutableNotificationContent()
 
-        let request = UNNotificationRequest(identifier: NotificationIdentifier.newRecord(type: recordType), content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+            // Use shared formatting logic
+            let formattedValue = detail.formattedValue(unitSystem: SettingsManager.shared.unitSystem)
+
+            // Updated notification: Split text into title and body for better wrapping.
+            content.title = "You've set a new \(recordType) record"
+            content.body = "(\(formattedValue))"
+            content.sound = .default
+
+            content.userInfo = ["recordType": recordType]
+
+            let request = UNNotificationRequest(identifier: NotificationIdentifier.newRecord(type: recordType), content: content, trigger: nil)
+
+            do {
+                try await center.add(request)
+                debugLog("✅ Notification sent successfully for \(recordType)")
+            } catch {
+                debugLog("❌ Failed to send notification: \(error.localizedDescription)")
+            }
+        }
     }
     
     // MARK: - Photo Attachment
@@ -727,6 +915,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     /// Increment badge count for a timeframe when a new record is set
     func incrementBadge(for timeFrame: TimeFrame) {
         switch timeFrame {
+        case .daily:
+            break  // No badge for daily records
         case .month:
             newMonthlyRecordCount += 1
         case .year:
@@ -740,6 +930,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     /// Clear badge count for a specific timeframe (called when user views that timeframe)
     func clearBadge(for timeFrame: TimeFrame) {
         switch timeFrame {
+        case .daily:
+            break  // No badge for daily records
         case .month:
             newMonthlyRecordCount = 0
         case .year:

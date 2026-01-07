@@ -350,6 +350,42 @@ enum FormatUtils {
         }
     }
 
+    // MARK: - Coordinate Formatting
+
+    /// Formats a coordinate pair as a string
+    /// - Parameters:
+    ///   - latitude: The latitude value
+    ///   - longitude: The longitude value
+    ///   - precision: Number of decimal places (default: 4, which gives ~11m accuracy)
+    /// - Returns: Formatted coordinate string (e.g., "37.7749, -122.4194")
+    static func formatCoordinates(_ latitude: Double, _ longitude: Double, precision: Int = 4) -> String {
+        String(format: "%.\(precision)f, %.\(precision)f", latitude, longitude)
+    }
+
+    /// Formats a CLLocationCoordinate2D as a string
+    /// - Parameters:
+    ///   - coordinate: The coordinate to format
+    ///   - precision: Number of decimal places (default: 4)
+    /// - Returns: Formatted coordinate string
+    static func formatCoordinates(_ coordinate: CLLocationCoordinate2D, precision: Int = 4) -> String {
+        formatCoordinates(coordinate.latitude, coordinate.longitude, precision: precision)
+    }
+
+    /// Formats coordinates with cardinal directions (e.g., "37.7749° N, 122.4194° W")
+    /// - Parameters:
+    ///   - coordinate: The coordinate to format
+    ///   - precision: Number of decimal places (default: 4)
+    /// - Returns: Formatted coordinate string with cardinal directions
+    static func formatCoordinatesWithCardinals(_ coordinate: CLLocationCoordinate2D, precision: Int = 4) -> String {
+        let latDir = coordinate.latitude >= 0 ? "N" : "S"
+        let lonDir = coordinate.longitude >= 0 ? "E" : "W"
+        return String(format: "%.\(precision)f° %@, %.\(precision)f° %@",
+                      abs(coordinate.latitude), latDir,
+                      abs(coordinate.longitude), lonDir)
+    }
+
+    // MARK: - Placemark Formatting
+
     /// Formats a CLPlacemark into a human-readable location name
     /// - Parameter placemark: The placemark to format
     /// - Returns: Formatted location name (e.g., "San Francisco, CA, United States")

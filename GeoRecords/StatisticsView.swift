@@ -153,7 +153,7 @@ struct StatisticsView: View {
                                 BidirectionalStatChartCard(
                                     title: "North / South of Home",
                                     summary: currentNSSummary,
-                                    unit: settings.unitSystem == .imperial ? "mi" : "km",
+                                    unit: settings.unitSystem.distanceUnit,
                                     positiveColor: .blue,
                                     negativeColor: .blue.opacity(0.5),
                                     positiveLabel: "N",
@@ -171,7 +171,7 @@ struct StatisticsView: View {
                                 BidirectionalStatChartCard(
                                     title: "East / West of Home",
                                     summary: currentEWSummary,
-                                    unit: settings.unitSystem == .imperial ? "mi" : "km",
+                                    unit: settings.unitSystem.distanceUnit,
                                     positiveColor: .orange,
                                     negativeColor: .orange.opacity(0.5),
                                     positiveLabel: "E",
@@ -189,7 +189,7 @@ struct StatisticsView: View {
                                 StatChartCard(
                                     title: "Furthest from Home",
                                     summary: currentDistanceSummary,
-                                    unit: settings.unitSystem == .imperial ? "mi" : "km",
+                                    unit: settings.unitSystem.distanceUnit,
                                     color: .red,
                                     data: chartDataForDistance,
                                     timeFrame: effectiveTimeFrame,
@@ -213,7 +213,7 @@ struct StatisticsView: View {
                             StatChartCard(
                                 title: "Highest Elevation",
                                 summary: currentElevationSummary,
-                                unit: settings.unitSystem == .imperial ? "ft" : "m",
+                                unit: settings.unitSystem.elevationUnit,
                                 color: .green,
                                 data: chartDataForElevation,
                                 timeFrame: effectiveTimeFrame,
@@ -1103,7 +1103,7 @@ struct StatChartCard: View {
         if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
             return name
         }
-        return String(format: "%.4f, %.4f", record.latitude, record.longitude)
+        return FormatUtils.formatCoordinates(record.latitude, record.longitude)
     }
 
     private func formatValue(_ value: Double) -> String {
@@ -1472,7 +1472,7 @@ struct BidirectionalStatChartCard: View {
         if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
             return name
         }
-        return String(format: "%.4f, %.4f", record.latitude, record.longitude)
+        return FormatUtils.formatCoordinates(record.latitude, record.longitude)
     }
 
     private func formatDistance(_ value: Double) -> String {

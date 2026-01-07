@@ -66,10 +66,8 @@ struct HistoryView: View {
     }
 
     // Region types don't have timeframe variations
-    private let regionTypes = ["New State", "New Country", "New Continent"]
-
     private func isRegionType(_ type: String) -> Bool {
-        regionTypes.contains(type)
+        RecordType.from(string: type)?.isRegionVisit ?? false
     }
 
     private var isRegionTypeSelected: Bool {
@@ -220,20 +218,12 @@ struct CompactHistoryRow: View {
         guard let timeFrameString = entry.timeFrame else {
             return .gray
         }
-
-        // Normalize all lifetime variations to canonical form for enum conversion
-        let normalizedString = lifetimeTimeFrameVariations.contains(timeFrameString) ? canonicalLifetimeTimeFrame : timeFrameString
-
-        guard let timeFrame = TimeFrame(rawValue: normalizedString) else {
-            return .gray
+        // Handle lifetime variations
+        if lifetimeTimeFrameVariations.contains(timeFrameString) {
+            return TimeFrame.allTime.color
         }
-
-        switch timeFrame {
-        case .daily: return .gray  // Daily records are filtered out, but handle case
-        case .month: return .green
-        case .year: return .orange
-        case .allTime: return .blue
-        }
+        // Use centralized color property
+        return TimeFrame(rawValue: timeFrameString)?.color ?? .gray
     }
 
     private var formattedValue: String {
@@ -250,7 +240,7 @@ struct CompactHistoryRow: View {
             }
             return name
         }
-        return String(format: "%.4f, %.4f", entry.latitude, entry.longitude)
+        return FormatUtils.formatCoordinates(entry.latitude, entry.longitude)
     }
 
     private var formattedDate: String {
@@ -265,12 +255,12 @@ struct CompactHistoryRow: View {
 
     private var timeFrameAbbrev: String {
         guard let tf = entry.timeFrame else { return "?" }
-        if lifetimeTimeFrameVariations.contains(tf) { return "L" }
-        switch tf {
-        case TimeFrame.month.rawValue: return "M"
-        case TimeFrame.year.rawValue: return "Y"
-        default: return String(tf.prefix(1))
+        // Handle lifetime variations
+        if lifetimeTimeFrameVariations.contains(tf) {
+            return TimeFrame.allTime.abbreviation
         }
+        // Use centralized abbreviation property
+        return TimeFrame(rawValue: tf)?.abbreviation ?? String(tf.prefix(1))
     }
 
     var body: some View {

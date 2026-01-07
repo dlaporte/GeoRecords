@@ -24,7 +24,7 @@ struct ManualRecordImportView: View {
     @State private var resultMessage = ""
 
     private var altitudeUnitLabel: String {
-        settings.unitSystem == .imperial ? "ft" : "m"
+        settings.unitSystem.elevationUnit
     }
 
     private var parsedAltitude: Double? {

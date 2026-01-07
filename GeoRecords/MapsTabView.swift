@@ -173,22 +173,14 @@ struct StatesMapView: View {
 
     // Map region for current card (center and span)
     private var mapRegion: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
+        let defaultRegion = MKCoordinateRegion(center: defaultUSMapCenter, span: defaultUSStateSpan)
+
         guard let region = currentRegion, let code = region.regionCode else {
-            let defaultRegion = MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 39.8283, longitude: -98.5795),
-                span: MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 10)
-            )
             return (defaultRegion.center, defaultRegion.span)
         }
 
         let polygonArrays = RegionLookupService.shared.polygons(for: code)
-        let calculatedRegion = calculateMapRegion(
-            for: polygonArrays,
-            defaultRegion: MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 39.8283, longitude: -98.5795),
-                span: MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 10)
-            )
-        )
+        let calculatedRegion = calculateMapRegion(for: polygonArrays, defaultRegion: defaultRegion)
         return (calculatedRegion.center, calculatedRegion.span)
     }
 
@@ -240,7 +232,7 @@ struct StatesMapView: View {
                 .indexViewStyle(.page(backgroundDisplayMode: .never))
                 .contentMargins(0, for: .scrollContent)
                 .frame(maxWidth: .infinity)
-                .frame(height: 280)
+                .frame(height: cardTabViewHeight)
                 .padding(.vertical, 10)
                 .navigationDestination(isPresented: $navigateToDetail) {
                     if let detail = selectedDetail {
@@ -277,22 +269,14 @@ struct CountriesMapView: View {
 
     // Map region for current card (center and span)
     private var mapRegion: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
+        let defaultRegion = MKCoordinateRegion(center: defaultWorldMapCenter, span: defaultCountrySpan)
+
         guard let region = currentRegion, let code = region.regionCode else {
-            let defaultRegion = MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
-                span: MKCoordinateSpan(latitudeDelta: 15, longitudeDelta: 20)
-            )
             return (defaultRegion.center, defaultRegion.span)
         }
 
         let polygonArrays = RegionLookupService.shared.polygons(for: code)
-        let calculatedRegion = calculateMapRegion(
-            for: polygonArrays,
-            defaultRegion: MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
-                span: MKCoordinateSpan(latitudeDelta: 15, longitudeDelta: 20)
-            )
-        )
+        let calculatedRegion = calculateMapRegion(for: polygonArrays, defaultRegion: defaultRegion)
         return (calculatedRegion.center, calculatedRegion.span)
     }
 
@@ -344,7 +328,7 @@ struct CountriesMapView: View {
                 .indexViewStyle(.page(backgroundDisplayMode: .never))
                 .contentMargins(0, for: .scrollContent)
                 .frame(maxWidth: .infinity)
-                .frame(height: 280)
+                .frame(height: cardTabViewHeight)
                 .padding(.vertical, 10)
                 .navigationDestination(isPresented: $navigateToDetail) {
                     if let detail = selectedDetail {
@@ -381,12 +365,10 @@ struct ContinentsMapView: View {
 
     // Map region for current card (center and span based on continent bounds)
     private var mapRegion: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
+        let defaultRegion = MKCoordinateRegion(center: defaultWorldMapCenter, span: defaultContinentSpan)
+
         guard let region = currentRegion,
               let continent = Continent(rawValue: region.locationName ?? "") else {
-            let defaultRegion = MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
-                span: MKCoordinateSpan(latitudeDelta: 60, longitudeDelta: 80)
-            )
             return (defaultRegion.center, defaultRegion.span)
         }
 
@@ -395,10 +377,7 @@ struct ContinentsMapView: View {
             for: polygonArrays,
             padding: 1.3,  // 30% padding for continents
             minSpan: 5.0,  // Larger minimum span for continents
-            defaultRegion: MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
-                span: MKCoordinateSpan(latitudeDelta: 60, longitudeDelta: 80)
-            )
+            defaultRegion: defaultRegion
         )
         return (calculatedRegion.center, calculatedRegion.span)
     }
@@ -454,7 +433,7 @@ struct ContinentsMapView: View {
                 .indexViewStyle(.page(backgroundDisplayMode: .never))
                 .contentMargins(0, for: .scrollContent)
                 .frame(maxWidth: .infinity)
-                .frame(height: 280)
+                .frame(height: cardTabViewHeight)
                 .padding(.vertical, 10)
                 .navigationDestination(isPresented: $navigateToDetail) {
                     if let detail = selectedDetail {

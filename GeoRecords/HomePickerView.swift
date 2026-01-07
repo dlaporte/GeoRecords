@@ -92,11 +92,7 @@ struct HomePickerView: View {
 
                     // Coordinates
                     HStack {
-                        Text(String(format: "%.4f° %@, %.4f° %@",
-                                    abs(currentCoordinate.latitude),
-                                    currentCoordinate.latitude >= 0 ? "N" : "S",
-                                    abs(currentCoordinate.longitude),
-                                    currentCoordinate.longitude >= 0 ? "E" : "W"))
+                        Text(FormatUtils.formatCoordinatesWithCardinals(currentCoordinate))
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .fontDesign(.monospaced)

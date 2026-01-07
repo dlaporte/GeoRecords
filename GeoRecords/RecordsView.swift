@@ -134,16 +134,13 @@ struct RecordsView: View {
                     .indexViewStyle(.page(backgroundDisplayMode: .never))
                     .contentMargins(0, for: .scrollContent)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 280)
+                    .frame(height: cardTabViewHeight)
                     .padding(.vertical, 10)
                     .onChange(of: currentRecordIndex) { _, newIndex in
                         // Update map when swiping to new record
                         if let record = allRecords[safe: newIndex] {
                             withAnimation {
-                                mapPosition = .region(MKCoordinateRegion(
-                                    center: record.coordinate,
-                                    span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
-                                ))
+                                mapPosition = .centered(on: record.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                             }
                         }
                     }
@@ -175,10 +172,7 @@ struct RecordsView: View {
                 // Update map when timeframe changes
                 if let record = allRecords[safe: currentRecordIndex] {
                     withAnimation {
-                        mapPosition = .region(MKCoordinateRegion(
-                            center: record.coordinate,
-                            span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
-                        ))
+                        mapPosition = .centered(on: record.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                     }
                 }
             }
@@ -187,10 +181,7 @@ struct RecordsView: View {
                 currentRecordIndex = 0
                 if let record = allRecords.first {
                     withAnimation {
-                        mapPosition = .region(MKCoordinateRegion(
-                            center: record.coordinate,
-                            span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
-                        ))
+                        mapPosition = .centered(on: record.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                     }
                 }
             }
@@ -204,10 +195,7 @@ struct RecordsView: View {
                 recordManager.clearBadge(for: selectedTimeFrame)
                 // Initialize map to first record
                 if let firstRecord = allRecords.first {
-                    mapPosition = .region(MKCoordinateRegion(
-                        center: firstRecord.coordinate,
-                        span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
-                    ))
+                    mapPosition = .centered(on: firstRecord.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                 }
             }
             .onChange(of: deepLinkManager.recordType) { _, _ in
@@ -225,10 +213,7 @@ struct RecordsView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                         if let firstRecord = allRecords.first {
                             withAnimation {
-                                mapPosition = .region(MKCoordinateRegion(
-                                    center: firstRecord.coordinate,
-                                    span: MKCoordinateSpan(latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
-                                ))
+                                mapPosition = .centered(on: firstRecord.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                             }
                         }
                     }
@@ -404,7 +389,7 @@ struct RecordCardView: View {
                             Text("Coordinates")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text(String(format: "%.4f, %.4f", record.coordinate.latitude, record.coordinate.longitude))
+                            Text(FormatUtils.formatCoordinates(record.coordinate))
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }

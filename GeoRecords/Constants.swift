@@ -9,6 +9,42 @@ import CoreLocation
 enum UnitSystem: String, Codable {
     case metric
     case imperial
+
+    /// Format a distance value (in meters) for display
+    /// - Parameters:
+    ///   - meters: Distance in meters
+    ///   - decimals: Number of decimal places (default: 0)
+    /// - Returns: Formatted string with appropriate unit suffix
+    func formatDistance(_ meters: Double, decimals: Int = 0) -> String {
+        switch self {
+        case .imperial:
+            return FormatUtils.formatMiles(meters / metersPerMile, decimals: decimals)
+        case .metric:
+            return FormatUtils.formatKilometers(meters / metersPerKm, decimals: decimals)
+        }
+    }
+
+    /// Format an elevation value (in meters) for display
+    /// - Parameter meters: Elevation in meters
+    /// - Returns: Formatted string with appropriate unit suffix
+    func formatElevation(_ meters: Double) -> String {
+        switch self {
+        case .imperial:
+            return FormatUtils.formatFeet(meters * metersToFeet)
+        case .metric:
+            return FormatUtils.formatMeters(meters)
+        }
+    }
+
+    /// The distance unit name for this system
+    var distanceUnit: String {
+        self == .imperial ? "mi" : "km"
+    }
+
+    /// The elevation unit name for this system
+    var elevationUnit: String {
+        self == .imperial ? "ft" : "m"
+    }
 }
 
 /// Time frame for records
@@ -53,6 +89,31 @@ enum TimeFrame: String, CaseIterable {
         case .month: return "This Month"
         case .year: return "This Year"
         case .allTime: return "Lifetime"
+        }
+    }
+
+    /// Label for record detail views (e.g., "Monthly Record")
+    var recordLabel: String {
+        "\(rawValue) Record"
+    }
+
+    /// Single-letter abbreviation for compact UI display
+    var abbreviation: String {
+        switch self {
+        case .daily: return "D"
+        case .month: return "M"
+        case .year: return "Y"
+        case .allTime: return "L"
+        }
+    }
+
+    /// Color associated with this timeframe
+    var color: Color {
+        switch self {
+        case .daily: return .gray
+        case .month: return .green
+        case .year: return .orange
+        case .allTime: return .blue
         }
     }
 
@@ -456,10 +517,25 @@ let defaultMapLonDelta = 0.05
 let wideMapLatDelta = 2.0
 let wideMapLonDelta = 2.0
 
+/// Default map center for US states view (geographic center of contiguous US)
+let defaultUSMapCenter = CLLocationCoordinate2D(latitude: 39.8283, longitude: -98.5795)
+/// Default span for viewing a US state (fallback when polygon unavailable)
+let defaultUSStateSpan = MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 10)
+
+/// Default map center for world view (Atlantic-centered)
+let defaultWorldMapCenter = CLLocationCoordinate2D(latitude: 20, longitude: 0)
+/// Default span for viewing a country (fallback when polygon unavailable)
+let defaultCountrySpan = MKCoordinateSpan(latitudeDelta: 15, longitudeDelta: 20)
+/// Default span for viewing a continent
+let defaultContinentSpan = MKCoordinateSpan(latitudeDelta: 60, longitudeDelta: 80)
+
 // MARK: - UI Constants
 
 /// Screen height threshold for compact layout (iPhone 14/15 and smaller)
 let compactScreenHeightThreshold: CGFloat = 850
+
+/// Height for card TabView pagers (Records tab, Maps tab)
+let cardTabViewHeight: CGFloat = 280
 
 // MARK: - Location Validation Constants
 
@@ -540,12 +616,6 @@ let unknownValueString = "Unknown"
 
 /// Default string for unknown location
 let unknownLocationString = "Unknown Location"
-
-/// Coordinate format precision (4 decimal places ≈ 11 meters accuracy)
-let coordinateFormatPrecision = "%.4f"
-
-/// Coordinate pair format string
-let coordinatePairFormat = "%.4f,%.4f"
 
 // MARK: - Threshold Constants
 

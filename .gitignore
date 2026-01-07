@@ -1,0 +1,11 @@
+# Markdown files (internal documentation)
+*.md
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+
+# macOS
+.DS_Store

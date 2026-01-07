@@ -28,9 +28,7 @@ struct DetailContentView: View {
     // MARK: - Computed Properties
 
     private var isRegionRecord: Bool {
-        record.recordType == RecordType.state.rawValue ||
-        record.recordType == RecordType.country.rawValue ||
-        record.recordType == RecordType.continent.rawValue
+        RecordType.from(string: record.recordType)?.isRegionVisit ?? false
     }
 
     private var recordIcon: String {
@@ -42,30 +40,15 @@ struct DetailContentView: View {
     }
 
     private var timeFrameColor: Color {
-        switch record.timeFrame {
-        case .daily: return .gray
-        case .month: return .green
-        case .year: return .orange
-        case .allTime: return .blue
-        }
+        record.timeFrame.color
     }
 
     private var timeFrameAbbrev: String {
-        switch record.timeFrame {
-        case .daily: return "D"
-        case .month: return "M"
-        case .year: return "Y"
-        case .allTime: return "L"
-        }
+        record.timeFrame.abbreviation
     }
 
     private var timeFrameLabel: String {
-        switch record.timeFrame {
-        case .daily: return "Daily Record"
-        case .month: return "Monthly Record"
-        case .year: return "Yearly Record"
-        case .allTime: return "Lifetime Record"
-        }
+        record.timeFrame.recordLabel
     }
 
     private var formattedDate: String {
@@ -90,7 +73,7 @@ struct DetailContentView: View {
     }
 
     private var formattedCoordinates: String {
-        String(format: "%.4f, %.4f", record.coordinate.latitude, record.coordinate.longitude)
+        FormatUtils.formatCoordinates(record.coordinate)
     }
 
     private var locationName: String {

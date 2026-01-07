@@ -110,8 +110,6 @@ struct RecordCardHeader: View {
                 .font(sizing.isCompact ? .title3 : .title)
                 .foregroundColor(FormatUtils.colorForRecordType(recordType))
                 .frame(width: sizing.iconSize, height: sizing.iconSize)
-                .background(FormatUtils.colorForRecordType(recordType).opacity(0.1))
-                .cornerRadius(8)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(recordType)

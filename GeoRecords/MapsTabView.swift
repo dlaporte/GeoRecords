@@ -56,8 +56,6 @@ struct VisitedRegionCard: View {
                     .font(sizing.isCompact ? .title3 : .title)
                     .foregroundColor(FormatUtils.colorForRecordType(detail.recordType))
                     .frame(width: sizing.iconSize, height: sizing.iconSize)
-                    .background(FormatUtils.colorForRecordType(detail.recordType).opacity(0.1))
-                    .cornerRadius(8)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(detail.recordType)
@@ -89,7 +87,7 @@ struct VisitedRegionCard: View {
                                 .foregroundColor(.secondary)
                         }
                         HStack(spacing: 6) {
-                            if let flag = flagEmoji(for: detail.regionCode, recordType: detail.recordType) {
+                            if let flag = FormatUtils.flagEmoji(for: detail.regionCode, recordType: detail.recordType) {
                                 Text(flag)
                                     .font(.system(size: sizing.isCompact ? 18 : 24))
                             }
@@ -148,32 +146,6 @@ struct VisitedRegionCard: View {
         }
     }
 
-    // Helper to get flag emoji from region code (only for countries)
-    // For territories, returns the parent country's flag
-    private func flagEmoji(for regionCode: String?, recordType: String) -> String? {
-        guard let code = regionCode else { return nil }
-
-        // Only show flags for countries, not states or continents
-        guard recordType == RecordType.country.rawValue else { return nil }
-
-        // Get the flag code - for territories, this returns parent country code
-        guard let flagCode = RegionLookupService.flagCode(for: code) else { return nil }
-
-        // Convert ISO 2-letter code to flag emoji
-        // Flag emojis are created by combining regional indicator symbols
-        let uppercaseCode = flagCode.uppercased()
-        guard uppercaseCode.count == 2 else { return nil }
-
-        var flagString = ""
-        for scalar in uppercaseCode.unicodeScalars {
-            // Regional indicator symbols start at U+1F1E6 (A) through U+1F1FF (Z)
-            if let regionalIndicator = UnicodeScalar(127397 + scalar.value) {
-                flagString.append(String(regionalIndicator))
-            }
-        }
-
-        return flagString.isEmpty ? nil : flagString
-    }
 }
 
 // MARK: - States Map View

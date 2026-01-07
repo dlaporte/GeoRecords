@@ -168,7 +168,7 @@ struct ImportPreviewView: View {
             }
             .toolbarBackground(scanner.isWizardMode ? .hidden : .visible, for: .navigationBar)
             .alert("Success!", isPresented: $showSuccess) {
-                Button("View Records") {
+                Button("Done") {
                     dismiss()
                 }
             } message: {

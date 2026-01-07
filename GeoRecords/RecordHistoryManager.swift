@@ -272,10 +272,10 @@ class RecordHistoryManager: ObservableObject {
                 type, "Yearly", "Monthly", yearStart as NSDate, yearEnd as NSDate
             )
         case .allTime:
-            // For all-time, query only Lifetime records
+            // For all-time, query only Lifetime records (handles all historical variations)
             request.predicate = NSPredicate(
-                format: "recordType == %@ AND (timeFrame == %@ OR timeFrame == %@ OR timeFrame == %@)",
-                type, "Lifetime", "All-Time", "All Time"
+                format: "recordType == %@ AND timeFrame IN %@",
+                type, lifetimeTimeFrameVariations
             )
         }
 
@@ -486,7 +486,7 @@ class RecordHistoryManager: ObservableObject {
                     // Group by year only (keeps historical yearly records separate)
                     let year = calendar.component(.year, from: timestamp)
                     periodKey = "\(year)"
-                case "Lifetime", "All-Time", "All Time":
+                case _ where lifetimeTimeFrameVariations.contains(timeFrameStr):
                     // Single group for lifetime records (handle all variations)
                     periodKey = "all"
                 default:
@@ -1013,10 +1013,10 @@ class RecordHistoryManager: ObservableObject {
         // Note: We check multiple timeFrame string variations to catch records saved with different formats
         switch timeFrame {
         case .allTime:
-            // For all-time, delete any record of this type with timeFrame = "Lifetime" or "All-Time" or nil/empty
+            // For all-time, delete any record of this type with timeFrame matching lifetime variations or nil/empty
             request.predicate = NSPredicate(
-                format: "recordType == %@ AND (timeFrame == %@ OR timeFrame == %@ OR timeFrame == %@ OR timeFrame == nil OR timeFrame == %@)",
-                type, "Lifetime", "All-Time", "All Time", ""
+                format: "recordType == %@ AND (timeFrame IN %@ OR timeFrame == nil OR timeFrame == %@)",
+                type, lifetimeTimeFrameVariations, ""
             )
         case .year:
             // For yearly, delete ONLY Yearly records of this type within the same year

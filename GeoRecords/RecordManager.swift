@@ -65,9 +65,8 @@ struct RecordDetail: Identifiable {
 
         let timeFrame: TimeFrame = {
             if let timeFrameString = entry.timeFrame {
-                // Normalize all lifetime variations to "Lifetime" for backwards compatibility
-                let lifetimeVariations = ["All-Time", "All Time", "Lifetime"]
-                let normalizedString = lifetimeVariations.contains(timeFrameString) ? "Lifetime" : timeFrameString
+                // Normalize all lifetime variations to canonical form for backwards compatibility
+                let normalizedString = lifetimeTimeFrameVariations.contains(timeFrameString) ? canonicalLifetimeTimeFrame : timeFrameString
                 return TimeFrame(rawValue: normalizedString) ?? .allTime
             }
             return .allTime  // Default for old entries without timeFrame
@@ -310,14 +309,13 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             // - "This Month" = records from current month (Monthly OR more granular)
             // - "This Year" = records from current year (Yearly OR Monthly from this year)
             // - "Lifetime" = all records (Lifetime OR any timeframe)
-            let lifetimeVariations = ["Lifetime", "All-Time", "All Time"]
 
             // For Monthly: Monthly records from the current month
             // (Daily records are excluded - they're for chart granularity only and don't have photos)
             let monthEntries = allEntries.filter { entry in
                 let tf = entry.timeFrame ?? ""
                 guard let timestamp = entry.timestamp else { return false }
-                return tf == "Monthly" && timestamp >= startOfMonth
+                return tf == TimeFrame.month.rawValue && timestamp >= startOfMonth
             }
 
             // For Yearly: any record from the current year period
@@ -327,9 +325,9 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                 let tf = entry.timeFrame ?? ""
                 guard let timestamp = entry.timestamp else { return false }
                 // Include Yearly records from current year
-                if tf == "Yearly" && timestamp >= startOfYear { return true }
+                if tf == TimeFrame.year.rawValue && timestamp >= startOfYear { return true }
                 // Also include Monthly records from current year (they're part of this year!)
-                if tf == "Monthly" && timestamp >= startOfYear { return true }
+                if tf == TimeFrame.month.rawValue && timestamp >= startOfYear { return true }
                 return false
             }
 
@@ -339,7 +337,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             // across ALL timeframes, ignoring the user's Lifetime-specific choice
             let lifetimeEntries = allEntries.filter { entry in
                 let tf = entry.timeFrame ?? ""
-                return lifetimeVariations.contains(tf)
+                return lifetimeTimeFrameVariations.contains(tf)
             }
 
             // Helper to find the best record from a group

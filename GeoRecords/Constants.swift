@@ -234,6 +234,128 @@ func debugLog(_ items: Any..., separator: String = " ", terminator: String = "\n
     #endif
 }
 
+// MARK: - US State Codes
+
+/// All 50 US state postal codes
+let usStatePostalCodes: Set<String> = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
+]
+
+/// US territories and DC postal codes (tracked as states but not counted in "50 states")
+let usTerritoryCodes: Set<String> = ["DC", "AS", "GU", "MP", "PR", "VI"]
+
+/// All US state and territory codes combined
+let allUSStateCodes: Set<String> = usStatePostalCodes.union(usTerritoryCodes)
+
+/// Codes to exclude from "X of 50 states" count (both bare and US- prefixed versions)
+let nonStateCodesForCount: Set<String> = {
+    var codes = usTerritoryCodes
+    for code in usTerritoryCodes {
+        codes.insert("US-\(code)")
+    }
+    return codes
+}()
+
+/// FIPS code to postal code mapping for US states and territories
+let fipsToPostalCode: [String: String] = [
+    "01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA",
+    "08": "CO", "09": "CT", "10": "DE", "11": "DC", "12": "FL",
+    "13": "GA", "15": "HI", "16": "ID", "17": "IL", "18": "IN",
+    "19": "IA", "20": "KS", "21": "KY", "22": "LA", "23": "ME",
+    "24": "MD", "25": "MA", "26": "MI", "27": "MN", "28": "MS",
+    "29": "MO", "30": "MT", "31": "NE", "32": "NV", "33": "NH",
+    "34": "NJ", "35": "NM", "36": "NY", "37": "NC", "38": "ND",
+    "39": "OH", "40": "OK", "41": "OR", "42": "PA", "44": "RI",
+    "45": "SC", "46": "SD", "47": "TN", "48": "TX", "49": "UT",
+    "50": "VT", "51": "VA", "53": "WA", "54": "WV", "55": "WI",
+    "56": "WY",
+    // Territories
+    "60": "AS", "66": "GU", "69": "MP", "72": "PR", "78": "VI"
+]
+
+// MARK: - TimeFrame String Variations
+
+/// Historical variations of the "Lifetime" timeframe string stored in Core Data
+/// Used for query predicates to match records regardless of which variation was used
+let lifetimeTimeFrameVariations = ["Lifetime", "All-Time", "All Time"]
+
+/// Canonical timeframe string for new records (always use this when saving)
+let canonicalLifetimeTimeFrame = "Lifetime"
+
+// MARK: - Territory Mappings
+
+/// Territory codes mapped to their parent country code (for flag display)
+/// These territories get their own card but display parent country's flag
+let territoryToParentCountry: [String: String] = [
+    // French territories → France (FR)
+    "GF": "FR",   // French Guiana
+    "MQ": "FR",   // Martinique
+    "GP": "FR",   // Guadeloupe
+    "RE": "FR",   // Réunion
+    "YT": "FR",   // Mayotte
+    "NC": "FR",   // New Caledonia
+    "PF": "FR",   // French Polynesia
+
+    // Portuguese territories → Portugal (PT)
+    "PT-20": "PT",  // Azores
+    "PT-30": "PT",  // Madeira
+
+    // Spanish territories → Spain (ES)
+    "ES-CN": "ES",  // Canary Islands
+
+    // Dutch territories → Netherlands (NL)
+    "CW": "NL",   // Curaçao
+    "AW": "NL",   // Aruba
+    "SX": "NL",   // Sint Maarten
+
+    // British territories → United Kingdom (GB)
+    "BM": "GB",   // Bermuda
+    "VG": "GB",   // British Virgin Islands
+    "KY": "GB",   // Cayman Islands
+    "FK": "GB",   // Falkland Islands
+    "SC": "GB",   // Seychelles
+    "GI": "GB",   // Gibraltar
+
+    // Danish territories → Denmark (DK)
+    "FO": "DK",   // Faroe Islands
+    "GL": "DK",   // Greenland
+
+    // Australian territories → Australia (AU)
+    "CX": "AU",   // Christmas Island
+    "CC": "AU",   // Cocos (Keeling) Islands
+    "NF": "AU",   // Norfolk Island
+
+    // New Zealand territories → New Zealand (NZ)
+    "CK": "NZ",   // Cook Islands
+    "NU": "NZ",   // Niue
+    "TK": "NZ",   // Tokelau
+]
+
+/// All territory codes (excluding US territories which are tracked as states)
+let territoryCodes: Set<String> = Set(territoryToParentCountry.keys)
+
+/// Check if a region code is a territory (not a sovereign country)
+func isTerritory(_ code: String) -> Bool {
+    return territoryCodes.contains(code)
+}
+
+/// Get the flag code for a region - returns parent country for territories
+func flagCodeForRegion(_ regionCode: String) -> String? {
+    // If it's a territory, return parent country code
+    if let parentCode = territoryToParentCountry[regionCode] {
+        return parentCode
+    }
+    // Otherwise return the code itself if it's a valid 2-letter code
+    if regionCode.count == 2 {
+        return regionCode
+    }
+    return nil
+}
+
 // MARK: - Unit Conversion Constants
 
 /// Meters to feet conversion factor
@@ -534,6 +656,48 @@ let numericDateFormatter: DateFormatter = {
 let time24Formatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm"
+    return formatter
+}()
+
+/// Full weekday date formatter (e.g., "Monday, January 15, 2025") for detail views
+let fullWeekdayDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "EEEE, MMMM d, yyyy"
+    return formatter
+}()
+
+/// 12-hour time formatter (e.g., "3:45 PM") for detail views
+let time12Formatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "h:mm a"
+    return formatter
+}()
+
+/// Date added formatter (e.g., "Jan 15, 2025 at 3:45 PM") for showing when records were added
+let dateAddedFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "MMM d, yyyy 'at' h:mm a"
+    return formatter
+}()
+
+/// Month name formatter (e.g., "January") for statistics
+let monthNameFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "MMMM"
+    return formatter
+}()
+
+/// Short month-year formatter (e.g., "Jan 2025") for chart labels
+let shortMonthYearFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "MMM yyyy"
+    return formatter
+}()
+
+/// EXIF date formatter for parsing photo metadata (format: "yyyy:MM:dd HH:mm:ss")
+let exifDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
     return formatter
 }()
 

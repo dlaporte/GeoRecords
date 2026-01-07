@@ -189,7 +189,7 @@ class RegionLookupService {
         }
 
         // For territories, try to extract polygons from parent country that fall within the territory's bounding box
-        if let parentCode = Self.territoryToParentCountry[regionCode],
+        if let parentCode = territoryToParentCountry[regionCode],
            let parentCountry = countries.first(where: { $0.code == parentCode }) {
             // Get the territory's bounding box from our definitions
             if let territoryBounds = getTerritoryBoundingBox(regionCode) {
@@ -289,30 +289,6 @@ class RegionLookupService {
             return
         }
 
-        // FIPS code to postal code mapping (50 states + DC + territories)
-        let fipsToPostal: [String: String] = [
-            // 50 States
-            "01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA",
-            "08": "CO", "09": "CT", "10": "DE", "12": "FL",
-            "13": "GA", "15": "HI", "16": "ID", "17": "IL", "18": "IN",
-            "19": "IA", "20": "KS", "21": "KY", "22": "LA", "23": "ME",
-            "24": "MD", "25": "MA", "26": "MI", "27": "MN", "28": "MS",
-            "29": "MO", "30": "MT", "31": "NE", "32": "NV", "33": "NH",
-            "34": "NJ", "35": "NM", "36": "NY", "37": "NC", "38": "ND",
-            "39": "OH", "40": "OK", "41": "OR", "42": "PA", "44": "RI",
-            "45": "SC", "46": "SD", "47": "TN", "48": "TX", "49": "UT",
-            "50": "VT", "51": "VA", "53": "WA", "54": "WV", "55": "WI",
-            "56": "WY",
-            // DC
-            "11": "DC",
-            // US Territories
-            "60": "AS",  // American Samoa
-            "66": "GU",  // Guam
-            "69": "MP",  // Northern Mariana Islands
-            "72": "PR",  // Puerto Rico
-            "78": "VI"   // US Virgin Islands
-        ]
-
         for feature in features {
             guard let properties = feature["properties"] as? [String: Any],
                   let name = properties["NAME"] as? String,
@@ -323,8 +299,8 @@ class RegionLookupService {
                 continue
             }
 
-            // Convert FIPS to postal code
-            guard let postalCode = fipsToPostal[fipsCode] else {
+            // Convert FIPS to postal code (uses centralized mapping from Constants)
+            guard let postalCode = fipsToPostalCode[fipsCode] else {
                 debugLog("⚠️ Unknown FIPS code: \(fipsCode) for \(name)")
                 continue
             }
@@ -576,84 +552,9 @@ class RegionLookupService {
         }
     }
 
-    // MARK: - Overseas Territories
-
-    /// Territory codes mapped to their parent country code (for flag display)
-    /// These territories get their own card but display parent country's flag
-    static let territoryToParentCountry: [String: String] = [
-        // French territories → France (FR)
-        "GF": "FR",   // French Guiana
-        "MQ": "FR",   // Martinique
-        "GP": "FR",   // Guadeloupe
-        "RE": "FR",   // Réunion
-        "YT": "FR",   // Mayotte
-        "NC": "FR",   // New Caledonia
-        "PF": "FR",   // French Polynesia
-
-        // Portuguese territories → Portugal (PT)
-        "PT-20": "PT",  // Azores
-        "PT-30": "PT",  // Madeira
-
-        // Spanish territories → Spain (ES)
-        "ES-CN": "ES",  // Canary Islands
-
-        // Dutch territories → Netherlands (NL)
-        "CW": "NL",   // Curaçao
-        "AW": "NL",   // Aruba
-        "SX": "NL",   // Sint Maarten
-
-        // British territories → United Kingdom (GB)
-        "BM": "GB",   // Bermuda
-        "VG": "GB",   // British Virgin Islands
-        "KY": "GB",   // Cayman Islands
-        "FK": "GB",   // Falkland Islands
-        "SC": "GB",   // Seychelles
-        "GI": "GB",   // Gibraltar
-
-        // Danish territories → Denmark (DK)
-        "FO": "DK",   // Faroe Islands
-        "GL": "DK",   // Greenland
-
-        // Australian territories → Australia (AU)
-        "CX": "AU",   // Christmas Island
-        "CC": "AU",   // Cocos (Keeling) Islands
-        "NF": "AU",   // Norfolk Island
-
-        // New Zealand territories → New Zealand (NZ)
-        "CK": "NZ",   // Cook Islands
-        "NU": "NZ",   // Niue
-        "TK": "NZ",   // Tokelau
-    ]
-
-    /// All territory codes (excluding US territories which are tracked as states)
-    /// Used to exclude from country count
-    static let territoryCodes: Set<String> = Set(territoryToParentCountry.keys)
-
-    /// Check if a region code is a territory (not a sovereign country)
-    static func isTerritory(_ code: String) -> Bool {
-        return territoryCodes.contains(code)
-    }
-
-    /// Get parent country code for a territory (for flag display)
-    /// Returns nil if not a territory
-    static func parentCountryCode(for territoryCode: String) -> String? {
-        return territoryToParentCountry[territoryCode]
-    }
-
-    /// Get the flag code for a region - returns parent country for territories
-    static func flagCode(for regionCode: String) -> String? {
-        // If it's a territory, return parent country code
-        if let parentCode = territoryToParentCountry[regionCode] {
-            return parentCode
-        }
-        // Otherwise return the code itself if it's a valid 2-letter code
-        if regionCode.count == 2 {
-            return regionCode
-        }
-        return nil
-    }
-
     // MARK: - Overseas Territories Detection
+    // Note: Territory mappings (territoryToParentCountry, territoryCodes, isTerritory, flagCodeForRegion)
+    // are defined in Constants.swift for use across the app
 
     /// Check if coordinates fall within known overseas territories
     /// These are geographically separate from their parent countries but share the same

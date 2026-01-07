@@ -149,6 +149,39 @@ enum FormatUtils {
         return "\(emoji) \(short)"
     }
 
+    // MARK: - Flag Emoji
+
+    /// Convert a country/territory region code to a flag emoji
+    /// For territories, uses the parent country's flag via RegionLookupService
+    /// - Parameters:
+    ///   - regionCode: The ISO 2-letter country code or territory code (e.g., "US", "FR", "PT-20")
+    ///   - recordType: The record type string (only returns flags for country records)
+    /// - Returns: Flag emoji string, or nil if not a country or invalid code
+    static func flagEmoji(for regionCode: String?, recordType: String) -> String? {
+        guard let code = regionCode else { return nil }
+
+        // Only show flags for countries, not states or continents
+        guard recordType == RecordType.country.rawValue else { return nil }
+
+        // Get the flag code - for territories, this returns parent country code
+        guard let flagCode = flagCodeForRegion(code) else { return nil }
+
+        // Convert ISO 2-letter code to flag emoji
+        // Flag emojis are created by combining regional indicator symbols
+        let uppercaseCode = flagCode.uppercased()
+        guard uppercaseCode.count == 2 else { return nil }
+
+        var flagString = ""
+        for scalar in uppercaseCode.unicodeScalars {
+            // Regional indicator symbols start at U+1F1E6 (A) through U+1F1FF (Z)
+            if let regionalIndicator = UnicodeScalar(127397 + scalar.value) {
+                flagString.append(String(regionalIndicator))
+            }
+        }
+
+        return flagString.isEmpty ? nil : flagString
+    }
+
     // MARK: - Colors
 
     static func colorForRecordType(_ type: String) -> Color {

@@ -27,16 +27,26 @@ func deleteRecordFromStorage(_ record: RecordDetail, recordManager: RecordManage
         debugLog("🗑️ Deleted \(deletedCount) related records (same photo)")
     }
 
-    // Clear from RecordManager in-memory for all timeframes
-    for timeFrame in TimeFrame.userVisibleCases {
-        if let existing = recordManager.getRecord(type: record.recordType, timeFrame: timeFrame),
-           existing.timestamp == record.timestamp {
-            recordManager.setRecord(type: record.recordType, timeFrame: timeFrame, record: nil)
-        }
-    }
+    // Check if this is a region record
+    let recordType = RecordType.from(string: record.recordType)
+    let isRegion = recordType?.isRegionVisit ?? false
 
-    // Reload records from history to get the next best record
-    recordManager.loadRecordsFromHistory()
+    if isRegion {
+        // For region records, reload visited regions to update cards and map
+        RegionTrackingManager.shared.loadVisitedRegions()
+        debugLog("🗑️ Deleted region record '\(record.recordType)', reloaded visited regions")
+    } else {
+        // Clear from RecordManager in-memory for all timeframes
+        for timeFrame in TimeFrame.userVisibleCases {
+            if let existing = recordManager.getRecord(type: record.recordType, timeFrame: timeFrame),
+               existing.timestamp == record.timestamp {
+                recordManager.setRecord(type: record.recordType, timeFrame: timeFrame, record: nil)
+            }
+        }
+
+        // Reload records from history to get the next best record
+        recordManager.loadRecordsFromHistory()
+    }
 }
 
 /// Updates notes for a record in both Core Data and in-memory storage

@@ -40,9 +40,8 @@ struct HistoryView: View {
         if selectedTimeFrameFilter != "All Timeframes" {
             entries = entries.filter { entry in
                 // Treat all variations of lifetime records as the same
-                if selectedTimeFrameFilter == "Lifetime" {
-                    let lifetimeVariations = ["Lifetime", "All-Time", "All Time"]
-                    return lifetimeVariations.contains(entry.timeFrame ?? "")
+                if selectedTimeFrameFilter == canonicalLifetimeTimeFrame {
+                    return lifetimeTimeFrameVariations.contains(entry.timeFrame ?? "")
                 }
                 return entry.timeFrame == selectedTimeFrameFilter
             }
@@ -83,13 +82,12 @@ struct HistoryView: View {
         // Remove Daily - it's for internal chart use only
         frames.remove("Daily")
 
-        // Merge all variations of all-time/lifetime into single "Lifetime" option
-        let lifetimeVariations = ["All-Time", "All Time", "Lifetime"]
-        let hasLifetime = frames.contains(where: { lifetimeVariations.contains($0) })
+        // Merge all variations of all-time/lifetime into single canonical "Lifetime" option
+        let hasLifetime = frames.contains(where: { lifetimeTimeFrameVariations.contains($0) })
 
         if hasLifetime {
-            lifetimeVariations.forEach { frames.remove($0) }
-            frames.insert("Lifetime")
+            lifetimeTimeFrameVariations.forEach { frames.remove($0) }
+            frames.insert(canonicalLifetimeTimeFrame)
         }
 
         // Sort in logical order: Lifetime, Yearly, Monthly
@@ -223,9 +221,8 @@ struct CompactHistoryRow: View {
             return .gray
         }
 
-        // Normalize all lifetime variations to "Lifetime" for enum conversion
-        let lifetimeVariations = ["All-Time", "All Time", "Lifetime"]
-        let normalizedString = lifetimeVariations.contains(timeFrameString) ? "Lifetime" : timeFrameString
+        // Normalize all lifetime variations to canonical form for enum conversion
+        let normalizedString = lifetimeTimeFrameVariations.contains(timeFrameString) ? canonicalLifetimeTimeFrame : timeFrameString
 
         guard let timeFrame = TimeFrame(rawValue: normalizedString) else {
             return .gray
@@ -247,38 +244,13 @@ struct CompactHistoryRow: View {
     private var locationText: String {
         if let name = entry.locationName, !name.isEmpty, name != unknownLocationString {
             // Add flag for countries
-            if let flag = flagEmoji(for: entry.regionCode, recordType: entry.recordType) {
+            if let recordType = entry.recordType,
+               let flag = FormatUtils.flagEmoji(for: entry.regionCode, recordType: recordType) {
                 return "\(flag) \(name)"
             }
             return name
         }
         return String(format: "%.4f, %.4f", entry.latitude, entry.longitude)
-    }
-
-    // Helper to get flag emoji from region code (only for countries)
-    // For territories, returns the parent country's flag
-    private func flagEmoji(for regionCode: String?, recordType: String?) -> String? {
-        guard let code = regionCode, let type = recordType else { return nil }
-
-        // Only show flags for countries, not states or continents
-        guard type == RecordType.country.rawValue else { return nil }
-
-        // Get the flag code - for territories, this returns parent country code
-        guard let flagCode = RegionLookupService.flagCode(for: code) else { return nil }
-
-        // Convert ISO 2-letter code to flag emoji
-        let uppercaseCode = flagCode.uppercased()
-        guard uppercaseCode.count == 2 else { return nil }
-
-        var flagString = ""
-        for scalar in uppercaseCode.unicodeScalars {
-            // Regional indicator symbols start at U+1F1E6 (A) through U+1F1FF (Z)
-            if let regionalIndicator = UnicodeScalar(127397 + scalar.value) {
-                flagString.append(String(regionalIndicator))
-            }
-        }
-
-        return flagString.isEmpty ? nil : flagString
     }
 
     private var formattedDate: String {
@@ -293,10 +265,10 @@ struct CompactHistoryRow: View {
 
     private var timeFrameAbbrev: String {
         guard let tf = entry.timeFrame else { return "?" }
+        if lifetimeTimeFrameVariations.contains(tf) { return "L" }
         switch tf {
-        case "Monthly": return "M"
-        case "Yearly": return "Y"
-        case "Lifetime", "All-Time", "All Time": return "L"  // All variations
+        case TimeFrame.month.rawValue: return "M"
+        case TimeFrame.year.rawValue: return "Y"
         default: return String(tf.prefix(1))
         }
     }

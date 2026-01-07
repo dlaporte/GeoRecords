@@ -69,22 +69,16 @@ struct DetailContentView: View {
     }
 
     private var formattedDate: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEEE, MMMM d, yyyy"
-        return formatter.string(from: record.timestamp)
+        fullWeekdayDateFormatter.string(from: record.timestamp)
     }
 
     private var formattedTime: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        return formatter.string(from: record.timestamp)
+        time12Formatter.string(from: record.timestamp)
     }
 
     private var formattedDateAdded: String? {
         guard let dateAdded = record.dateAdded else { return nil }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d, yyyy 'at' h:mm a"
-        return formatter.string(from: dateAdded)
+        return dateAddedFormatter.string(from: dateAdded)
     }
 
     private var formattedAltitude: String {

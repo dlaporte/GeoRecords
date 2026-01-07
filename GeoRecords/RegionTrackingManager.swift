@@ -243,17 +243,16 @@ class RegionTrackingManager: ObservableObject {
             visitedContinents = deduplicateByRegionCode(continentEntries.compactMap { RecordDetail(from: $0) })
 
             // Count only the 50 actual states (exclude DC and territories) for the "X of 50" display
-            let nonStateCodes = Set(["DC", "AS", "GU", "MP", "PR", "VI", "US-DC", "US-AS", "US-GU", "US-MP", "US-PR", "US-VI"])
             stateCount = visitedStates.filter { state in
                 guard let code = state.regionCode else { return false }
-                return !nonStateCodes.contains(code)
+                return !nonStateCodesForCount.contains(code)
             }.count
 
             // Count only sovereign countries (exclude territories) for the "X of 195" display
             // Territories still appear as cards but don't count toward the total
             countryCount = visitedCountries.filter { country in
                 guard let code = country.regionCode else { return true }
-                return !RegionLookupService.isTerritory(code)
+                return !isTerritory(code)
             }.count
             continentCount = visitedContinents.count
 
@@ -460,33 +459,11 @@ class RegionTrackingManager: ObservableObject {
 
         let stateCode = String(code.dropFirst(3))
 
-        // FIPS to postal mapping (50 states only, excludes DC)
-        let fipsToPostal: [String: String] = [
-            "01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA",
-            "08": "CO", "09": "CT", "10": "DE", "12": "FL",
-            "13": "GA", "15": "HI", "16": "ID", "17": "IL", "18": "IN",
-            "19": "IA", "20": "KS", "21": "KY", "22": "LA", "23": "ME",
-            "24": "MD", "25": "MA", "26": "MI", "27": "MN", "28": "MS",
-            "29": "MO", "30": "MT", "31": "NE", "32": "NV", "33": "NH",
-            "34": "NJ", "35": "NM", "36": "NY", "37": "NC", "38": "ND",
-            "39": "OH", "40": "OK", "41": "OR", "42": "PA", "44": "RI",
-            "45": "SC", "46": "SD", "47": "TN", "48": "TX", "49": "UT",
-            "50": "VT", "51": "VA", "53": "WA", "54": "WV", "55": "WI",
-            "56": "WY"
-        ]
-
-        // Check if it's a FIPS code that needs migration
-        if let postalCode = fipsToPostal[stateCode] {
+        // Check if it's a FIPS code that needs migration (uses centralized mapping from Constants)
+        if let postalCode = fipsToPostalCode[stateCode] {
             let newCode = "US-\(postalCode)"
             debugLog("📍 Migrating state code from '\(code)' to '\(newCode)'")
             region.regionCode = newCode
-            return true
-        }
-
-        // Delete DC entries (not a state)
-        if stateCode == "11" || stateCode == "DC" {
-            debugLog("📍 Removing DC entry (not a state)")
-            context.delete(region)
             return true
         }
 
@@ -725,16 +702,8 @@ class RegionTrackingManager: ObservableObject {
 
             // Normalize US state codes: "CA" and "US-CA" should be treated as the same
             // If it's a 2-letter code that matches a US state, normalize to US-XX format
-            if key.count == 2 && !key.hasPrefix("US-") {
-                let usStateCodes = Set(["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
-                                        "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
-                                        "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-                                        "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
-                                        "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-                                        "DC", "AS", "GU", "MP", "PR", "VI"])
-                if usStateCodes.contains(key) {
-                    key = "US-\(key)"
-                }
+            if key.count == 2 && !key.hasPrefix("US-") && allUSStateCodes.contains(key) {
+                key = "US-\(key)"
             }
 
             if let existing = seen[key] {

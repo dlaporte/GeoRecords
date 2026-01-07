@@ -428,9 +428,7 @@ struct ManualRecordImportView: View {
             var photoDate = Date()
             if let exifData = metadata[kCGImagePropertyExifDictionary as String] as? [String: Any],
                let dateString = exifData[kCGImagePropertyExifDateTimeOriginal as String] as? String {
-                let formatter = DateFormatter()
-                formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-                if let date = formatter.date(from: dateString) {
+                if let date = exifDateFormatter.date(from: dateString) {
                     photoDate = date
                 }
             }

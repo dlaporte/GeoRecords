@@ -71,6 +71,9 @@ struct GeoRecords: App {
         // Schedule summary notifications
         SummaryNotificationManager.shared.scheduleSummaryNotifications()
 
+        // Start monitoring photo library for new photos (catches extreme locations from camera)
+        PhotoLocationMonitor.shared.startMonitoring()
+
         // Startup maintenance tasks
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)  // Wait 2 seconds after launch

@@ -110,9 +110,9 @@ struct ImportWizardView: View {
     }
 }
 
-// MARK: - All-Time Step View
+// MARK: - Lifetime Step View
 
-/// Step 1: All-time records selection
+/// Step 1: Lifetime records selection
 struct AllTimeStepView: View {
     @ObservedObject var scanner: PhotoLibraryScanner
     @EnvironmentObject var settings: SettingsManager
@@ -140,8 +140,8 @@ struct AllTimeStepView: View {
 
                 if scanner.allTimeCandidates.isEmpty {
                     WizardEmptyStateView(
-                        title: "No All-Time Records",
-                        message: "No photos found that would set all-time records."
+                        title: "No Lifetime Records",
+                        message: "No photos found that would set lifetime records."
                     )
                 } else {
                     LazyVGrid(columns: columns, spacing: 10) {

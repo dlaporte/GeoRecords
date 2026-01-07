@@ -33,19 +33,24 @@ struct RecordsView: View {
     @State private var refreshTrigger = UUID()  // Forces view to recompute
 
     // Computed property to get all non-nil records in order for the selected timeframe
+    // Only includes geographic extreme records (N/S/E/W/Up/FromHome), not region records
     private var allRecords: [RecordDetail] {
         // Reference refreshTrigger to force recomputation when it changes
         _ = refreshTrigger
 
-        // For All Time mode with a specific year selected, fetch best records from that year
-        if selectedTimeFrame == .allTime, let year = selectedYear {
-            return fetchRecordsForYear(year)
+        // For Year mode with a specific year selected, fetch best records from that year
+        if selectedTimeFrame == .year, let year = selectedYear {
+            return fetchRecordsForYear(year).filter { record in
+                RecordType.from(string: record.recordType)?.isGeographicExtreme ?? false
+            }
         }
 
-        // Otherwise show current timeframe records
-        return RecordType.allCases.compactMap { type in
-            recordManager.getRecord(type: type.rawValue, timeFrame: selectedTimeFrame)
-        }
+        // Otherwise show current timeframe records (only geographic extremes, not regions)
+        return RecordType.allCases
+            .filter { $0.isGeographicExtreme }
+            .compactMap { type in
+                recordManager.getRecord(type: type.rawValue, timeFrame: selectedTimeFrame)
+            }
     }
 
     var body: some View {
@@ -59,8 +64,12 @@ struct RecordsView: View {
                     timeFrameLabel: { timeFrame in
                         switch timeFrame {
                         case .daily: return "Daily"
-                        case .allTime: return "All Years"
-                        case .year: return "This Year"
+                        case .allTime: return "Lifetime"
+                        case .year:
+                            if let year = selectedYear {
+                                return String(format: "%d", year)
+                            }
+                            return "This Year"
                         case .month: return "This Month"
                         }
                     },
@@ -121,9 +130,12 @@ struct RecordsView: View {
                                 }
                         }
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .tabViewStyle(.page(indexDisplayMode: .always))
+                    .indexViewStyle(.page(backgroundDisplayMode: .never))
+                    .contentMargins(0, for: .scrollContent)
                     .frame(maxWidth: .infinity)
                     .frame(height: 280)
+                    .padding(.vertical, 10)
                     .onChange(of: currentRecordIndex) { _, newIndex in
                         // Update map when swiping to new record
                         if let record = allRecords[safe: newIndex] {
@@ -152,8 +164,8 @@ struct RecordsView: View {
                 }
             }
             .onChange(of: selectedTimeFrame) { _, newValue in
-                // Reset year selection when switching away from All Time
-                if newValue != .allTime {
+                // Reset year selection when switching away from This Year
+                if newValue != .year {
                     selectedYear = nil
                 }
 
@@ -276,14 +288,16 @@ struct RecordsView: View {
 
         var yearRecords: [RecordDetail] = []
 
-        // For each record type, find the most extreme record from that year
+        // For each record type, find the Yearly record from that year
+        // Only consider records with timeFrame == "Yearly" to respect wizard selections
         for recordType in RecordType.allCases {
             let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
             request.predicate = NSPredicate(
-                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@ AND timeFrame == %@",
                 recordType.rawValue,
                 startOfYear as NSDate,
-                endOfYear as NSDate
+                endOfYear as NSDate,
+                "Yearly"
             )
 
             // Sort to get the most extreme
@@ -317,56 +331,6 @@ struct RecordsView: View {
     }
 }
 
-// MARK: - Record Card Sizing
-
-/// Encapsulates responsive sizing values for record cards
-private struct CardSizing {
-    let isCompact: Bool
-
-    init() {
-        let screenHeight = UIScreen.main.bounds.height
-        isCompact = screenHeight < compactScreenHeightThreshold
-    }
-
-    var cardSpacing: CGFloat { isCompact ? 8 : 12 }
-    var iconSize: CGFloat { isCompact ? 32 : 44 }
-    var valueFontSize: CGFloat { isCompact ? 24 : 36 }
-    var photoSize: CGFloat { isCompact ? 80 : 120 }
-    var cardPadding: CGFloat { isCompact ? 12 : 16 }
-    var horizontalPadding: CGFloat { isCompact ? 10 : 16 }
-    var contentSpacing: CGFloat { isCompact ? 6 : 12 }
-}
-
-// MARK: - Record Card Header
-
-private struct RecordCardHeader: View {
-    let recordType: String
-    let timestamp: Date
-    let sizing: CardSizing
-
-    var body: some View {
-        HStack(spacing: sizing.isCompact ? 8 : 12) {
-            Image(systemName: FormatUtils.iconForRecordType(recordType))
-                .font(sizing.isCompact ? .title3 : .title)
-                .foregroundColor(FormatUtils.colorForRecordType(recordType))
-                .frame(width: sizing.iconSize, height: sizing.iconSize)
-                .background(FormatUtils.colorForRecordType(recordType).opacity(0.1))
-                .cornerRadius(8)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(recordType)
-                    .font(sizing.isCompact ? .caption : .headline)
-                    .fontWeight(.semibold)
-                Text(mediumDateFormatter.string(from: timestamp))
-                    .font(sizing.isCompact ? .caption2 : .caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer()
-        }
-    }
-}
-
 // MARK: - Record Value Display
 
 private struct RecordValueDisplay: View {
@@ -391,67 +355,6 @@ private struct RecordValueDisplay: View {
 }
 
 // MARK: - Record Photo Thumbnail
-
-private struct RecordPhotoThumbnail: View {
-    let recordId: UUID
-    let photoAssetIdentifier: String?
-    let photoCloudIdentifier: String?
-    let photoData: Data?  // Legacy fallback
-    let timestamp: Date
-    let coordinate: CLLocationCoordinate2D
-    let sizing: CardSizing
-
-    @State private var loadedImage: UIImage?
-
-    var body: some View {
-        Group {
-            if let image = loadedImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: sizing.photoSize, height: sizing.photoSize)
-                    .clipShape(RoundedRectangle(cornerRadius: sizing.isCompact ? 8 : 12))
-            } else {
-                RoundedRectangle(cornerRadius: sizing.isCompact ? 8 : 12)
-                    .fill(Color(UIColor.tertiarySystemGroupedBackground))
-                    .frame(width: sizing.photoSize, height: sizing.photoSize)
-                    .overlay(
-                        ProgressView()
-                            .scaleEffect(0.7)
-                    )
-            }
-        }
-        .task {
-            await loadThumbnail()
-        }
-    }
-
-    private func loadThumbnail() async {
-        // First, try loading from thumbnail cache (fastest)
-        if let cached = ThumbnailCache.shared.loadThumbnail(for: recordId) {
-            loadedImage = cached
-            return
-        }
-
-        // Fall back to Photos library with fallback: local ID → cloud ID → timestamp/location
-        if let identifier = photoAssetIdentifier {
-            if let photo = await PhotoReferenceManager.shared.fetchThumbnailWithFallback(
-                identifier: identifier,
-                cloudIdentifier: photoCloudIdentifier,
-                timestamp: timestamp,
-                coordinate: coordinate
-            ) {
-                loadedImage = photo
-                return
-            }
-        }
-
-        // Fallback to legacy embedded photo data
-        if let data = photoData, let image = UIImage(data: data) {
-            loadedImage = image
-        }
-    }
-}
 
 // MARK: - Record Card View
 
@@ -508,6 +411,8 @@ struct RecordCardView: View {
                     }
                 }
 
+                Spacer(minLength: 0)
+
                 // Right side - photo thumbnail
                 if record.photoAssetIdentifier != nil || record.photoData != nil {
                     RecordPhotoThumbnail(
@@ -523,19 +428,6 @@ struct RecordCardView: View {
             }
 
             Spacer(minLength: 0)
-
-            // Tap to view detail hint
-            if !sizing.isCompact {
-                HStack {
-                    Spacer()
-                    Text("Tap for details")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
         }
         .padding(sizing.cardPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -576,11 +468,11 @@ private struct TimeFramePickerWithBadges: View {
         .background(Color(UIColor.systemGray5))
         .cornerRadius(8)
         .contextMenu {
-            if selectedTimeFrame == .allTime && !availableYears.isEmpty {
+            if selectedTimeFrame == .year && !availableYears.isEmpty {
                 Button {
                     selectedYear = nil
                 } label: {
-                    Label("All Years", systemImage: selectedYear == nil ? "checkmark" : "calendar")
+                    Label("Current Year", systemImage: selectedYear == nil ? "checkmark" : "calendar")
                 }
                 Divider()
                 ForEach(availableYears, id: \.self) { year in

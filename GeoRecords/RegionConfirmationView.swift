@@ -4,21 +4,24 @@ import Photos
 // MARK: - Region Confirmation View
 
 /// View for confirming discovered regions during photo import wizard
-/// Shows each region with a swipeable photo carousel and confirmation toggle
+/// Uses 2-column grid layout matching the record confirmation style
 struct RegionConfirmationView: View {
     let regionType: RegionType
     @Binding var regions: [DiscoveredRegion]
     let onNext: () -> Void
     let onBack: () -> Void
 
-    /// Whether this is the last step (states) - shows "Import Records" instead of "Next"
+    /// Whether this is the last step - shows "Import Records" instead of "Next"
     var isLastStep: Bool = false
     /// Title for the back button
     var backTitle: String = "Monthly"
     /// Title for the next button (ignored if isLastStep)
     var nextTitle: String = "States"
 
-    @State private var loadedImages: [String: UIImage] = [:]
+    private let columns = [
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10)
+    ]
 
     /// Indices of regions sorted alphabetically by name
     private var sortedRegionIndices: [Int] {
@@ -27,114 +30,100 @@ struct RegionConfirmationView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            headerSection
+            // Content
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Select \(regionType.pluralName.lowercased()) to import")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal)
+                        .padding(.top, 8)
 
-            if regions.isEmpty {
-                emptyState
-            } else {
-                // Regions list with photo carousels (sorted alphabetically)
-                ScrollView {
-                    LazyVStack(spacing: 16) {
-                        ForEach(sortedRegionIndices, id: \.self) { index in
-                            RegionCard(
-                                region: $regions[index],
-                                loadedImages: $loadedImages
-                            )
+                    if regions.isEmpty {
+                        emptyState
+                    } else {
+                        LazyVGrid(columns: columns, spacing: 10) {
+                            ForEach(sortedRegionIndices, id: \.self) { index in
+                                RegionCard(region: $regions[index])
+                            }
                         }
+                        .padding(.horizontal)
                     }
-                    .padding()
                 }
+                .padding(.bottom, 16)
             }
 
-            // Navigation
+            // Navigation bar matching WizardNavigationBar style
             navigationBar
         }
         .background(Color(UIColor.systemGroupedBackground))
     }
 
-    private var headerSection: some View {
-        VStack(spacing: 4) {
-            Text(regionType == .country ? "Did you visit these countries?" : "Did you visit these states?")
-                .font(.headline)
-
-            Text("Uncheck regions you didn't actually visit (e.g., shared photos from family)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .padding()
-        .background(Color(UIColor.systemBackground))
-    }
-
     private var emptyState: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             Image(systemName: regionType == .country ? "globe" : "map")
                 .font(.system(size: 48))
                 .foregroundColor(.secondary)
 
-            Text("No \(regionType.pluralName.lowercased()) found in your photos")
-                .font(.body)
+            Text("No \(regionType.pluralName.lowercased()) found")
+                .font(.headline)
+
+            Text("No photos found for \(regionType.pluralName.lowercased()).")
+                .font(.subheadline)
                 .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
         }
+        .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var navigationBar: some View {
-        VStack(spacing: 8) {
-            // Selection count
-            Text("\(regions.filter { $0.confirmed }.count) of \(regions.count) selected")
-                .font(.caption)
-                .foregroundColor(.secondary)
+        HStack(spacing: 12) {
+            // Back button
+            Button(action: onBack) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.subheadline)
+                    Text("Back: \(backTitle)")
+                        .font(.subheadline)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color.gray.opacity(0.15))
+                .foregroundColor(.primary)
+                .cornerRadius(10)
+            }
 
-            // Navigation buttons matching WizardNavigationBar style
-            HStack(spacing: 12) {
-                // Back button
-                Button(action: onBack) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
+            // Next/Finish button
+            if isLastStep {
+                Button(action: onNext) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
                             .font(.subheadline)
-                        Text("Back: \(backTitle)")
+                        Text("Import Records")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.green)
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
+                }
+            } else {
+                Button(action: onNext) {
+                    HStack(spacing: 4) {
+                        Text("Next: \(nextTitle)")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        Image(systemName: "chevron.right")
                             .font(.subheadline)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(Color.gray.opacity(0.15))
-                    .foregroundColor(.primary)
+                    .background(Color.blue)
+                    .foregroundColor(.white)
                     .cornerRadius(10)
-                }
-
-                // Next/Finish button
-                if isLastStep {
-                    Button(action: onNext) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.subheadline)
-                            Text("Import Records")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color.green)
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                    }
-                } else {
-                    Button(action: onNext) {
-                        HStack(spacing: 4) {
-                            Text("Next: \(nextTitle)")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                            Image(systemName: "chevron.right")
-                                .font(.subheadline)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                    }
                 }
             }
         }
@@ -146,19 +135,16 @@ struct RegionConfirmationView: View {
 
 // MARK: - Region Card
 
-/// Card for a single region with photo carousel and confirmation toggle
-/// Supports infinite scrolling - loads more photos as user swipes near the end
+/// Compact card for a region with swipeable photo carousel
+/// Matches WizardRecordCard styling
 struct RegionCard: View {
     @Binding var region: DiscoveredRegion
-    @Binding var loadedImages: [String: UIImage]
 
-    @State private var currentPhotoIndex: Int = 0
+    @State private var loadedImages: [String: UIImage] = [:]
     @State private var visibleCount: Int
 
-    init(region: Binding<DiscoveredRegion>, loadedImages: Binding<[String: UIImage]>) {
+    init(region: Binding<DiscoveredRegion>) {
         self._region = region
-        self._loadedImages = loadedImages
-        // Use same batch size as WizardRecordCard for consistency
         self._visibleCount = State(initialValue: min(wizardMaxCandidatesPerType, region.wrappedValue.photoAssets.count))
     }
 
@@ -167,65 +153,120 @@ struct RegionCard: View {
         region.photoAssets.count > visibleCount
     }
 
+    private var regionColor: Color {
+        region.regionType == .country ? .blue : .orange
+    }
+
+    private var regionIcon: String {
+        region.regionType == .country ? "globe.americas.fill" : "flag.fill"
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            // Header with name and toggle
-            HStack {
-                Text(region.regionName)
-                    .font(.headline)
+        VStack(spacing: 6) {
+            // Photo carousel
+            ZStack(alignment: .topTrailing) {
+                TabView(selection: $region.selectedPhotoIndex) {
+                    ForEach(Array(region.photoAssets.prefix(visibleCount).enumerated()), id: \.element.localIdentifier) { index, asset in
+                        RegionPhotoThumbnail(
+                            asset: asset,
+                            loadedImage: loadedImages[asset.localIdentifier],
+                            onImageLoaded: { image in
+                                loadedImages[asset.localIdentifier] = image
+                            }
+                        )
+                        .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(height: 90)
+                .cornerRadius(10)
+                .onChange(of: region.selectedPhotoIndex) { _, newIndex in
+                    // Auto-load more photos when approaching the end
+                    if hasMorePhotos && newIndex >= visibleCount - 2 {
+                        loadMorePhotos()
+                    }
+                }
 
-                Spacer()
-
+                // Confirmation toggle overlay
                 Toggle("", isOn: $region.confirmed)
                     .labelsHidden()
+                    .scaleEffect(0.8)
+                    .padding(4)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 10)
 
-            // Photo carousel
-            if !region.photoAssets.isEmpty {
-                photoCarousel
-            }
-        }
-        .background(Color(UIColor.systemBackground))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
-        .opacity(region.confirmed ? 1.0 : 0.6)
-    }
+            // Region info
+            VStack(spacing: 2) {
+                // Icon and name row
+                HStack(spacing: 4) {
+                    Image(systemName: regionIcon)
+                        .font(.system(size: 12))
+                        .foregroundColor(region.confirmed ? regionColor : .secondary)
 
-    private var photoCarousel: some View {
-        TabView(selection: $currentPhotoIndex) {
-            ForEach(Array(region.photoAssets.prefix(visibleCount).enumerated()), id: \.element.localIdentifier) { index, asset in
-                RegionPhotoThumbnail(
-                    asset: asset,
-                    loadedImage: loadedImages[asset.localIdentifier],
-                    onImageLoaded: { image in
-                        loadedImages[asset.localIdentifier] = image
+                    Text(region.regionName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(region.confirmed ? .primary : .secondary)
+                        .lineLimit(1)
+
+                    Spacer()
+                }
+
+                // Photo count or date
+                HStack {
+                    if region.photoAssets.count > 1 {
+                        Text("\(region.photoAssets.count) photos")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    } else if let date = region.selectedAsset?.creationDate {
+                        Text(shortDateFormatter.string(from: date))
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
                     }
-                )
-                .tag(index)
+                    Spacer()
+                }
             }
+            .frame(height: 36)
         }
-        .tabViewStyle(.page(indexDisplayMode: region.photoAssets.count > 1 ? .automatic : .never))
-        .frame(height: 150)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .padding(.horizontal)
-        .padding(.bottom, 12)
-        .onChange(of: currentPhotoIndex) { _, newIndex in
-            // Auto-load more photos when approaching the end (within 2 photos of visible limit)
-            // Same trigger as WizardRecordCard for consistency
-            if hasMorePhotos && newIndex >= visibleCount - 2 {
-                loadMorePhotos()
-            }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(UIColor.secondarySystemGroupedBackground))
+        )
+        .opacity(region.confirmed ? 1.0 : 0.6)
+        .onAppear {
+            preloadImages()
         }
     }
 
-    /// Load more photos when user swipes near the end
     private func loadMorePhotos() {
-        // Use same batch size as WizardRecordCard
-        let newCount = min(visibleCount + wizardMaxCandidatesPerType, region.photoAssets.count)
-        if newCount > visibleCount {
-            visibleCount = newCount
+        visibleCount = min(visibleCount + wizardMaxCandidatesPerType, region.photoAssets.count)
+    }
+
+    private func preloadImages() {
+        for asset in region.photoAssets.prefix(5) {
+            loadImage(for: asset)
+        }
+    }
+
+    private func loadImage(for asset: PHAsset) {
+        let identifier = asset.localIdentifier
+        guard loadedImages[identifier] == nil else { return }
+
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .opportunistic
+        options.isNetworkAccessAllowed = true
+        options.resizeMode = .fast
+
+        PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: CGSize(width: 200, height: 200),
+            contentMode: .aspectFill,
+            options: options
+        ) { image, _ in
+            if let image = image {
+                DispatchQueue.main.async {
+                    self.loadedImages[identifier] = image
+                }
+            }
         }
     }
 }
@@ -241,56 +282,70 @@ struct RegionPhotoThumbnail: View {
     @State private var image: UIImage?
 
     var body: some View {
-        ZStack {
-            if let img = image ?? loadedImage {
-                Image(uiImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Rectangle()
-                    .fill(Color.gray.opacity(0.2))
-                    .overlay(
-                        ProgressView()
-                    )
+        GeometryReader { geometry in
+            ZStack(alignment: .bottomLeading) {
+                if let img = image ?? loadedImage {
+                    Image(uiImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                } else {
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.2))
+                        .overlay(
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        )
+                }
+
+                // Favorite heart indicator
+                if asset.isFavorite {
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white)
+                        .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
+                        .padding(4)
+                }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .task {
-            if image == nil && loadedImage == nil {
-                await loadImage()
+        .onAppear {
+            if loadedImage == nil && image == nil {
+                loadThumbnail()
             }
         }
     }
 
-    private func loadImage() async {
+    private func loadThumbnail() {
         let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
+        options.deliveryMode = .opportunistic
         options.isNetworkAccessAllowed = true
+        options.resizeMode = .fast
 
-        let targetSize = CGSize(width: 400, height: 300)
-
-        await withCheckedContinuation { continuation in
-            PHImageManager.default().requestImage(
-                for: asset,
-                targetSize: targetSize,
-                contentMode: .aspectFill,
-                options: options
-            ) { result, info in
-                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                if let result = result, !isDegraded {
-                    Task { @MainActor in
-                        self.image = result
-                        onImageLoaded(result)
-                    }
-                    continuation.resume()
-                } else if result == nil {
-                    continuation.resume()
+        PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: CGSize(width: 200, height: 200),
+            contentMode: .aspectFill,
+            options: options
+        ) { loadedImg, _ in
+            if let loadedImg = loadedImg {
+                DispatchQueue.main.async {
+                    self.image = loadedImg
+                    self.onImageLoaded(loadedImg)
                 }
             }
         }
     }
 }
+
+// MARK: - Date Formatter
+
+private let shortDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .medium
+    formatter.timeStyle = .none
+    return formatter
+}()
 
 // MARK: - Preview
 

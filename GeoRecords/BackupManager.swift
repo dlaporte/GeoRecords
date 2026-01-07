@@ -27,6 +27,7 @@ class BackupManager {
         let photoAssetIdentifier: String?
         let photoCloudIdentifier: String?  // For cross-device photo access via iCloud Photo Library
         let notes: String?
+        let regionCode: String?  // For region records (state code, country code, continent name)
     }
 
     /// Represents a visited region (state/country) in the backup
@@ -107,7 +108,8 @@ class BackupManager {
                     locationName: entry.locationName,
                     photoAssetIdentifier: entry.photoAssetIdentifier,
                     photoCloudIdentifier: entry.photoCloudIdentifier,
-                    notes: entry.notes
+                    notes: entry.notes,
+                    regionCode: entry.regionCode
                 )
             }
 
@@ -150,7 +152,7 @@ class BackupManager {
             )
 
             let backup = BackupFile(
-                version: 3,  // Updated version to include settings
+                version: 4,  // Updated version to include regionCode
                 exportDate: Date(),
                 appVersion: appVersion,
                 deviceName: deviceName,
@@ -204,8 +206,8 @@ class BackupManager {
             let regionCount = backup.visitedRegionCount ?? 0
             debugLog("📥 Importing backup: version \(backup.version), \(backup.recordCount) records, \(regionCount) visited regions from \(backup.deviceName)")
 
-            // Validate version (support v1, v2, and v3)
-            guard backup.version >= 1 && backup.version <= 3 else {
+            // Validate version (support v1, v2, v3, and v4)
+            guard backup.version >= 1 && backup.version <= 4 else {
                 debugLog("❌ Unsupported backup version: \(backup.version)")
                 return nil
             }
@@ -240,7 +242,8 @@ class BackupManager {
                     timeFrame: timeFrame,
                     photoAssetIdentifier: record.photoAssetIdentifier,
                     photoCloudIdentifier: record.photoCloudIdentifier,
-                    notes: record.notes
+                    notes: record.notes,
+                    regionCode: record.regionCode  // Optional for backward compatibility
                 )
                 recordsToImport.append((record.recordType, detail))
             }

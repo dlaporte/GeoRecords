@@ -103,6 +103,9 @@ enum FormatUtils {
         case .west: return "West"
         case .up: return "Up"
         case .fromHome: return "From Home"
+        case .state: return "State"
+        case .country: return "Country"
+        case .continent: return "Continent"
         }
     }
 
@@ -117,6 +120,9 @@ enum FormatUtils {
         case .west: return "arrow.left.circle.fill"
         case .up: return "mountain.2.fill"
         case .fromHome: return "house.circle.fill"
+        case .state: return "flag.fill"
+        case .country: return "globe.americas.fill"
+        case .continent: return "globe"
         }
     }
 
@@ -130,6 +136,9 @@ enum FormatUtils {
         case .west: return "⬅️"
         case .up: return "🏔"
         case .fromHome: return "🏠"
+        case .state: return "🏴"
+        case .country: return "🌍"
+        case .continent: return "🌎"
         }
     }
 
@@ -151,6 +160,9 @@ enum FormatUtils {
         case .west: return .purple
         case .up: return .green
         case .fromHome: return .red
+        case .state: return .orange
+        case .country: return .blue
+        case .continent: return .purple
         }
     }
 
@@ -178,6 +190,11 @@ enum FormatUtils {
             } else {
                 return formatKilometers(value / metersPerKm, decimals: 0)
             }
+
+        case .state, .country, .continent:
+            // Value is stored as Unix timestamp - format as date
+            let date = Date(timeIntervalSince1970: value)
+            return numericDateFormatter.string(from: date)
         }
     }
 
@@ -248,6 +265,10 @@ enum FormatUtils {
             } else {
                 return formatKilometers(distance / metersPerKm, decimals: 0)
             }
+
+        case .state, .country, .continent:
+            // Region records are created from actual visits, not predicted
+            return "Visit to create record"
         }
     }
 
@@ -288,6 +309,11 @@ enum FormatUtils {
             } else {
                 return formatKilometers(value / metersPerKm, decimals: 0)
             }
+
+        case .state, .country, .continent:
+            // Value is stored as Unix timestamp - format as date
+            let date = Date(timeIntervalSince1970: value)
+            return numericDateFormatter.string(from: date)
         }
     }
 

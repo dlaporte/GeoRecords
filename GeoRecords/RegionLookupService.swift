@@ -141,6 +141,14 @@ class RegionLookupService {
         return nil
     }
 
+    /// Map territory codes to possible GeoJSON names (for polygon lookup)
+    /// Some territories have different names in GeoJSON data - try multiple variations
+    private static let territoryToGeoJSONNames: [String: [String]] = [
+        "PT-20": ["açores", "azores", "acores"],
+        "PT-30": ["madeira"],
+        "ES-CN": ["canarias", "canary islands", "islas canarias"],
+    ]
+
     /// Get all polygon coordinates for a region (for map overlays)
     /// - Parameter regionCode: The region code (e.g., "US-CA", "FR")
     /// - Returns: Array of polygon coordinate arrays
@@ -149,7 +157,7 @@ class RegionLookupService {
             loadBoundaries()
         }
 
-        // Check if it's a US state
+        // Check if it's a US state (with "US-" prefix)
         if regionCode.hasPrefix("US-") {
             let stateCode = String(regionCode.dropFirst(3))
             if let state = usStates.first(where: { $0.code == stateCode }) {
@@ -157,12 +165,75 @@ class RegionLookupService {
             }
         }
 
-        // Check countries
+        // Check if it's a bare 2-letter US state code (without "US-" prefix)
+        // This handles legacy data that may not have the prefix
+        if regionCode.count == 2 {
+            if let state = usStates.first(where: { $0.code == regionCode }) {
+                return convertToCoordinates(polygons: state.polygons)
+            }
+        }
+
+        // Check countries by code
         if let country = countries.first(where: { $0.code == regionCode }) {
             return convertToCoordinates(polygons: country.polygons)
         }
 
+        // Check if it's a territory with mapped GeoJSON names
+        if let geoJSONNames = Self.territoryToGeoJSONNames[regionCode] {
+            for geoJSONName in geoJSONNames {
+                if let country = countries.first(where: { $0.name.lowercased() == geoJSONName }) {
+                    debugLog("📍 Found polygon for territory '\(regionCode)' using name '\(country.name)'")
+                    return convertToCoordinates(polygons: country.polygons)
+                }
+            }
+        }
+
+        // For territories, try to extract polygons from parent country that fall within the territory's bounding box
+        if let parentCode = Self.territoryToParentCountry[regionCode],
+           let parentCountry = countries.first(where: { $0.code == parentCode }) {
+            // Get the territory's bounding box from our definitions
+            if let territoryBounds = getTerritoryBoundingBox(regionCode) {
+                let filteredPolygons = parentCountry.polygons.filter { polygon in
+                    // Check if any point of this polygon falls within the territory's bounding box
+                    for point in polygon {
+                        guard point.count >= 2 else { continue }
+                        let lon = point[0]
+                        let lat = point[1]
+                        if lat >= territoryBounds.minLat && lat <= territoryBounds.maxLat &&
+                           lon >= territoryBounds.minLon && lon <= territoryBounds.maxLon {
+                            return true
+                        }
+                    }
+                    return false
+                }
+                if !filteredPolygons.isEmpty {
+                    debugLog("📍 Extracted \(filteredPolygons.count) polygons for territory '\(regionCode)' from parent '\(parentCode)'")
+                    return convertToCoordinates(polygons: filteredPolygons)
+                }
+            }
+        }
+
         return []
+    }
+
+    /// Get bounding box for a territory (used for extracting polygons from parent country)
+    private func getTerritoryBoundingBox(_ code: String) -> (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)? {
+        // Territory bounding boxes (same as in checkOverseasTerritories)
+        let territoryBounds: [String: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)] = [
+            "PT-20": (36.9, 39.75, -31.3, -25.0),    // Azores
+            "PT-30": (32.6, 33.15, -17.3, -16.25),   // Madeira
+            "ES-CN": (27.6, 29.5, -18.2, -13.3),    // Canary Islands
+            "GF": (2.0, 6.0, -55.0, -51.0),          // French Guiana
+            "MQ": (14.35, 14.9, -61.3, -60.8),       // Martinique
+            "GP": (15.8, 16.55, -61.85, -61.0),      // Guadeloupe
+            "RE": (-21.4, -20.85, 55.2, 55.85),      // Réunion
+            "YT": (-13.05, -12.6, 45.0, 45.35),      // Mayotte
+            "NC": (-22.4, -22.2, 166.3, 166.5),      // New Caledonia
+            "PF": (-17.9, -17.45, -149.95, -149.1),  // French Polynesia
+            "GL": (59.5, 83.7, -73.0, -11.0),        // Greenland
+            "FO": (61.35, 62.45, -7.7, -6.2),        // Faroe Islands
+        ]
+        return territoryBounds[code]
     }
 
     /// Get all loaded US states
@@ -218,11 +289,9 @@ class RegionLookupService {
             return
         }
 
-        // US territory FIPS codes to exclude (not states)
-        let territoryFIPS = Set(["60", "66", "69", "72", "78"])  // AS, GU, MP, PR, VI
-
-        // FIPS code to postal code mapping (50 states only, excludes DC)
+        // FIPS code to postal code mapping (50 states + DC + territories)
         let fipsToPostal: [String: String] = [
+            // 50 States
             "01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA",
             "08": "CO", "09": "CT", "10": "DE", "12": "FL",
             "13": "GA", "15": "HI", "16": "ID", "17": "IL", "18": "IN",
@@ -233,7 +302,15 @@ class RegionLookupService {
             "39": "OH", "40": "OK", "41": "OR", "42": "PA", "44": "RI",
             "45": "SC", "46": "SD", "47": "TN", "48": "TX", "49": "UT",
             "50": "VT", "51": "VA", "53": "WA", "54": "WV", "55": "WI",
-            "56": "WY"
+            "56": "WY",
+            // DC
+            "11": "DC",
+            // US Territories
+            "60": "AS",  // American Samoa
+            "66": "GU",  // Guam
+            "69": "MP",  // Northern Mariana Islands
+            "72": "PR",  // Puerto Rico
+            "78": "VI"   // US Virgin Islands
         ]
 
         for feature in features {
@@ -243,11 +320,6 @@ class RegionLookupService {
                   let geometry = feature["geometry"] as? [String: Any],
                   let geometryType = geometry["type"] as? String,
                   let coordinates = geometry["coordinates"] as? [Any] else {
-                continue
-            }
-
-            // Skip US territories - only include actual states (and DC)
-            if territoryFIPS.contains(fipsCode) {
                 continue
             }
 
@@ -504,12 +576,90 @@ class RegionLookupService {
         }
     }
 
+    // MARK: - Overseas Territories
+
+    /// Territory codes mapped to their parent country code (for flag display)
+    /// These territories get their own card but display parent country's flag
+    static let territoryToParentCountry: [String: String] = [
+        // French territories → France (FR)
+        "GF": "FR",   // French Guiana
+        "MQ": "FR",   // Martinique
+        "GP": "FR",   // Guadeloupe
+        "RE": "FR",   // Réunion
+        "YT": "FR",   // Mayotte
+        "NC": "FR",   // New Caledonia
+        "PF": "FR",   // French Polynesia
+
+        // Portuguese territories → Portugal (PT)
+        "PT-20": "PT",  // Azores
+        "PT-30": "PT",  // Madeira
+
+        // Spanish territories → Spain (ES)
+        "ES-CN": "ES",  // Canary Islands
+
+        // Dutch territories → Netherlands (NL)
+        "CW": "NL",   // Curaçao
+        "AW": "NL",   // Aruba
+        "SX": "NL",   // Sint Maarten
+
+        // British territories → United Kingdom (GB)
+        "BM": "GB",   // Bermuda
+        "VG": "GB",   // British Virgin Islands
+        "KY": "GB",   // Cayman Islands
+        "FK": "GB",   // Falkland Islands
+        "SC": "GB",   // Seychelles
+        "GI": "GB",   // Gibraltar
+
+        // Danish territories → Denmark (DK)
+        "FO": "DK",   // Faroe Islands
+        "GL": "DK",   // Greenland
+
+        // Australian territories → Australia (AU)
+        "CX": "AU",   // Christmas Island
+        "CC": "AU",   // Cocos (Keeling) Islands
+        "NF": "AU",   // Norfolk Island
+
+        // New Zealand territories → New Zealand (NZ)
+        "CK": "NZ",   // Cook Islands
+        "NU": "NZ",   // Niue
+        "TK": "NZ",   // Tokelau
+    ]
+
+    /// All territory codes (excluding US territories which are tracked as states)
+    /// Used to exclude from country count
+    static let territoryCodes: Set<String> = Set(territoryToParentCountry.keys)
+
+    /// Check if a region code is a territory (not a sovereign country)
+    static func isTerritory(_ code: String) -> Bool {
+        return territoryCodes.contains(code)
+    }
+
+    /// Get parent country code for a territory (for flag display)
+    /// Returns nil if not a territory
+    static func parentCountryCode(for territoryCode: String) -> String? {
+        return territoryToParentCountry[territoryCode]
+    }
+
+    /// Get the flag code for a region - returns parent country for territories
+    static func flagCode(for regionCode: String) -> String? {
+        // If it's a territory, return parent country code
+        if let parentCode = territoryToParentCountry[regionCode] {
+            return parentCode
+        }
+        // Otherwise return the code itself if it's a valid 2-letter code
+        if regionCode.count == 2 {
+            return regionCode
+        }
+        return nil
+    }
+
     // MARK: - Overseas Territories Detection
 
     /// Check if coordinates fall within known overseas territories
     /// These are geographically separate from their parent countries but share the same
     /// country code in the GeoJSON data. We detect them by bounding box to give them
     /// distinct region codes.
+    /// Note: US territories are NOT included here - they are tracked as states instead.
     private func checkOverseasTerritories(latitude lat: Double, longitude lon: Double) -> RegionInfo? {
         // Define overseas territories with their bounding boxes and info
         // Format: (minLat, maxLat, minLon, maxLon, code, name, continent)
@@ -548,12 +698,7 @@ class RegionLookupService {
             (61.35, 62.45, -7.7, -6.2, "FO", "Faroe Islands", .europe),
             (59.5, 83.7, -73.0, -11.0, "GL", "Greenland", .northAmerica),
 
-            // US Territories (not states)
-            (17.9, 18.55, -67.95, -65.2, "PR", "Puerto Rico", .northAmerica),
-            (17.65, 18.45, -65.1, -64.55, "VI", "U.S. Virgin Islands", .northAmerica),
-            (13.2, 13.7, 144.6, 145.0, "GU", "Guam", .oceania),
-            (-14.45, -14.15, -170.85, -170.5, "AS", "American Samoa", .oceania),
-            (14.1, 20.6, 144.85, 146.1, "MP", "Northern Mariana Islands", .oceania),
+            // Note: US territories (PR, VI, GU, AS, MP) are tracked as states, not countries
 
             // Australian Overseas Territories
             (-10.7, -10.35, 105.5, 105.75, "CX", "Christmas Island", .oceania),
@@ -716,6 +861,38 @@ class RegionLookupService {
         if code == "AQ" || name.lowercased().contains("antarctica") { return .antarctica }
 
         // Default to nil for unrecognized
+        return nil
+    }
+
+    // MARK: - Name to Code Lookups (for migration)
+
+    /// Look up state code by full name (e.g., "Colorado" -> "CO")
+    func stateCodeForName(_ name: String) -> String? {
+        if !isLoaded {
+            loadBoundaries()
+        }
+
+        // Search through US states
+        for boundary in usStates {
+            if boundary.name.lowercased() == name.lowercased() {
+                return boundary.code
+            }
+        }
+        return nil
+    }
+
+    /// Look up country ISO code by full name (e.g., "Poland" -> "PL")
+    func countryCodeForName(_ name: String) -> String? {
+        if !isLoaded {
+            loadBoundaries()
+        }
+
+        // Search through countries
+        for boundary in countries {
+            if boundary.name.lowercased() == name.lowercased() {
+                return boundary.code
+            }
+        }
         return nil
     }
 }

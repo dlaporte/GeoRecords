@@ -187,8 +187,7 @@ struct WizardNavigationBar: View {
 // MARK: - Wizard Record Card
 
 /// Compact card for displaying a record with swipeable photo alternatives
-/// Supports circular swiping - swipe right from first photo to reach Skip,
-/// or swipe through all photos to loop back around
+/// Uses toggle switch to include/skip record
 /// Auto-loads more photos as user swipes near the end
 struct WizardRecordCard: View {
     let recordType: String
@@ -203,51 +202,19 @@ struct WizardRecordCard: View {
     /// Called when user modifies the selection (swipes to a different photo)
     var onModified: (() -> Void)? = nil
 
-    @State private var internalIndex: Int
+    @State private var currentPhotoIndex: Int
+    @State private var isIncluded: Bool
     @State private var loadedImages: [String: UIImage] = [:]
     @State private var visibleCount: Int
-
-    /// Number of photos currently visible (auto-expands as user swipes)
-    private var photoCount: Int {
-        min(visibleCount, candidates.count)
-    }
 
     /// Whether there are more photos available to load
     private var hasMorePhotos: Bool {
         candidates.count > visibleCount
     }
 
-    /// Tag for Skip page
-    private var skipTag: Int {
-        photoCount + 1
-    }
-
-    /// Tag for ghost first photo at end
-    private var ghostPhotoTag: Int {
-        skipTag + 1
-    }
-
     /// Index value that represents "Skip" - uses total candidates count for consistent storage
     private var skipIndex: Int {
         candidates.count
-    }
-
-    /// Convert internal index (with ghosts) to logical index
-    private var logicalIndex: Int {
-        if internalIndex <= 0 {
-            return skipIndex  // Ghost at start → Skip
-        } else if internalIndex > skipTag {
-            return 0  // Ghost at end → first photo
-        } else if internalIndex == skipTag {
-            return skipIndex  // Skip
-        } else {
-            return internalIndex - 1  // Normal: internal 1 = logical 0, etc.
-        }
-    }
-
-    /// Whether the current selection is "Skip"
-    private var isSkipped: Bool {
-        logicalIndex == skipIndex
     }
 
     init(recordType: String, candidates: [DiscoveredRecord], selectedIndex: Int, unitSystem: UnitSystem, onSelect: @escaping (Int) -> Void, isNew: Bool = false, onModified: (() -> Void)? = nil) {
@@ -269,41 +236,26 @@ struct WizardRecordCard: View {
         }
         self._visibleCount = State(initialValue: min(initialVisible, candidates.count))
 
-        // Calculate initial internal index
-        let visiblePhotos = min(initialVisible, candidates.count)
-        let skipTagValue = visiblePhotos + 1
-
-        let initialInternal: Int
-        if selectedIndex >= candidates.count {
-            // Skip selected
-            initialInternal = skipTagValue
-        } else {
-            // Photo selected
-            initialInternal = selectedIndex + 1
-        }
-        self._internalIndex = State(initialValue: initialInternal)
+        // Initialize photo index and included state
+        let isSkipped = selectedIndex >= candidates.count
+        self._isIncluded = State(initialValue: !isSkipped)
+        self._currentPhotoIndex = State(initialValue: isSkipped ? 0 : selectedIndex)
     }
 
     private var currentRecord: DiscoveredRecord? {
-        let idx = logicalIndex
-        guard idx >= 0, idx < candidates.count else { return nil }
-        return candidates[idx]
+        guard currentPhotoIndex >= 0, currentPhotoIndex < candidates.count else { return nil }
+        return candidates[currentPhotoIndex]
     }
 
     private var recordColor: Color {
-        isSkipped ? .gray : FormatUtils.colorForRecordType(recordType)
+        isIncluded ? FormatUtils.colorForRecordType(recordType) : .gray
     }
 
     var body: some View {
         VStack(spacing: 6) {
-            // Photo thumbnail with circular swipe
+            // Photo carousel with toggle
             ZStack(alignment: .topTrailing) {
-                TabView(selection: $internalIndex) {
-                    // Ghost Skip at beginning (for swiping right from first photo)
-                    WizardSkipThumbnail()
-                        .tag(0)
-
-                    // Photo candidates (tags 1 to photoCount)
+                TabView(selection: $currentPhotoIndex) {
                     ForEach(Array(candidates.prefix(visibleCount).enumerated()), id: \.element.id) { index, record in
                         WizardPhotoThumbnail(
                             asset: record.photoAsset,
@@ -312,32 +264,24 @@ struct WizardRecordCard: View {
                                 loadedImages[record.photoAsset.localIdentifier] = image
                             }
                         )
-                        .tag(index + 1)
-                    }
-
-                    // Real Skip
-                    WizardSkipThumbnail()
-                        .tag(skipTag)
-
-                    // Ghost first photo at end (for looping back)
-                    if let firstRecord = candidates.first {
-                        WizardPhotoThumbnail(
-                            asset: firstRecord.photoAsset,
-                            loadedImage: loadedImages[firstRecord.photoAsset.localIdentifier],
-                            onImageLoaded: { image in
-                                loadedImages[firstRecord.photoAsset.localIdentifier] = image
-                            }
-                        )
-                        .tag(ghostPhotoTag)
+                        .tag(index)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(height: 90)
                 .cornerRadius(10)
-                .onChange(of: internalIndex) { _, newIndex in
+                .onChange(of: currentPhotoIndex) { _, newIndex in
                     handleIndexChange(newIndex)
                 }
 
+                // Include toggle overlay
+                Toggle("", isOn: $isIncluded)
+                    .labelsHidden()
+                    .scaleEffect(0.8)
+                    .padding(4)
+                    .onChange(of: isIncluded) { _, included in
+                        handleToggleChange(included)
+                    }
             }
 
             // Record info - fixed height to prevent layout shifts
@@ -350,7 +294,7 @@ struct WizardRecordCard: View {
 
                     Text(FormatUtils.shortName(for: recordType))
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(isSkipped ? .secondary : .primary)
+                        .foregroundColor(isIncluded ? .primary : .secondary)
                         .lineLimit(1)
 
                     // NEW badge for records that don't exist yet
@@ -367,20 +311,8 @@ struct WizardRecordCard: View {
                     Spacer()
                 }
 
-                // Value or Skip indicator
-                if isSkipped {
-                    Text("Skipped")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Text("Swipe to select a photo")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else if let record = currentRecord {
+                // Value and location
+                if let record = currentRecord {
                     Text(FormatUtils.formatDiscoveredRecordValue(
                         recordType: recordType,
                         value: record.value,
@@ -408,12 +340,15 @@ struct WizardRecordCard: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(UIColor.secondarySystemGroupedBackground))
         )
-        .opacity(isSkipped ? 0.7 : 1.0)
+        .opacity(isIncluded ? 1.0 : 0.6)
         .onChange(of: selectedIndex) { _, newIndex in
             // Sync if external selection changes
-            let newInternal = newIndex >= skipIndex ? skipTag : newIndex + 1
-            if internalIndex != newInternal {
-                internalIndex = newInternal
+            let isSkipped = newIndex >= skipIndex
+            if isIncluded != !isSkipped {
+                isIncluded = !isSkipped
+            }
+            if !isSkipped && currentPhotoIndex != newIndex {
+                currentPhotoIndex = newIndex
             }
         }
         .onAppear {
@@ -421,34 +356,32 @@ struct WizardRecordCard: View {
         }
     }
 
-    /// Handle index changes for circular wrapping and auto-loading more photos
+    /// Handle photo index change
     private func handleIndexChange(_ newIndex: Int) {
-        // Auto-load more photos when approaching the end (within 3 photos of visible limit)
-        if hasMorePhotos && newIndex >= photoCount - 2 && newIndex <= photoCount {
+        // Auto-load more photos when approaching the end
+        if hasMorePhotos && newIndex >= visibleCount - 2 {
             loadMorePhotos()
         }
 
-        // Check if we landed on a ghost page and need to wrap
-        if newIndex == 0 {
-            // Ghost Skip at beginning → jump to real Skip
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                withAnimation(.none) {
-                    internalIndex = skipTag
-                }
-            }
-        } else if newIndex == ghostPhotoTag {
-            // Ghost first photo at end → jump to real first photo
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                withAnimation(.none) {
-                    internalIndex = 1
-                }
+        // Update selection if included
+        if isIncluded {
+            onSelect(newIndex)
+            if onModified != nil {
+                debugLog("📝 WizardRecordCard: calling onModified for \(recordType), newIndex=\(newIndex)")
+                onModified?()
             }
         }
+    }
 
-        // Notify selection change with logical index
-        onSelect(logicalIndex)
-
-        // Notify that user modified the selection (for tracking changes from default)
+    /// Handle toggle change
+    private func handleToggleChange(_ included: Bool) {
+        if included {
+            // Include: select current photo
+            onSelect(currentPhotoIndex)
+        } else {
+            // Exclude: select skip index
+            onSelect(skipIndex)
+        }
         onModified?()
     }
 
@@ -461,7 +394,6 @@ struct WizardRecordCard: View {
         for candidate in candidates[previousCount..<min(visibleCount, candidates.count)] {
             loadImage(for: candidate)
         }
-        // User stays on current photo - no index change needed
     }
 
     private func preloadImages() {
@@ -491,27 +423,6 @@ struct WizardRecordCard: View {
                 }
             }
         }
-    }
-}
-
-// MARK: - Skip Thumbnail
-
-/// Thumbnail view showing the Skip option
-struct WizardSkipThumbnail: View {
-    var body: some View {
-        Rectangle()
-            .fill(Color.gray.opacity(0.15))
-            .overlay(
-                VStack(spacing: 4) {
-                    Image(systemName: "forward.fill")
-                        .font(.system(size: 24))
-                        .foregroundColor(.secondary)
-                    Text("Skip")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundColor(.secondary)
-                }
-            )
     }
 }
 

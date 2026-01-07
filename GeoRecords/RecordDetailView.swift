@@ -1,6 +1,7 @@
 import SwiftUI
 import CoreLocation
 import MapKit
+import Photos
 
 // MARK: - Shared Record Operations
 
@@ -56,6 +57,52 @@ func updateRecordNotes(for record: RecordDetail, notes: String?, recordManager: 
     }
 }
 
+/// Updates the photo for a record in both Core Data and in-memory storage
+/// - Parameters:
+///   - record: The record to update
+///   - asset: The new photo asset
+///   - recordManager: The record manager to update
+@MainActor
+func updateRecordPhoto(for record: RecordDetail, asset: PHAsset, recordManager: RecordManager) {
+    let localId = asset.localIdentifier
+
+    // Get cloud identifier for cross-device sync
+    let cloudId = PHPhotoLibrary.cloudIdentifier(for: asset)
+
+    // Update Core Data
+    RecordHistoryManager.shared.updateRecordPhotoAsset(
+        recordId: record.id,
+        localIdentifier: localId,
+        cloudIdentifier: cloudId
+    )
+
+    // Clear cached thumbnail so it reloads with new photo
+    ThumbnailCache.shared.deleteThumbnail(for: record.id)
+
+    // Check if this is a region record
+    let recordType = RecordType.from(string: record.recordType)
+    let isRegion = recordType?.isRegionVisit ?? false
+
+    if isRegion {
+        // For region records, reload visited regions from Core Data
+        RegionTrackingManager.shared.loadVisitedRegions()
+        debugLog("📸 Changed photo for region \(record.recordType) to asset \(localId)")
+    } else {
+        // For geographic records, update in-memory and reload
+        if var updatedRecord = recordManager.getRecord(type: record.recordType, timeFrame: record.timeFrame),
+           updatedRecord.id == record.id {
+            updatedRecord.photoAssetIdentifier = localId
+            updatedRecord.photoCloudIdentifier = cloudId
+            updatedRecord.photoData = nil  // Clear legacy data
+            recordManager.setRecord(type: record.recordType, timeFrame: record.timeFrame, record: updatedRecord)
+        }
+
+        // Reload all records from history to ensure consistency
+        recordManager.loadRecordsFromHistory()
+        debugLog("📸 Changed photo for \(record.recordType) to asset \(localId)")
+    }
+}
+
 // MARK: - Record Detail Pager
 
 struct RecordDetailPager: View {
@@ -63,6 +110,7 @@ struct RecordDetailPager: View {
     let initialIndex: Int
 
     @State private var currentIndex: Int = 0
+    @State private var showDeleteAlert = false
     @EnvironmentObject var settings: SettingsManager
     @EnvironmentObject var recordManager: RecordManager
     @Environment(\.dismiss) var dismiss
@@ -81,7 +129,7 @@ struct RecordDetailPager: View {
         TabView(selection: $currentIndex) {
             ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
                 RecordDetailContent(record: record, onDelete: {
-                    deleteRecord(record)
+                    showDeleteAlert = true
                 })
                 .tag(index)
             }
@@ -100,13 +148,21 @@ struct RecordDetailPager: View {
             }
             ToolbarItem(placement: .destructiveAction) {
                 Button(role: .destructive) {
-                    if let record = currentRecord {
-                        deleteRecord(record)
-                    }
+                    showDeleteAlert = true
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
             }
+        }
+        .alert("Delete Record?", isPresented: $showDeleteAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                if let record = currentRecord {
+                    deleteRecord(record)
+                }
+            }
+        } message: {
+            Text("Are you sure you want to delete this \(currentRecord?.recordType ?? "record")? This action cannot be undone.")
         }
     }
 
@@ -127,15 +183,20 @@ private struct RecordDetailContent: View {
     @State private var showDeleteAlert = false
 
     var body: some View {
-        DetailContentView(record: record, onSaveNotes: saveNotes, onSaveLocationName: saveLocationName)
-            .alert("Delete Record?", isPresented: $showDeleteAlert) {
-                Button("Cancel", role: .cancel) {}
-                Button("Delete", role: .destructive) {
-                    onDelete()
-                }
-            } message: {
-                Text("Are you sure you want to delete this \(record.recordType) record? This action cannot be undone.")
+        DetailContentView(
+            record: record,
+            onSaveNotes: saveNotes,
+            onSaveLocationName: saveLocationName,
+            onSavePhoto: savePhoto
+        )
+        .alert("Delete Record?", isPresented: $showDeleteAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                onDelete()
             }
+        } message: {
+            Text("Are you sure you want to delete this \(record.recordType) record? This action cannot be undone.")
+        }
     }
 
     private func saveNotes(_ notes: String?) {
@@ -150,6 +211,10 @@ private struct RecordDetailContent: View {
             locationName: locationName
         )
     }
+
+    private func savePhoto(_ asset: PHAsset) {
+        updateRecordPhoto(for: record, asset: asset, recordManager: recordManager)
+    }
 }
 
 // MARK: - Single Record Detail View (for direct navigation/deep links)
@@ -163,25 +228,30 @@ struct RecordDetailView: View {
     @State private var showDeleteAlert = false
 
     var body: some View {
-        DetailContentView(record: record, onSaveNotes: saveNotes, onSaveLocationName: saveLocationName)
-            .navigationTitle(record.recordType)
-            .toolbar {
-                ToolbarItem(placement: .destructiveAction) {
-                    Button(role: .destructive) {
-                        showDeleteAlert = true
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
+        DetailContentView(
+            record: record,
+            onSaveNotes: saveNotes,
+            onSaveLocationName: saveLocationName,
+            onSavePhoto: savePhoto
+        )
+        .navigationTitle(record.locationName ?? record.recordType)
+        .toolbar {
+            ToolbarItem(placement: .destructiveAction) {
+                Button(role: .destructive) {
+                    showDeleteAlert = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
                 }
             }
-            .alert("Delete Record?", isPresented: $showDeleteAlert) {
-                Button("Cancel", role: .cancel) {}
-                Button("Delete", role: .destructive) {
-                    deleteRecord()
-                }
-            } message: {
-                Text("Are you sure you want to delete this \(record.recordType) record? This action cannot be undone.")
+        }
+        .alert("Delete Record?", isPresented: $showDeleteAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                deleteRecord()
             }
+        } message: {
+            Text("Are you sure you want to delete this \(record.recordType) record? This action cannot be undone.")
+        }
     }
 
     private func saveNotes(_ notes: String?) {
@@ -194,6 +264,10 @@ struct RecordDetailView: View {
             longitude: record.coordinate.longitude,
             locationName: locationName
         )
+    }
+
+    private func savePhoto(_ asset: PHAsset) {
+        updateRecordPhoto(for: record, asset: asset, recordManager: recordManager)
     }
 
     private func deleteRecord() {

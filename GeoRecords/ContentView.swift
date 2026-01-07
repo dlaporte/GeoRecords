@@ -135,7 +135,7 @@ struct ContentView: View {
         }
         .onChange(of: deepLinkManager.navigateToStats) { _, shouldNavigate in
             if shouldNavigate {
-                selectedTab = 1  // Stats tab
+                selectedTab = 2  // Stats tab
                 deepLinkManager.navigateToStats = false
             }
         }
@@ -193,11 +193,11 @@ struct ContentView: View {
             RecordsView()
                 .tabItem { Label("Records", systemImage: "location.north.fill") }
                 .tag(0)
-            StatisticsView()
-                .tabItem { Label("Stats", systemImage: "chart.bar.fill") }
-                .tag(1)
             MapsTabView()
                 .tabItem { Label("Regions", systemImage: "map.fill") }
+                .tag(1)
+            StatisticsView()
+                .tabItem { Label("Stats", systemImage: "chart.bar.fill") }
                 .tag(2)
             HistoryView()
                 .tabItem { Label("History", systemImage: "clock") }
@@ -331,6 +331,9 @@ struct ContentView: View {
     private func checkForCloudRestoreOrShowPhotoImport() {
         setupFlowState = .checkingCloud
 
+        // Block alerts during cloud check to prevent false "new record" prompts
+        recordManager.blockAlertsDuringImport(block: true)
+
         Task {
             debugLog("☁️ Checking iCloud for existing data...")
 
@@ -341,9 +344,11 @@ struct ContentView: View {
                     setupFlowState = .none
                     if hasCloudData {
                         debugLog("☁️ iCloud records found, auto-restoring")
+                        // Note: restoreFromiCloud() will keep alerts blocked and unblock when done
                         restoreFromiCloud()
                     } else {
                         debugLog("☁️ No iCloud records found, showing no records view")
+                        recordManager.blockAlertsDuringImport(block: false)
                         showNoRecordsView = true
                     }
                 }
@@ -351,6 +356,7 @@ struct ContentView: View {
                 debugLog("☁️ Error checking iCloud data: \(error.localizedDescription)")
                 await MainActor.run {
                     setupFlowState = .none
+                    recordManager.blockAlertsDuringImport(block: false)
                     // On error, show no records view as fallback
                     showNoRecordsView = true
                 }
@@ -360,6 +366,10 @@ struct ContentView: View {
 
     private func checkForCloudRestore() {
         setupFlowState = .checkingCloud
+
+        // Block alerts during cloud check to prevent false "new record" prompts
+        // while we're waiting for sync and records haven't loaded yet
+        recordManager.blockAlertsDuringImport(block: true)
 
         Task {
             debugLog("☁️ Checking for iCloud data...")
@@ -372,15 +382,20 @@ struct ContentView: View {
                     if hasCloudData {
                         debugLog("☁️ iCloud records found, auto-restoring")
                         // Always restore from iCloud automatically - skip the choice dialog
+                        // Note: restoreFromiCloud() will keep alerts blocked and unblock when done
                         restoreFromiCloud()
                     } else {
                         debugLog("☁️ No iCloud records found, showing setup wizard")
+                        // Unblock alerts - new user starting fresh
+                        recordManager.blockAlertsDuringImport(block: false)
                         setupFlowState = .showingSetupWizard
                     }
                 }
             } catch {
                 debugLog("☁️ Error checking iCloud data: \(error.localizedDescription)")
                 await MainActor.run {
+                    // Unblock alerts on error
+                    recordManager.blockAlertsDuringImport(block: false)
                     setupFlowState = .showingSetupWizard
                 }
             }
@@ -391,17 +406,12 @@ struct ContentView: View {
         debugLog("☁️ User chose to restore from iCloud")
         setupFlowState = .restoringFromCloud
 
+        // Block alerts during restore to prevent false "new record" prompts
+        recordManager.blockAlertsDuringImport(block: true)
+
         // Clear any local data first so iCloud data takes precedence
         debugLog("☁️ Clearing ALL local data to allow fresh iCloud restore...")
         recordManager.resetRecords()
-
-        // Destroy the local database completely - this forces a fresh sync from iCloud
-        let cleared = RecordHistoryManager.shared.clearLocalOnly()
-        debugLog("☁️ Local database cleared: \(cleared)")
-
-        // NOTE: Settings (alerts, reminders, home location) are already synced via iCloud Key-Value Store
-        // and were loaded correctly in SettingsManager.init(). Do NOT reset them here, as that would
-        // overwrite the user's actual settings that synced from iCloud.
 
         // Mark setup as complete
         settings.hasCompletedSetup = true
@@ -415,10 +425,14 @@ struct ContentView: View {
             debugLog("📷 Photo library access: \(status == .authorized || status == .limited ? "granted" : "denied")")
         }
 
-        // Wait for store to reload and iCloud sync to start
+        // Destroy the local database completely - this forces a fresh sync from iCloud
         Task {
-            // Wait a bit for the store to reload (happens async in clearLocalOnly)
-            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+            let cleared = await RecordHistoryManager.shared.clearLocalOnly()
+            debugLog("☁️ Local database cleared: \(cleared)")
+
+            // NOTE: Settings (alerts, reminders, home location) are already synced via iCloud Key-Value Store
+            // and were loaded correctly in SettingsManager.init(). Do NOT reset them here, as that would
+            // overwrite the user's actual settings that synced from iCloud.
 
             await MainActor.run {
                 // Don't load records yet - wait for iCloud sync
@@ -429,6 +443,12 @@ struct ContentView: View {
 
             // Monitor sync and only load records when sync completes
             await monitorSyncCompletion()
+
+            // Unblock alerts after restore is complete
+            await MainActor.run {
+                recordManager.blockAlertsDuringImport(block: false)
+                debugLog("☁️ iCloud restore complete - alerts unblocked")
+            }
         }
     }
 

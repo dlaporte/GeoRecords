@@ -1,6 +1,7 @@
 import SwiftUI
 import CoreLocation
 import MapKit
+import PhotosUI
 
 /// Shared content view for displaying record details
 /// Used by both RecordDetailView and HistoryDetailView
@@ -8,6 +9,7 @@ struct DetailContentView: View {
     let record: RecordDetail
     let onSaveNotes: (String?) -> Void
     let onSaveLocationName: (String?) -> Void
+    var onSavePhoto: ((PHAsset) -> Void)? = nil
 
     @EnvironmentObject var settings: SettingsManager
 
@@ -20,8 +22,16 @@ struct DetailContentView: View {
     @State private var locationNameText: String = ""
     @State private var displayedLocationName: String?
     @State private var showMapOptions = false
+    @State private var showPhotoPicker = false
+    @State private var selectedPhotoItem: PhotosPickerItem?
 
     // MARK: - Computed Properties
+
+    private var isRegionRecord: Bool {
+        record.recordType == RecordType.state.rawValue ||
+        record.recordType == RecordType.country.rawValue ||
+        record.recordType == RecordType.continent.rawValue
+    }
 
     private var recordIcon: String {
         FormatUtils.iconForRecordType(record.recordType)
@@ -45,7 +55,7 @@ struct DetailContentView: View {
         case .daily: return "D"
         case .month: return "M"
         case .year: return "Y"
-        case .allTime: return "A"
+        case .allTime: return "L"
         }
     }
 
@@ -54,7 +64,7 @@ struct DetailContentView: View {
         case .daily: return "Daily Record"
         case .month: return "Monthly Record"
         case .year: return "Yearly Record"
-        case .allTime: return "All-Time Record"
+        case .allTime: return "Lifetime Record"
         }
     }
 
@@ -261,33 +271,48 @@ struct DetailContentView: View {
                 }
             }
 
-            // Value (large)
+            // Value or Region Name (large)
             VStack(spacing: 4) {
-                Text(record.formattedValue(unitSystem: settings.unitSystem))
-                    .font(.system(size: 42, weight: .bold, design: .rounded))
-                    .foregroundColor(.primary)
-                    .minimumScaleFactor(0.5)
-                    .lineLimit(1)
+                if isRegionRecord {
+                    // For region records, show location name as large text
+                    Text(displayedLocationName ?? record.recordType)
+                        .font(.system(size: 42, weight: .bold, design: .rounded))
+                        .foregroundColor(.primary)
+                        .minimumScaleFactor(0.5)
+                        .lineLimit(1)
 
-                // Location name with edit button
-                Button(action: {
-                    locationNameText = displayedLocationName ?? ""
-                    isEditingLocationName = true
-                }) {
-                    HStack(spacing: 4) {
-                        if let name = displayedLocationName, !name.isEmpty, name != unknownLocationString {
-                            Text(name)
-                                .font(.headline)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                        } else {
-                            Text("Add location name")
-                                .font(.subheadline)
+                    // Date underneath
+                    Text(record.timestamp, style: .date)
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                } else {
+                    // For extreme records, show value as large text
+                    Text(record.formattedValue(unitSystem: settings.unitSystem))
+                        .font(.system(size: 42, weight: .bold, design: .rounded))
+                        .foregroundColor(.primary)
+                        .minimumScaleFactor(0.5)
+                        .lineLimit(1)
+
+                    // Location name with edit button
+                    Button(action: {
+                        locationNameText = displayedLocationName ?? ""
+                        isEditingLocationName = true
+                    }) {
+                        HStack(spacing: 4) {
+                            if let name = displayedLocationName, !name.isEmpty, name != unknownLocationString {
+                                Text(name)
+                                    .font(.headline)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                            } else {
+                                Text("Add location name")
+                                    .font(.subheadline)
+                                    .foregroundColor(.blue)
+                            }
+                            Image(systemName: "pencil")
+                                .font(.caption)
                                 .foregroundColor(.blue)
                         }
-                        Image(systemName: "pencil")
-                            .font(.caption)
-                            .foregroundColor(.blue)
                     }
                 }
             }
@@ -322,28 +347,45 @@ struct DetailContentView: View {
         Group {
             if let image = loadedPhoto {
                 // Photo loaded successfully
-                Button(action: { showFullScreenPhoto = true }) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(height: 220)
-                        .clipped()
-                        .cornerRadius(16)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                        )
-                        .overlay(
+                ZStack(alignment: .topTrailing) {
+                    Button(action: { showFullScreenPhoto = true }) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(height: 220)
+                            .clipped()
+                            .cornerRadius(16)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+
+                    // Photo action buttons
+                    HStack(spacing: 8) {
+                        // Change photo button (left)
+                        if onSavePhoto != nil {
+                            PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
+                                Image(systemName: "photo.badge.arrow.down")
+                                    .font(.caption)
+                                    .padding(8)
+                                    .background(.ultraThinMaterial)
+                                    .cornerRadius(8)
+                            }
+                        }
+
+                        // Full screen button (right)
+                        Button(action: { showFullScreenPhoto = true }) {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
                                 .font(.caption)
                                 .padding(8)
                                 .background(.ultraThinMaterial)
                                 .cornerRadius(8)
-                                .padding(8),
-                            alignment: .topTrailing
-                        )
+                        }
+                    }
+                    .padding(8)
                 }
-                .buttonStyle(.plain)
             } else if hasPhoto && !photoNotAvailable {
                 // Photo is loading
                 RoundedRectangle(cornerRadius: 16)
@@ -354,32 +396,135 @@ struct DetailContentView: View {
                     )
             } else if photoNotAvailable {
                 // Photo reference exists but photo not found in library
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color(UIColor.secondarySystemGroupedBackground))
-                    .frame(height: 180)
-                    .overlay(
-                        VStack(spacing: 8) {
-                            Image(systemName: "photo")
-                                .font(.largeTitle)
-                                .foregroundColor(.secondary)
-                            Text("Photo not in library")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    )
-            } else {
-                // No photo - show map
-                Map(position: .constant(mapPosition)) {
-                    Marker(record.recordType, coordinate: record.coordinate)
-                        .tint(iconColor)
-                }
-                .frame(height: 180)
-                .cornerRadius(16)
-                .overlay(
+                ZStack {
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                )
-                .allowsHitTesting(false)
+                        .fill(Color(UIColor.secondarySystemGroupedBackground))
+                        .frame(height: 180)
+                        .overlay(
+                            VStack(spacing: 8) {
+                                Image(systemName: "photo")
+                                    .font(.largeTitle)
+                                    .foregroundColor(.secondary)
+                                Text("Photo not in library")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+
+                                // Add photo button
+                                if onSavePhoto != nil {
+                                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                                        Label("Select Photo", systemImage: "photo.badge.plus")
+                                            .font(.subheadline)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 8)
+                                            .background(Color.blue)
+                                            .foregroundColor(.white)
+                                            .cornerRadius(8)
+                                    }
+                                    .padding(.top, 4)
+                                }
+                            }
+                        )
+                }
+            } else {
+                // No photo - show map with option to add photo
+                ZStack(alignment: .topTrailing) {
+                    Map(position: .constant(mapPosition)) {
+                        Marker(record.recordType, coordinate: record.coordinate)
+                            .tint(iconColor)
+                    }
+                    .frame(height: 180)
+                    .cornerRadius(16)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                    )
+                    .allowsHitTesting(false)
+
+                    // Add photo button
+                    if onSavePhoto != nil {
+                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                            Image(systemName: "photo.badge.plus")
+                                .font(.caption)
+                                .padding(8)
+                                .background(.ultraThinMaterial)
+                                .cornerRadius(8)
+                        }
+                        .padding(8)
+                    }
+                }
+            }
+        }
+        .onChange(of: selectedPhotoItem) { _, newItem in
+            handlePhotoSelection(newItem)
+        }
+    }
+
+    /// Handle photo selection from picker
+    private func handlePhotoSelection(_ item: PhotosPickerItem?) {
+        guard let item = item else { return }
+
+        Task {
+            // Try to get asset identifier directly from PhotosPickerItem
+            if let assetId = item.itemIdentifier {
+                debugLog("📸 PhotosPicker selected item with identifier: \(assetId)")
+
+                // The identifier from PhotosPicker should be the local identifier
+                let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+
+                if let asset = fetchResult.firstObject {
+                    debugLog("📸 Found PHAsset for identifier")
+                    loadAndSavePhoto(asset: asset)
+                    return
+                } else {
+                    debugLog("📸 Could not find PHAsset for identifier, trying alternate method")
+                }
+            }
+
+            // Fallback: Load the image data and try to match by loading
+            // This handles cases where itemIdentifier doesn't work
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let image = UIImage(data: data) {
+                debugLog("📸 Loaded image via data transfer")
+                await MainActor.run {
+                    self.loadedPhoto = image
+                    self.photoNotAvailable = false
+                }
+
+                // Try to find the asset by fetching recent photos and matching
+                // This is a fallback when we can't get the identifier directly
+                if let assetId = item.itemIdentifier {
+                    // Try fetching with the identifier one more time
+                    let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+                    if let asset = fetchResult.firstObject {
+                        await MainActor.run {
+                            self.onSavePhoto?(asset)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Load image from PHAsset and save
+    private func loadAndSavePhoto(asset: PHAsset) {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+
+        // Use requestImageDataAndOrientation for more reliable results
+        PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: CGSize(width: 800, height: 600),
+            contentMode: .aspectFill,
+            options: options
+        ) { image, _ in
+            if let image = image {
+                Task { @MainActor in
+                    self.loadedPhoto = image
+                    self.photoNotAvailable = false
+                    self.onSavePhoto?(asset)
+                    debugLog("📸 Photo updated successfully")
+                }
             }
         }
     }
@@ -612,7 +757,22 @@ struct DetailContentView: View {
         let placemark = MKPlacemark(coordinate: record.coordinate)
         let mapItem = MKMapItem(placemark: placemark)
         mapItem.name = displayedLocationName ?? record.recordType
-        mapItem.openInMaps(launchOptions: nil)
+
+        // For region records, open zoomed out to show the region
+        var launchOptions: [String: Any] = [:]
+
+        if record.recordType == RecordType.state.rawValue {
+            // States - zoom to show state-sized area
+            launchOptions[MKLaunchOptionsMapSpanKey] = NSValue(mkCoordinateSpan: MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 10))
+        } else if record.recordType == RecordType.country.rawValue {
+            // Countries - zoom to show country-sized area
+            launchOptions[MKLaunchOptionsMapSpanKey] = NSValue(mkCoordinateSpan: MKCoordinateSpan(latitudeDelta: 15, longitudeDelta: 20))
+        } else if record.recordType == RecordType.continent.rawValue {
+            // Continents - zoom to show continent-sized area
+            launchOptions[MKLaunchOptionsMapSpanKey] = NSValue(mkCoordinateSpan: MKCoordinateSpan(latitudeDelta: 60, longitudeDelta: 80))
+        }
+
+        mapItem.openInMaps(launchOptions: launchOptions.isEmpty ? nil : launchOptions)
     }
 
     private func openInGoogleMaps() {

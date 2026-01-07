@@ -1,6 +1,7 @@
 import SwiftUI
 import CoreLocation
 import MapKit
+import Photos
 
 // MARK: - History Detail Pager
 
@@ -91,7 +92,12 @@ private struct HistoryDetailContent: View {
 
     var body: some View {
         if let record = recordDetail {
-            DetailContentView(record: record, onSaveNotes: saveNotes, onSaveLocationName: saveLocationName)
+            DetailContentView(
+                record: record,
+                onSaveNotes: saveNotes,
+                onSaveLocationName: saveLocationName,
+                onSavePhoto: savePhoto
+            )
         } else {
             Text("Unable to load record details")
                 .foregroundColor(.secondary)
@@ -110,6 +116,11 @@ private struct HistoryDetailContent: View {
             longitude: record.coordinate.longitude,
             locationName: locationName
         )
+    }
+
+    private func savePhoto(_ asset: PHAsset) {
+        guard let record = recordDetail else { return }
+        updateRecordPhoto(for: record, asset: asset, recordManager: recordManager)
     }
 }
 
@@ -130,7 +141,12 @@ struct HistoryDetailView: View {
     var body: some View {
         Group {
             if let record = recordDetail {
-                DetailContentView(record: record, onSaveNotes: saveNotes, onSaveLocationName: saveLocationName)
+                DetailContentView(
+                    record: record,
+                    onSaveNotes: saveNotes,
+                    onSaveLocationName: saveLocationName,
+                    onSavePhoto: savePhoto
+                )
             } else {
                 Text("Unable to load record details")
                     .foregroundColor(.secondary)
@@ -168,6 +184,11 @@ struct HistoryDetailView: View {
             longitude: record.coordinate.longitude,
             locationName: locationName
         )
+    }
+
+    private func savePhoto(_ asset: PHAsset) {
+        guard let record = recordDetail else { return }
+        updateRecordPhoto(for: record, asset: asset, recordManager: recordManager)
     }
 
     private func deleteRecord() {

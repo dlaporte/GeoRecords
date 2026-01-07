@@ -53,6 +53,10 @@ class SettingsManager: ObservableObject, SettingsManaging {
     @Published var homeLocationName: String?
     @Published var unitSystem: UnitSystem
 
+    // Wizard preferences - tracks which records user has chosen to skip
+    // Keys are in format "timeFrame_recordType" e.g., "allTime_Furthest Up", "2024_Furthest North"
+    @Published var skippedWizardRecords: Set<String> = []
+
     // Separate settings for Imperial and Metric
     @Published var minAltitudeDeltaMetersImperial: Double  // Stored in meters
     @Published var minDistanceDeltaMetersImperial: Double
@@ -263,6 +267,13 @@ class SettingsManager: ObservableObject, SettingsManaging {
             self.homeCoordinate = Self.defaultHomeCoordinate
         }
 
+        // Load skipped wizard records (device-local, not synced to iCloud)
+        if let skippedArray = defaults.stringArray(forKey: UserDefaultsKey.skippedWizardRecords.rawValue) {
+            self.skippedWizardRecords = Set(skippedArray)
+        } else {
+            self.skippedWizardRecords = []
+        }
+
         // Perform migration cleanup after all properties are initialized
         if defaults.object(forKey: UserDefaultsKey.minAltitudeDeltaFeet.rawValue) != nil {
             defaults.removeObject(forKey: UserDefaultsKey.minAltitudeDeltaFeet.rawValue)
@@ -407,8 +418,11 @@ class SettingsManager: ObservableObject, SettingsManaging {
             defaults.set(homeCoord.longitude, forKey: UserDefaultsKey.homeLongitude.rawValue)
         }
         defaults.set(unitSystem.rawValue, forKey: UserDefaultsKey.unitSystem.rawValue)
+
+        // Save skipped wizard records as array (device-local, not synced to iCloud)
+        defaults.set(Array(skippedWizardRecords), forKey: UserDefaultsKey.skippedWizardRecords.rawValue)
     }
-    
+
     // MARK: - Persistence
     func saveSettings() {
         // Save to local UserDefaults (for widget and offline access)
@@ -493,6 +507,35 @@ class SettingsManager: ObservableObject, SettingsManaging {
         minDistanceDeltaMetersMetric = Self.defaultMinDistanceDeltaMetersMetric
 
         saveSettings()
+    }
+
+    // MARK: - Wizard Skip Preferences
+
+    /// Check if a record type/timeframe was previously skipped by user
+    func isWizardRecordSkipped(timeFrame: String, recordType: String) -> Bool {
+        let key = "\(timeFrame)_\(recordType)"
+        return skippedWizardRecords.contains(key)
+    }
+
+    /// Mark a record type/timeframe as skipped
+    func setWizardRecordSkipped(timeFrame: String, recordType: String, skipped: Bool) {
+        let key = "\(timeFrame)_\(recordType)"
+        if skipped {
+            skippedWizardRecords.insert(key)
+        } else {
+            skippedWizardRecords.remove(key)
+        }
+    }
+
+    /// Update skipped records based on wizard selections
+    /// Called after wizard import to persist user's skip choices
+    func updateSkippedRecordsFromWizard(skippedKeys: Set<String>, importedKeys: Set<String>) {
+        // Add newly skipped records
+        skippedWizardRecords.formUnion(skippedKeys)
+        // Remove records that were imported (user chose to include them)
+        skippedWizardRecords.subtract(importedKeys)
+        saveSettings()
+        debugLog("⚙️ Updated skipped wizard records: \(skippedWizardRecords.count) skipped")
     }
 
     /// Request notification permissions if any notification settings are enabled but permissions haven't been determined

@@ -12,16 +12,17 @@ struct RecordDetail: Identifiable {
     var altitude: Double
     var locationName: String?
     var recordType: String
-    var timeFrame: TimeFrame    // Monthly, Yearly, or All Time
+    var timeFrame: TimeFrame    // Monthly, Yearly, or Lifetime
     var photoData: Data?        // Legacy: JPEG photo data (for old records)
     var photoAssetIdentifier: String?  // Local reference to photo in Apple Photos library
     var photoCloudIdentifier: String?  // iCloud identifier for cross-device photo access
     var notes: String?          // User-added notes/description for this record
     var dateAdded: Date?        // When record was imported/created
+    var regionCode: String?     // For region records (state code, country code, continent name)
 
     /// Initialize with coordinate validation
     /// - Warning: Coordinates are validated and must be valid. Invalid coordinates will trigger an assertion in debug builds.
-    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, notes: String? = nil, dateAdded: Date? = nil) {
+    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, notes: String? = nil, dateAdded: Date? = nil, regionCode: String? = nil) {
         self.id = id
         self.value = value
         self.timestamp = timestamp
@@ -34,6 +35,7 @@ struct RecordDetail: Identifiable {
         self.photoCloudIdentifier = photoCloudIdentifier
         self.notes = notes
         self.dateAdded = dateAdded
+        self.regionCode = regionCode
 
         // Validate coordinate
         if CLLocationCoordinate2DIsValid(coordinate) {
@@ -63,7 +65,10 @@ struct RecordDetail: Identifiable {
 
         let timeFrame: TimeFrame = {
             if let timeFrameString = entry.timeFrame {
-                return TimeFrame(rawValue: timeFrameString) ?? .allTime
+                // Normalize all lifetime variations to "Lifetime" for backwards compatibility
+                let lifetimeVariations = ["All-Time", "All Time", "Lifetime"]
+                let normalizedString = lifetimeVariations.contains(timeFrameString) ? "Lifetime" : timeFrameString
+                return TimeFrame(rawValue: normalizedString) ?? .allTime
             }
             return .allTime  // Default for old entries without timeFrame
         }()
@@ -81,7 +86,8 @@ struct RecordDetail: Identifiable {
             photoAssetIdentifier: entry.photoAssetIdentifier,
             photoCloudIdentifier: entry.photoCloudIdentifier,
             notes: entry.notes,
-            dateAdded: entry.dateAdded
+            dateAdded: entry.dateAdded,
+            regionCode: entry.regionCode
         )
     }
 }
@@ -300,19 +306,53 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             // Get current month and year boundaries
             let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
 
-            // Filter entries by timeframe
+            // Filter entries by timeframe - consider time period hierarchy:
+            // - "This Month" = records from current month (Monthly OR more granular)
+            // - "This Year" = records from current year (Yearly OR Monthly from this year)
+            // - "Lifetime" = all records (Lifetime OR any timeframe)
+            let lifetimeVariations = ["Lifetime", "All-Time", "All Time"]
+
+            // For Monthly: Monthly records from the current month
+            // (Daily records are excluded - they're for chart granularity only and don't have photos)
             let monthEntries = allEntries.filter { entry in
+                let tf = entry.timeFrame ?? ""
                 guard let timestamp = entry.timestamp else { return false }
-                return timestamp >= startOfMonth
-            }
-            let yearEntries = allEntries.filter { entry in
-                guard let timestamp = entry.timestamp else { return false }
-                return timestamp >= startOfYear
+                return tf == "Monthly" && timestamp >= startOfMonth
             }
 
-            // Helper to find extreme record from group
-            func findExtreme(in entries: [RecordHistoryEntry], ascending: Bool) -> RecordHistoryEntry? {
-                return entries.sorted { ascending ? $0.value < $1.value : $0.value > $1.value }.first
+            // For Yearly: any record from the current year period
+            // Include "Yearly" records AND "Monthly" records from this year
+            // (A January record should count toward "This Year" totals)
+            let yearEntries = allEntries.filter { entry in
+                let tf = entry.timeFrame ?? ""
+                guard let timestamp = entry.timestamp else { return false }
+                // Include Yearly records from current year
+                if tf == "Yearly" && timestamp >= startOfYear { return true }
+                // Also include Monthly records from current year (they're part of this year!)
+                if tf == "Monthly" && timestamp >= startOfYear { return true }
+                return false
+            }
+
+            // For Lifetime: ONLY records explicitly marked as Lifetime
+            // We must respect the user's explicit Lifetime selection from the wizard
+            // If we included Yearly/Monthly here, findExtreme() would pick the most extreme
+            // across ALL timeframes, ignoring the user's Lifetime-specific choice
+            let lifetimeEntries = allEntries.filter { entry in
+                let tf = entry.timeFrame ?? ""
+                return lifetimeVariations.contains(tf)
+            }
+
+            // Helper to find the best record from a group
+            // IMPORTANT: We sort by dateAdded (most recent first) to respect user's wizard selections
+            // The user explicitly chose a record in the wizard, so their most recent choice wins
+            // over any older "more extreme" records that might still be in the database
+            func findBestRecord(in entries: [RecordHistoryEntry]) -> RecordHistoryEntry? {
+                return entries.sorted { entry1, entry2 in
+                    // Sort by dateAdded descending (most recent first)
+                    let date1 = entry1.dateAdded ?? entry1.timestamp ?? Date.distantPast
+                    let date2 = entry2.dateAdded ?? entry2.timestamp ?? Date.distantPast
+                    return date1 > date2
+                }.first
             }
 
             // Helper to process records for a timeframe
@@ -323,10 +363,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
                 // Process each record type using RecordType enum
                 for recordType in RecordType.allCases {
-                    // ascending=true means "lower is better", which is the opposite of isAscending
-                    let ascending = !recordType.isAscending
                     if let typeEntries = grouped[recordType.rawValue],
-                       let entry = findExtreme(in: typeEntries, ascending: ascending) {
+                       let entry = findBestRecord(in: typeEntries) {
                         if var record = makeRecordDetail(from: entry) {
                             record.timeFrame = timeFrame
                             setRecord(type: recordType.rawValue, timeFrame: timeFrame, record: record)
@@ -336,9 +374,19 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             }
 
             // Load records for all three timeframes
+            // Use filtered entries that respect the timeFrame field
+            debugLog("📊 Loading records: \(monthEntries.count) monthly, \(yearEntries.count) yearly, \(lifetimeEntries.count) lifetime entries")
+            debugLog("📅 Boundaries: startOfMonth=\(startOfMonth), startOfYear=\(startOfYear)")
+
+            // Log what timeFrame values we actually have in the database
+            let timeFrameValues = Dictionary(grouping: allEntries) { $0.timeFrame ?? "(nil)" }
+            for (tf, entries) in timeFrameValues.sorted(by: { $0.key < $1.key }) {
+                debugLog("📋 timeFrame='\(tf)': \(entries.count) entries")
+            }
+
             loadRecordsForTimeFrame(entries: monthEntries, timeFrame: .month)
             loadRecordsForTimeFrame(entries: yearEntries, timeFrame: .year)
-            loadRecordsForTimeFrame(entries: allEntries, timeFrame: .allTime)
+            loadRecordsForTimeFrame(entries: lifetimeEntries, timeFrame: .allTime)
 
             // Explicitly notify observers that records have changed
             objectWillChange.send()
@@ -369,6 +417,14 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         let distanceThreshold: Double
     }
 
+    /// Configuration for checking a single record type
+    private struct RecordTypeCheck {
+        let type: RecordType
+        let value: Double
+        let threshold: Double
+        let compareAscending: Bool  // true means lower is better (south, west)
+    }
+
     /// Check all record types for a given timeframe and return which ones were updated
     /// - Parameters:
     ///   - params: The location and threshold parameters
@@ -385,99 +441,42 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     ) -> Set<String> {
         var updated: Set<String> = []
 
-        // Furthest North
-        if !excludeTypes.contains(RecordType.north.rawValue) {
-            if checkAndUpdateRecord(
-                type: RecordType.north.rawValue,
-                newValue: params.lat,
-                threshold: params.latThreshold,
-                compareAscending: false,
-                location: params.location,
-                reverseGeocodedName: params.reverseGeocodedName,
-                timeFrame: timeFrame
-            ) {
-                updated.insert(RecordType.north.rawValue)
-                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.north.rawValue) record") }
-            }
-        }
+        // Define all record type checks
+        var checks: [RecordTypeCheck] = [
+            RecordTypeCheck(type: .north, value: params.lat, threshold: params.latThreshold, compareAscending: false),
+            RecordTypeCheck(type: .south, value: params.lat, threshold: params.latThreshold, compareAscending: true),
+            RecordTypeCheck(type: .east, value: params.lon, threshold: params.lonThreshold, compareAscending: false),
+            RecordTypeCheck(type: .west, value: params.lon, threshold: params.lonThreshold, compareAscending: true),
+            RecordTypeCheck(type: .up, value: params.alt, threshold: params.altThreshold, compareAscending: false)
+        ]
 
-        // Furthest South
-        if !excludeTypes.contains(RecordType.south.rawValue) {
-            if checkAndUpdateRecord(
-                type: RecordType.south.rawValue,
-                newValue: params.lat,
-                threshold: params.latThreshold,
-                compareAscending: true,
-                location: params.location,
-                reverseGeocodedName: params.reverseGeocodedName,
-                timeFrame: timeFrame
-            ) {
-                updated.insert(RecordType.south.rawValue)
-                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.south.rawValue) record") }
-            }
-        }
-
-        // Furthest East
-        if !excludeTypes.contains(RecordType.east.rawValue) {
-            if checkAndUpdateRecord(
-                type: RecordType.east.rawValue,
-                newValue: params.lon,
-                threshold: params.lonThreshold,
-                compareAscending: false,
-                location: params.location,
-                reverseGeocodedName: params.reverseGeocodedName,
-                timeFrame: timeFrame
-            ) {
-                updated.insert(RecordType.east.rawValue)
-                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.east.rawValue) record") }
-            }
-        }
-
-        // Furthest West
-        if !excludeTypes.contains(RecordType.west.rawValue) {
-            if checkAndUpdateRecord(
-                type: RecordType.west.rawValue,
-                newValue: params.lon,
-                threshold: params.lonThreshold,
-                compareAscending: true,
-                location: params.location,
-                reverseGeocodedName: params.reverseGeocodedName,
-                timeFrame: timeFrame
-            ) {
-                updated.insert(RecordType.west.rawValue)
-                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.west.rawValue) record") }
-            }
-        }
-
-        // Furthest Up
-        if !excludeTypes.contains(RecordType.up.rawValue) {
-            if checkAndUpdateRecord(
-                type: RecordType.up.rawValue,
-                newValue: params.alt,
-                threshold: params.altThreshold,
-                compareAscending: false,
-                location: params.location,
-                reverseGeocodedName: params.reverseGeocodedName,
-                timeFrame: timeFrame
-            ) {
-                updated.insert(RecordType.up.rawValue)
-                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.up.rawValue) record") }
-            }
-        }
-
-        // Furthest from Home
-        if let distance = params.distanceMeters, !excludeTypes.contains(RecordType.fromHome.rawValue) {
-            if checkAndUpdateRecord(
-                type: RecordType.fromHome.rawValue,
-                newValue: distance,
+        // Add distance check if available
+        if let distance = params.distanceMeters {
+            checks.append(RecordTypeCheck(
+                type: .fromHome,
+                value: distance,
                 threshold: params.distanceThreshold,
-                compareAscending: false,
+                compareAscending: false
+            ))
+        }
+
+        // Check each record type
+        for check in checks {
+            guard !excludeTypes.contains(check.type.rawValue) else { continue }
+
+            if checkAndUpdateRecord(
+                type: check.type.rawValue,
+                newValue: check.value,
+                threshold: check.threshold,
+                compareAscending: check.compareAscending,
                 location: params.location,
                 reverseGeocodedName: params.reverseGeocodedName,
                 timeFrame: timeFrame
             ) {
-                updated.insert(RecordType.fromHome.rawValue)
-                if logSecondPass { debugLog("📍 Second pass: Also set \(RecordType.fromHome.rawValue) record") }
+                updated.insert(check.type.rawValue)
+                if logSecondPass {
+                    debugLog("📍 Second pass: Also set \(check.type.rawValue) record")
+                }
             }
         }
 
@@ -645,44 +644,58 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                     return
                 }
 
-                defer {
-                    Task { @MainActor in
-                        self.isGeocodingInProgress = false
-                    }
-                }
-
-                var name: String? = nil
+                // Process result on background thread
+                let name: String?
+                let shouldResetFailures: Bool
+                let shouldIncrementFailures: Bool
 
                 if let error = error {
                     debugLog("Geocoding error: \(error.localizedDescription)")
-                    Task { @MainActor in
-                        self.consecutiveGeocodingFailures += 1
-                        if self.hasGeocodingIssues {
-                            debugLog("⚠️ Multiple geocoding failures detected (\(self.consecutiveGeocodingFailures))")
-                        }
-                    }
+                    name = nil
+                    shouldResetFailures = false
+                    shouldIncrementFailures = true
                 } else if let placemark = placemarks?.first {
-                    // Reset failure counter on success
-                    Task { @MainActor in
-                        self.consecutiveGeocodingFailures = 0
-                    }
+                    shouldResetFailures = true
+                    shouldIncrementFailures = false
 
                     if let city = placemark.locality, let country = placemark.country {
                         name = "\(city), \(country)"
                     } else if let placemarkName = placemark.name {
                         name = placemarkName
+                    } else {
+                        name = nil
                     }
-
-                    // Store in cache if successful
-                    if let name = name {
-                        Task {
-                            await sharedGeocodingCache.setCachedName(name, for: location.coordinate)
-                            debugLog("💾 Cached location for (\(lat), \(lon)): \(name)")
-                        }
-                    }
+                } else {
+                    name = nil
+                    shouldResetFailures = false
+                    shouldIncrementFailures = false
                 }
 
-                continuation.resume(returning: name)
+                // Single coordinated update to @MainActor properties and cache
+                Task {
+                    // Update all @MainActor properties atomically
+                    await MainActor.run {
+                        self.isGeocodingInProgress = false
+
+                        if shouldIncrementFailures {
+                            self.consecutiveGeocodingFailures += 1
+                            if self.hasGeocodingIssues {
+                                debugLog("⚠️ Multiple geocoding failures detected (\(self.consecutiveGeocodingFailures))")
+                            }
+                        } else if shouldResetFailures {
+                            self.consecutiveGeocodingFailures = 0
+                        }
+                    }
+
+                    // Cache the result if successful
+                    if let name = name {
+                        await sharedGeocodingCache.setCachedName(name, for: location.coordinate)
+                        debugLog("💾 Cached location for (\(lat), \(lon)): \(name)")
+                    }
+
+                    // Resume continuation after all updates complete
+                    continuation.resume(returning: name)
+                }
             }
         }
     }
@@ -801,14 +814,24 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         )
 
         // FIRST PASS: Check all records with normal thresholds
+        // Only update records that exceed the configured delta thresholds
         var updatedRecords: [TimeFrame: Set<String>] = [:]
         for timeFrame in TimeFrame.allCases {
             updatedRecords[timeFrame] = checkAllRecordTypes(params: params, timeFrame: timeFrame)
         }
 
-        // SECOND PASS: If any record was set, check remaining record types with threshold=0
-        // This ensures that if we're at a location extreme enough to set one record,
-        // we also capture any other records that are "best so far" even without margin
+        // SECOND PASS: Zero-threshold check for "extreme locations"
+        //
+        // Rationale: If a location is extreme enough to set ANY record (e.g., Furthest North),
+        // then it's likely significant enough to check if it sets other records too, even if
+        // those wouldn't normally pass the threshold.
+        //
+        // Example: User travels to Alaska (new Furthest North):
+        // - First pass: Sets Furthest North (exceeded 0.5° threshold)
+        // - Second pass: Also sets Furthest West (was 0.3° west of previous, below threshold)
+        // - Result: Captures both records from this significant trip, not just one
+        //
+        // This prevents missing closely-related records at the same significant location.
         let zeroThresholdParams = RecordCheckParams(
             location: location,
             lat: lat,
@@ -891,7 +914,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     }
 
     // MARK: - Trigger Photo Prompt
-    private func promptForPhoto(recordType: String, detail: RecordDetail) {
+    func promptForPhoto(recordType: String, detail: RecordDetail) {
         // Block during import
         if case .blockingAlerts = updateState {
             return

@@ -5,9 +5,8 @@ import CoreLocation
 struct HistoryView: View {
     @EnvironmentObject var settings: SettingsManager
     @State private var searchText = ""
-    @State private var selectedRecordTypeFilter: String? = nil
-    @State private var selectedTimeFrameFilter: String? = nil
-    @State private var showFilterSheet = false
+    @State private var selectedRecordTypeFilter: String = "All Types"
+    @State private var selectedTimeFrameFilter: String = "All Timeframes"
 
     // Fetch history entries sorted by timestamp (newest first)
     @FetchRequest(
@@ -34,12 +33,19 @@ struct HistoryView: View {
         }
 
         // Apply database-level filters first (record type and time frame)
-        if let recordType = selectedRecordTypeFilter {
-            entries = entries.filter { $0.recordType == recordType }
+        if selectedRecordTypeFilter != "All Types" {
+            entries = entries.filter { $0.recordType == selectedRecordTypeFilter }
         }
 
-        if let timeFrame = selectedTimeFrameFilter {
-            entries = entries.filter { $0.timeFrame == timeFrame }
+        if selectedTimeFrameFilter != "All Timeframes" {
+            entries = entries.filter { entry in
+                // Treat all variations of lifetime records as the same
+                if selectedTimeFrameFilter == "Lifetime" {
+                    let lifetimeVariations = ["Lifetime", "All-Time", "All Time"]
+                    return lifetimeVariations.contains(entry.timeFrame ?? "")
+                }
+                return entry.timeFrame == selectedTimeFrameFilter
+            }
         }
 
         // Apply search filter
@@ -54,76 +60,144 @@ struct HistoryView: View {
         return entries
     }
 
-    private var activeFilterCount: Int {
-        var count = 0
-        if selectedRecordTypeFilter != nil { count += 1 }
-        if selectedTimeFrameFilter != nil { count += 1 }
-        return count
+    // Available filter options from the data
+    private var availableRecordTypes: [String] {
+        let types = Set(historyEntries.compactMap { $0.recordType })
+        return ["All Types"] + types.sorted()
+    }
+
+    // Region types don't have timeframe variations
+    private let regionTypes = ["New State", "New Country", "New Continent"]
+
+    private func isRegionType(_ type: String) -> Bool {
+        regionTypes.contains(type)
+    }
+
+    private var isRegionTypeSelected: Bool {
+        isRegionType(selectedRecordTypeFilter)
+    }
+
+    private var availableTimeFrames: [String] {
+        var frames = Set(historyEntries.compactMap { $0.timeFrame })
+
+        // Remove Daily - it's for internal chart use only
+        frames.remove("Daily")
+
+        // Merge all variations of all-time/lifetime into single "Lifetime" option
+        let lifetimeVariations = ["All-Time", "All Time", "Lifetime"]
+        let hasLifetime = frames.contains(where: { lifetimeVariations.contains($0) })
+
+        if hasLifetime {
+            lifetimeVariations.forEach { frames.remove($0) }
+            frames.insert("Lifetime")
+        }
+
+        // Sort in logical order: Lifetime, Yearly, Monthly
+        let sortOrder = ["Lifetime", "Yearly", "Monthly"]
+        let sortedFrames = frames.sorted { f1, f2 in
+            let idx1 = sortOrder.firstIndex(of: f1) ?? sortOrder.count
+            let idx2 = sortOrder.firstIndex(of: f2) ?? sortOrder.count
+            return idx1 < idx2
+        }
+
+        return ["All Timeframes"] + sortedFrames
     }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if historyEntries.isEmpty {
-                    VStack(spacing: 16) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 48))
-                            .foregroundColor(.secondary)
-                        Text("No History Yet")
-                            .font(.headline)
-                        Text("Your record history will appear here.")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.top, 60)
-                } else if filteredEntries.isEmpty {
-                    VStack(spacing: 16) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 48))
-                            .foregroundColor(.secondary)
-                        Text("No Results")
-                            .font(.headline)
-                        Text("Try adjusting your search or filters.")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.top, 60)
-                } else {
-                    List(Array(filteredEntries.enumerated()), id: \.element.id) { index, entry in
-                        NavigationLink(destination: HistoryDetailPager(entries: filteredEntries, initialIndex: index)) {
-                            CompactHistoryRow(entry: entry)
+            VStack(spacing: 0) {
+                // Filter controls
+                VStack(spacing: 12) {
+                    // Pickers row
+                    HStack(spacing: 12) {
+                        // Record type picker
+                        Picker("Type", selection: $selectedRecordTypeFilter) {
+                            ForEach(availableRecordTypes, id: \.self) { type in
+                                Text(type).tag(type)
+                            }
                         }
-                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                    }
-                    .listStyle(.plain)
-                }
-            }
-            .navigationTitle("History (\(filteredEntries.count))")
-            .searchable(text: $searchText, prompt: "Search by type or location")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: {
-                        showFilterSheet = true
-                    }) {
-                        ZStack(alignment: .topTrailing) {
-                            Image(systemName: "line.3.horizontal.decrease.circle")
-                            if activeFilterCount > 0 {
-                                Circle()
-                                    .fill(Color.blue)
-                                    .frame(width: 8, height: 8)
-                                    .offset(x: 4, y: -4)
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity)
+
+                        // Time frame picker (disabled for region types which don't have timeframes)
+                        Picker("Time Frame", selection: $selectedTimeFrameFilter) {
+                            ForEach(availableTimeFrames, id: \.self) { frame in
+                                Text(frame).tag(frame)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity)
+                        .disabled(isRegionTypeSelected)
+                        .opacity(isRegionTypeSelected ? 0.5 : 1.0)
+                        .onChange(of: selectedRecordTypeFilter) { _, newValue in
+                            // Reset to All Timeframes when selecting a region type
+                            if isRegionType(newValue) {
+                                selectedTimeFrameFilter = "All Timeframes"
                             }
                         }
                     }
+
+                    // Search field
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                        TextField("Search by type or location", text: $searchText)
+                            .textFieldStyle(.plain)
+                        if !searchText.isEmpty {
+                            Button(action: { searchText = "" }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .background(Color(UIColor.systemGray6))
+                    .cornerRadius(8)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 12)
+                .background(Color(UIColor.systemBackground))
+
+                Divider()
+
+                // Content
+                Group {
+                    if historyEntries.isEmpty {
+                        VStack(spacing: 16) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 48))
+                                .foregroundColor(.secondary)
+                            Text("No History Yet")
+                                .font(.headline)
+                            Text("Your record history will appear here.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if filteredEntries.isEmpty {
+                        VStack(spacing: 16) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 48))
+                                .foregroundColor(.secondary)
+                            Text("No Results")
+                                .font(.headline)
+                            Text("Try adjusting your search or filters.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        List(Array(filteredEntries.enumerated()), id: \.element.id) { index, entry in
+                            NavigationLink(destination: HistoryDetailPager(entries: filteredEntries, initialIndex: index)) {
+                                CompactHistoryRow(entry: entry)
+                            }
+                            .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        }
+                        .listStyle(.plain)
+                    }
                 }
             }
-            .sheet(isPresented: $showFilterSheet) {
-                FilterSheet(
-                    selectedRecordType: $selectedRecordTypeFilter,
-                    selectedTimeFrame: $selectedTimeFrameFilter,
-                    historyEntries: historyEntries
-                )
-            }
+            .navigationTitle("History (\(filteredEntries.count))")
         }
     }
 }
@@ -145,10 +219,18 @@ struct CompactHistoryRow: View {
     }
 
     private var timeFrameColor: Color {
-        guard let timeFrameString = entry.timeFrame,
-              let timeFrame = TimeFrame(rawValue: timeFrameString) else {
+        guard let timeFrameString = entry.timeFrame else {
             return .gray
         }
+
+        // Normalize all lifetime variations to "Lifetime" for enum conversion
+        let lifetimeVariations = ["All-Time", "All Time", "Lifetime"]
+        let normalizedString = lifetimeVariations.contains(timeFrameString) ? "Lifetime" : timeFrameString
+
+        guard let timeFrame = TimeFrame(rawValue: normalizedString) else {
+            return .gray
+        }
+
         switch timeFrame {
         case .daily: return .gray  // Daily records are filtered out, but handle case
         case .month: return .green
@@ -164,9 +246,39 @@ struct CompactHistoryRow: View {
 
     private var locationText: String {
         if let name = entry.locationName, !name.isEmpty, name != unknownLocationString {
+            // Add flag for countries
+            if let flag = flagEmoji(for: entry.regionCode, recordType: entry.recordType) {
+                return "\(flag) \(name)"
+            }
             return name
         }
         return String(format: "%.4f, %.4f", entry.latitude, entry.longitude)
+    }
+
+    // Helper to get flag emoji from region code (only for countries)
+    // For territories, returns the parent country's flag
+    private func flagEmoji(for regionCode: String?, recordType: String?) -> String? {
+        guard let code = regionCode, let type = recordType else { return nil }
+
+        // Only show flags for countries, not states or continents
+        guard type == RecordType.country.rawValue else { return nil }
+
+        // Get the flag code - for territories, this returns parent country code
+        guard let flagCode = RegionLookupService.flagCode(for: code) else { return nil }
+
+        // Convert ISO 2-letter code to flag emoji
+        let uppercaseCode = flagCode.uppercased()
+        guard uppercaseCode.count == 2 else { return nil }
+
+        var flagString = ""
+        for scalar in uppercaseCode.unicodeScalars {
+            // Regional indicator symbols start at U+1F1E6 (A) through U+1F1FF (Z)
+            if let regionalIndicator = UnicodeScalar(127397 + scalar.value) {
+                flagString.append(String(regionalIndicator))
+            }
+        }
+
+        return flagString.isEmpty ? nil : flagString
     }
 
     private var formattedDate: String {
@@ -184,7 +296,7 @@ struct CompactHistoryRow: View {
         switch tf {
         case "Monthly": return "M"
         case "Yearly": return "Y"
-        case "All-Time": return "A"
+        case "Lifetime", "All-Time", "All Time": return "L"  // All variations
         default: return String(tf.prefix(1))
         }
     }
@@ -235,101 +347,3 @@ struct CompactHistoryRow: View {
     }
 }
 
-// MARK: - Filter Option Button
-
-private struct FilterOptionButton: View {
-    let title: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Text(title)
-                Spacer()
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .foregroundColor(.blue)
-                }
-            }
-        }
-        .foregroundColor(.primary)
-    }
-}
-
-// MARK: - Filter Sheet
-
-struct FilterSheet: View {
-    @Environment(\.dismiss) var dismiss
-    @Binding var selectedRecordType: String?
-    @Binding var selectedTimeFrame: String?
-    let historyEntries: FetchedResults<RecordHistoryEntry>
-
-    private var availableRecordTypes: [String] {
-        let types = Set(historyEntries.compactMap { $0.recordType })
-        return types.sorted()
-    }
-
-    private var availableTimeFrames: [String] {
-        let frames = Set(historyEntries.compactMap { $0.timeFrame })
-        return frames.sorted()
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section(header: Text("Record Type")) {
-                    FilterOptionButton(
-                        title: "All Types",
-                        isSelected: selectedRecordType == nil,
-                        action: { selectedRecordType = nil }
-                    )
-
-                    ForEach(availableRecordTypes, id: \.self) { type in
-                        FilterOptionButton(
-                            title: type,
-                            isSelected: selectedRecordType == type,
-                            action: { selectedRecordType = type }
-                        )
-                    }
-                }
-
-                Section(header: Text("Time Frame")) {
-                    FilterOptionButton(
-                        title: "All Time Frames",
-                        isSelected: selectedTimeFrame == nil,
-                        action: { selectedTimeFrame = nil }
-                    )
-
-                    ForEach(availableTimeFrames, id: \.self) { frame in
-                        FilterOptionButton(
-                            title: frame,
-                            isSelected: selectedTimeFrame == frame,
-                            action: { selectedTimeFrame = frame }
-                        )
-                    }
-                }
-
-                Section {
-                    Button(action: {
-                        selectedRecordType = nil
-                        selectedTimeFrame = nil
-                    }) {
-                        Text("Clear All Filters")
-                            .frame(maxWidth: .infinity)
-                            .foregroundColor(.red)
-                    }
-                }
-            }
-            .navigationTitle("Filter History")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
-        }
-    }
-}

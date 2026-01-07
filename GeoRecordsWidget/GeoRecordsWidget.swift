@@ -246,14 +246,14 @@ enum WidgetRecordType: String, CaseIterable, AppEnum {
 }
 
 enum WidgetTimeFrame: String, CaseIterable, AppEnum {
-    case allTime = "All Time"
+    case allTime = "Lifetime"
     case year = "This Year"
     case month = "This Month"
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "Time Frame"
 
     static var caseDisplayRepresentations: [WidgetTimeFrame: DisplayRepresentation] = [
-        .allTime: DisplayRepresentation(title: "All Time"),
+        .allTime: DisplayRepresentation(title: "Lifetime"),
         .year: DisplayRepresentation(title: "This Year"),
         .month: DisplayRepresentation(title: "This Month")
     ]

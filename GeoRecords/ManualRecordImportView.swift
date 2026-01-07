@@ -265,6 +265,11 @@ struct ManualRecordImportView: View {
                         shouldCheck = false
                         value = 0
                     }
+                case .state, .country, .continent:
+                    // Region records are only created from actual visits via RegionTrackingManager
+                    // Skip them in manual record import
+                    shouldCheck = false
+                    value = 0
                 }
 
                 guard shouldCheck else { continue }

@@ -232,7 +232,7 @@ struct SettingsView: View {
                             settings.saveSettings()
                         }
 
-                    Toggle("All-Time Records", isOn: $settings.notifyOnAllTimeRecords)
+                    Toggle("Lifetime Records", isOn: $settings.notifyOnAllTimeRecords)
                         .onChange(of: settings.notifyOnAllTimeRecords) { _, newValue in
                             if newValue {
                                 requestNotificationPermissionsIfNeeded()
@@ -826,9 +826,28 @@ struct ClearRecordsSheet: View {
                 }
             }
         } else {
-            // Local only - no need to wait
-            RecordHistoryManager.shared.clearLocalOnly()
-            onComplete()
+            // Local only - wait for store to reload
+            isDeleting = true
+            statusMessage = "Deleting local records..."
+
+            Task {
+                let success = await RecordHistoryManager.shared.clearLocalOnly()
+
+                await MainActor.run {
+                    if success {
+                        statusMessage = "Store reloaded - records will sync from iCloud"
+                    } else {
+                        statusMessage = "Failed to clear local data"
+                    }
+                }
+
+                // Brief pause to show completion message
+                try? await Task.sleep(nanoseconds: 500_000_000)
+
+                await MainActor.run {
+                    onComplete()
+                }
+            }
         }
     }
 }

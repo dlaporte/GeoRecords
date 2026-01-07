@@ -72,14 +72,14 @@ class RecordHistoryManager: ObservableObject {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
         // Calculate date range for comparison using shared tolerance constants
-        let timestampMin = detail.timestamp.addingTimeInterval(-duplicateTimeTolerance)
-        let timestampMax = detail.timestamp.addingTimeInterval(duplicateTimeTolerance)
+        let timestampMin = detail.timestamp.addingTimeInterval(-duplicateTimeToleranceSeconds)
+        let timestampMax = detail.timestamp.addingTimeInterval(duplicateTimeToleranceSeconds)
         let valueMin = detail.value - duplicateValueTolerance
         let valueMax = detail.value + duplicateValueTolerance
-        let latMin = detail.coordinate.latitude - duplicateCoordinateTolerance
-        let latMax = detail.coordinate.latitude + duplicateCoordinateTolerance
-        let lonMin = detail.coordinate.longitude - duplicateCoordinateTolerance
-        let lonMax = detail.coordinate.longitude + duplicateCoordinateTolerance
+        let latMin = detail.coordinate.latitude - duplicateCoordinateToleranceDegrees
+        let latMax = detail.coordinate.latitude + duplicateCoordinateToleranceDegrees
+        let lonMin = detail.coordinate.longitude - duplicateCoordinateToleranceDegrees
+        let lonMax = detail.coordinate.longitude + duplicateCoordinateToleranceDegrees
 
         // Match records with same type, timeframe, timestamp (within 1 second), and similar coordinates
         request.predicate = NSPredicate(
@@ -131,6 +131,30 @@ class RecordHistoryManager: ObservableObject {
         }
     }
 
+    /// Update the photo asset identifier for a record
+    /// Also updates the cloud identifier for cross-device sync
+    func updateRecordPhotoAsset(recordId: UUID, localIdentifier: String, cloudIdentifier: String?) {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "id == %@", recordId as CVarArg)
+        request.fetchLimit = 1
+
+        do {
+            let results = try context.fetch(request)
+            if let entry = results.first {
+                entry.photoAssetIdentifier = localIdentifier
+                entry.photoCloudIdentifier = cloudIdentifier
+                // Clear legacy photo data since we're using asset reference now
+                entry.photoData = nil
+                try context.save()
+                debugLog("📸 Updated photo for record \(recordId)")
+            }
+        } catch {
+            let message = "Failed to update photo asset: \(error.localizedDescription)"
+            debugLog(message)
+            showErrorAlert(message)
+        }
+    }
+
     func updateRecordNotes(recordId: UUID, notes: String?) {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
         request.predicate = NSPredicate(format: "id == %@", recordId as CVarArg)
@@ -177,10 +201,10 @@ class RecordHistoryManager: ObservableObject {
     func lookupLocationName(latitude: Double, longitude: Double) -> String? {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
-        let latMin = latitude - locationNameCoordinateTolerance
-        let latMax = latitude + locationNameCoordinateTolerance
-        let lonMin = longitude - locationNameCoordinateTolerance
-        let lonMax = longitude + locationNameCoordinateTolerance
+        let latMin = latitude - locationNameProximityToleranceDegrees
+        let latMax = latitude + locationNameProximityToleranceDegrees
+        let lonMin = longitude - locationNameProximityToleranceDegrees
+        let lonMax = longitude + locationNameProximityToleranceDegrees
 
         // Only fetch records that have a location name
         request.predicate = NSPredicate(
@@ -211,49 +235,62 @@ class RecordHistoryManager: ObservableObject {
     func getFurthestRecord(type: String, timeFrame: TimeFrame) -> (value: Double, locationName: String?)? {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
-        // Build predicate based on time frame
+        // Build predicate based on time frame - filter by timeFrame field to match Records tab
         let calendar = Calendar.current
         let now = Date()
 
         switch timeFrame {
         case .daily:
             let dayStart = calendar.startOfDay(for: now)
-            let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)!
+            guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
+                debugLog("❌ Failed to calculate day end date")
+                return nil
+            }
             request.predicate = NSPredicate(
                 format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
-                type, TimeFrame.daily.rawValue, dayStart as NSDate, dayEnd as NSDate
+                type, "Daily", dayStart as NSDate, dayEnd as NSDate
             )
         case .month:
-            let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
-            let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart)!
+            guard let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)),
+                  let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart) else {
+                debugLog("❌ Failed to calculate month date range")
+                return nil
+            }
             request.predicate = NSPredicate(
-                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
-                type, monthStart as NSDate, monthEnd as NSDate
+                format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
+                type, "Monthly", monthStart as NSDate, monthEnd as NSDate
             )
         case .year:
-            let yearStart = calendar.date(from: calendar.dateComponents([.year], from: now))!
-            let yearEnd = calendar.date(byAdding: .year, value: 1, to: yearStart)!
+            guard let yearStart = calendar.date(from: calendar.dateComponents([.year], from: now)),
+                  let yearEnd = calendar.date(byAdding: .year, value: 1, to: yearStart) else {
+                debugLog("❌ Failed to calculate year date range")
+                return nil
+            }
+            // Include both Yearly AND Monthly records from current year (Monthly is part of this year)
             request.predicate = NSPredicate(
-                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
-                type, yearStart as NSDate, yearEnd as NSDate
+                format: "recordType == %@ AND (timeFrame == %@ OR timeFrame == %@) AND timestamp >= %@ AND timestamp < %@",
+                type, "Yearly", "Monthly", yearStart as NSDate, yearEnd as NSDate
             )
         case .allTime:
-            // For all-time, query ALL records of this type regardless of stored timeFrame
-            // This finds the most extreme value ever recorded
+            // For all-time, query only Lifetime records
             request.predicate = NSPredicate(
-                format: "recordType == %@",
-                type
+                format: "recordType == %@ AND (timeFrame == %@ OR timeFrame == %@ OR timeFrame == %@)",
+                type, "Lifetime", "All-Time", "All Time"
             )
         }
 
-        // Sort to get the most extreme value using RecordType.isAscending
-        let isAscending = RecordType.from(string: type)?.isAscending ?? true
-        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: !isAscending)]
-        request.fetchLimit = 1
+        // Sort by dateAdded (most recent first) to respect user's wizard selections
+        request.sortDescriptors = [NSSortDescriptor(key: "dateAdded", ascending: false)]
 
         do {
             let results = try context.fetch(request)
-            if let record = results.first {
+            // Find the most recently added record
+            let mostRecent = results.max { r1, r2 in
+                let date1 = r1.dateAdded ?? r1.timestamp ?? Date.distantPast
+                let date2 = r2.dateAdded ?? r2.timestamp ?? Date.distantPast
+                return date1 < date2
+            }
+            if let record = mostRecent {
                 return (value: record.value, locationName: record.locationName)
             }
         } catch {
@@ -263,7 +300,7 @@ class RecordHistoryManager: ObservableObject {
         return nil
     }
 
-    /// Get the furthest record for a given type within a specific year
+    /// Get the record for a given type within a specific year
     /// Used for displaying location summaries when a specific year is selected
     /// - Parameters:
     ///   - type: The record type (e.g., "Furthest North")
@@ -278,19 +315,21 @@ class RecordHistoryManager: ObservableObject {
             return nil
         }
 
+        // Only include "Yearly" records - matches Records tab for past years
         request.predicate = NSPredicate(
-            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
-            type, yearStart as NSDate, yearEnd as NSDate
+            format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
+            type, "Yearly", yearStart as NSDate, yearEnd as NSDate
         )
-
-        // Sort to get the most extreme value using RecordType.isAscending
-        let isAscending = RecordType.from(string: type)?.isAscending ?? true
-        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: !isAscending)]
-        request.fetchLimit = 1
 
         do {
             let results = try context.fetch(request)
-            if let record = results.first {
+            // Find the most recently added record
+            let mostRecent = results.max { r1, r2 in
+                let date1 = r1.dateAdded ?? r1.timestamp ?? Date.distantPast
+                let date2 = r2.dateAdded ?? r2.timestamp ?? Date.distantPast
+                return date1 < date2
+            }
+            if let record = mostRecent {
                 return (value: record.value, locationName: record.locationName)
             }
         } catch {
@@ -311,10 +350,10 @@ class RecordHistoryManager: ObservableObject {
     func updateLocationNameForCoordinates(latitude: Double, longitude: Double, locationName: String?) -> Int {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
-        let latMin = latitude - locationNameCoordinateTolerance
-        let latMax = latitude + locationNameCoordinateTolerance
-        let lonMin = longitude - locationNameCoordinateTolerance
-        let lonMax = longitude + locationNameCoordinateTolerance
+        let latMin = latitude - locationNameProximityToleranceDegrees
+        let latMax = latitude + locationNameProximityToleranceDegrees
+        let lonMin = longitude - locationNameProximityToleranceDegrees
+        let lonMax = longitude + locationNameProximityToleranceDegrees
 
         request.predicate = NSPredicate(
             format: "latitude >= %f AND latitude <= %f AND longitude >= %f AND longitude <= %f",
@@ -413,7 +452,7 @@ class RecordHistoryManager: ObservableObject {
     /// Consolidate records by keeping only the most extreme record for each recordType+timeFrame+period combination
     /// For Monthly records: keeps one per calendar month
     /// For Yearly records: keeps one per calendar year
-    /// For All-Time records: keeps only the single most extreme
+    /// For Lifetime records: keeps only the single most extreme
     /// Deletes all non-extreme records from history (both locally and iCloud)
     /// Returns the number of records removed
     @discardableResult
@@ -447,8 +486,8 @@ class RecordHistoryManager: ObservableObject {
                     // Group by year only (keeps historical yearly records separate)
                     let year = calendar.component(.year, from: timestamp)
                     periodKey = "\(year)"
-                case "All-Time":
-                    // Single group for all time
+                case "Lifetime", "All-Time", "All Time":
+                    // Single group for lifetime records (handle all variations)
                     periodKey = "all"
                 default:
                     periodKey = "unknown"
@@ -555,9 +594,8 @@ class RecordHistoryManager: ObservableObject {
 
     /// Clear local records only - iCloud data remains and will sync back
     /// This deletes the local SQLite file directly to avoid CloudKit sync
-    /// Returns true if successful
-    @discardableResult
-    func clearLocalOnly() -> Bool {
+    /// Waits for store to fully reload before returning
+    func clearLocalOnly() async -> Bool {
         debugLog("🗑️ Starting local-only clear...")
 
         // Reset in-memory records first
@@ -616,19 +654,22 @@ class RecordHistoryManager: ObservableObject {
             debugLog("✅ Local database destroyed completely")
 
             // Reload the store - iCloud will sync data back fresh
-            PersistenceController.shared.container.loadPersistentStores { description, error in
-                DispatchQueue.main.async {
-                    if let error = error {
-                        debugLog("❌ Failed to reload store: \(error.localizedDescription)")
-                    } else {
-                        debugLog("✅ Store reloaded - waiting for iCloud sync to restore data")
-                        // DON'T load records here - wait for iCloud sync to complete first
-                        // The caller should monitor sync completion and then reload
+            // Use continuation to wait for async completion
+            return await withCheckedContinuation { continuation in
+                PersistenceController.shared.container.loadPersistentStores { description, error in
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            debugLog("❌ Failed to reload store: \(error.localizedDescription)")
+                            continuation.resume(returning: false)
+                        } else {
+                            debugLog("✅ Store reloaded - waiting for iCloud sync to restore data")
+                            // DON'T load records here - wait for iCloud sync to complete first
+                            // The caller should monitor sync completion and then reload
+                            continuation.resume(returning: true)
+                        }
                     }
                 }
             }
-
-            return true
         } catch {
             debugLog("❌ Failed to clear local database: \(error.localizedDescription)")
             return false
@@ -763,6 +804,7 @@ class RecordHistoryManager: ObservableObject {
 
     /// Get the best (most extreme) record for a given type and year
     /// Used for checking if a historical yearly record exists
+    /// Note: Only returns Yearly records - Lifetime and Monthly records are managed separately
     func getBestRecord(type: String, year: Int) -> RecordDetail? {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
@@ -777,11 +819,18 @@ class RecordHistoryManager: ObservableObject {
             return nil
         }
 
+        // Query ONLY Yearly records in the year range
+        // We specifically want timeFrame == "Yearly" because:
+        // - Lifetime records are managed separately by the Lifetime wizard section
+        // - Monthly records should not be pre-selected for the Yearly wizard section
+        // This ensures the Past Years section pre-selects the actual yearly record photo,
+        // not a more extreme monthly record from the same year
         request.predicate = NSPredicate(
-            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@ AND timeFrame == %@",
             type,
             yearStart as NSDate,
-            yearEnd as NSDate
+            yearEnd as NSDate,
+            "Yearly"
         )
 
         // Sort by extremeness based on record type
@@ -813,6 +862,7 @@ class RecordHistoryManager: ObservableObject {
 
     /// Get the best (most extreme) record for a given type, year, and month
     /// Used for checking if a historical monthly record exists
+    /// Note: Only returns Monthly records - Lifetime and Yearly records are managed separately
     func getBestRecord(type: String, year: Int, month: Int) -> RecordDetail? {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
@@ -827,11 +877,17 @@ class RecordHistoryManager: ObservableObject {
             return nil
         }
 
+        // Query ONLY Monthly records in the month range
+        // We specifically want timeFrame == "Monthly" because:
+        // - Lifetime records are managed separately by the Lifetime wizard section
+        // - Yearly records are managed separately by the Past Years wizard section
+        // This ensures the Monthly section pre-selects the actual monthly record photo
         request.predicate = NSPredicate(
-            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@ AND timeFrame == %@",
             type,
             monthStart as NSDate,
-            monthEnd as NSDate
+            monthEnd as NSDate,
+            "Monthly"
         )
 
         // Sort by extremeness based on record type
@@ -943,6 +999,78 @@ class RecordHistoryManager: ObservableObject {
         }
     }
 
+    /// Delete existing record(s) for a specific type and timeframe before importing a new one
+    /// This prevents accumulation of duplicate records with different photos
+    /// - Parameters:
+    ///   - type: The record type (e.g., "Furthest North")
+    ///   - timeFrame: The timeframe (.allTime, .year, .month)
+    ///   - timestamp: The timestamp of the new record (used to determine year/month for yearly/monthly records)
+    func deleteExistingRecord(type: String, timeFrame: TimeFrame, timestamp: Date) {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        let calendar = Calendar.current
+
+        // Build predicate based on timeframe
+        // Note: We check multiple timeFrame string variations to catch records saved with different formats
+        switch timeFrame {
+        case .allTime:
+            // For all-time, delete any record of this type with timeFrame = "Lifetime" or "All-Time" or nil/empty
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND (timeFrame == %@ OR timeFrame == %@ OR timeFrame == %@ OR timeFrame == nil OR timeFrame == %@)",
+                type, "Lifetime", "All-Time", "All Time", ""
+            )
+        case .year:
+            // For yearly, delete ONLY Yearly records of this type within the same year
+            // We specifically target timeFrame == "Yearly" to avoid deleting:
+            // - Lifetime records (managed by the Lifetime wizard section)
+            // - Monthly records (managed by the Monthly wizard section)
+            let year = calendar.component(.year, from: timestamp)
+            guard let yearStart = calendar.date(from: DateComponents(year: year, month: 1, day: 1)),
+                  let yearEnd = calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1)) else {
+                return
+            }
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@ AND timeFrame == %@",
+                type, yearStart as NSDate, yearEnd as NSDate, "Yearly"
+            )
+        case .month:
+            // For monthly, delete ONLY Monthly records of this type within the same month
+            // We specifically target timeFrame == "Monthly" to avoid deleting:
+            // - Lifetime records (managed by the Lifetime wizard section)
+            // - Yearly records (managed by the Past Years wizard section)
+            // - Daily records (managed separately for statistics)
+            let year = calendar.component(.year, from: timestamp)
+            let month = calendar.component(.month, from: timestamp)
+            guard let monthStart = calendar.date(from: DateComponents(year: year, month: month, day: 1)),
+                  let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart) else {
+                return
+            }
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@ AND timeFrame == %@",
+                type, monthStart as NSDate, monthEnd as NSDate, "Monthly"
+            )
+        case .daily:
+            // Don't delete daily records during wizard import
+            return
+        }
+
+        do {
+            let results = try context.fetch(request)
+            if !results.isEmpty {
+                for record in results {
+                    // Delete cached thumbnail
+                    if let id = record.id {
+                        ThumbnailCache.shared.deleteThumbnail(for: id)
+                    }
+                    context.delete(record)
+                }
+                try context.save()
+                debugLog("🗑️ Deleted \(results.count) existing \(type) record(s) for \(timeFrame.rawValue) before import")
+            }
+        } catch {
+            debugLog("❌ Error deleting existing record: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Aggregate Queries for Statistics
 
     /// Get all years that have record history data
@@ -976,10 +1104,12 @@ class RecordHistoryManager: ObservableObject {
         }
 
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        // Only include "Monthly" records - this matches what Records tab shows
         request.predicate = NSPredicate(
-            format: "timestamp >= %@ AND timestamp < %@",
+            format: "timestamp >= %@ AND timestamp < %@ AND timeFrame == %@",
             yearStart as NSDate,
-            yearEnd as NSDate
+            yearEnd as NSDate,
+            "Monthly"
         )
 
         do {
@@ -1003,11 +1133,13 @@ class RecordHistoryManager: ObservableObject {
         }
     }
 
-    /// Get yearly aggregates from all RecordHistoryEntry records
-    /// Groups records by year and finds the extreme value for each record type
+    /// Get yearly aggregates from RecordHistoryEntry records
+    /// Only includes "Yearly" records to match what the Records tab shows for past years
     /// - Returns: Array of YearlyAggregate sorted by year
     func getYearlyAggregates() -> [YearlyAggregate] {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        // Only include "Yearly" records - this matches what Records tab shows for past years
+        request.predicate = NSPredicate(format: "timeFrame == %@", "Yearly")
         let calendar = Calendar.current
 
         do {
@@ -1079,7 +1211,10 @@ class RecordHistoryManager: ObservableObject {
     ) {
         let calendar = Calendar.current
         let dayStart = calendar.startOfDay(for: date)
-        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)!
+        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
+            debugLog("❌ Failed to calculate day end date for daily record update")
+            return
+        }
 
         // Check if we already have a daily record for this type and date
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
@@ -1241,8 +1376,8 @@ class RecordHistoryManager: ObservableObject {
             return DailyAggregate(day: day)
         }
 
-        // Daily records have one entry per type, so no comparison needed
-        let extremes = ExtractedExtremes.extract(from: dayRecords, compareExtremes: false)
+        // Extract using most recently added record (for daily, there's typically one per type)
+        let extremes = ExtractedExtremes.extract(from: dayRecords)
         return DailyAggregate(
             day: day,
             maxNorth: extremes.maxNorth,
@@ -1257,7 +1392,7 @@ class RecordHistoryManager: ObservableObject {
 
 // MARK: - Aggregate Extraction Helper
 
-/// Extracted extreme values from a set of records (internal helper)
+/// Extracted values from a set of records (internal helper)
 private struct ExtractedExtremes {
     var maxNorth: Double?
     var maxSouth: Double?
@@ -1266,45 +1401,44 @@ private struct ExtractedExtremes {
     var maxUp: Double?
     var maxDistanceFromHome: Double?
 
-    /// Extract extreme values from records, optionally comparing against existing values
-    /// - Parameters:
-    ///   - records: The records to extract from
-    ///   - compareExtremes: If true, keeps the most extreme value when multiple records exist for a type
-    ///                     If false, just takes the last value (for daily records where there's one per type)
-    static func extract(from records: [RecordHistoryEntry], compareExtremes: Bool = true) -> ExtractedExtremes {
+    /// Extract values from records using the most recently added record for each type
+    /// This respects user's wizard selections (most recent dateAdded wins)
+    /// - Parameter records: The records to extract from
+    static func extract(from records: [RecordHistoryEntry]) -> ExtractedExtremes {
         var result = ExtractedExtremes()
 
-        for record in records {
-            guard let recordType = record.recordType,
-                  let type = RecordType.from(string: recordType) else { continue }
+        // Group records by type
+        let grouped = Dictionary(grouping: records) { $0.recordType ?? "" }
 
+        for (recordTypeString, typeRecords) in grouped {
+            guard let type = RecordType.from(string: recordTypeString) else { continue }
+
+            // Find the most recently added record for this type
+            let mostRecent = typeRecords.max { record1, record2 in
+                let date1 = record1.dateAdded ?? record1.timestamp ?? Date.distantPast
+                let date2 = record2.dateAdded ?? record2.timestamp ?? Date.distantPast
+                return date1 < date2
+            }
+
+            guard let record = mostRecent else { continue }
             let value = record.value
 
             switch type {
             case .north:
-                if !compareExtremes || result.maxNorth == nil || value > result.maxNorth! {
-                    result.maxNorth = value
-                }
+                result.maxNorth = value
             case .south:
-                if !compareExtremes || result.maxSouth == nil || value < result.maxSouth! {
-                    result.maxSouth = value
-                }
+                result.maxSouth = value
             case .east:
-                if !compareExtremes || result.maxEast == nil || value > result.maxEast! {
-                    result.maxEast = value
-                }
+                result.maxEast = value
             case .west:
-                if !compareExtremes || result.maxWest == nil || value < result.maxWest! {
-                    result.maxWest = value
-                }
+                result.maxWest = value
             case .up:
-                if !compareExtremes || result.maxUp == nil || value > result.maxUp! {
-                    result.maxUp = value
-                }
+                result.maxUp = value
             case .fromHome:
-                if !compareExtremes || result.maxDistanceFromHome == nil || value > result.maxDistanceFromHome! {
-                    result.maxDistanceFromHome = value
-                }
+                result.maxDistanceFromHome = value
+            case .state, .country, .continent:
+                // Region records don't have extreme values to extract
+                break
             }
         }
 
@@ -1372,7 +1506,7 @@ struct MonthlyAggregate: Identifiable {
     }
 }
 
-/// Aggregate of yearly extreme values (for "All Years" charts)
+/// Aggregate of yearly extreme values (for "Lifetime" charts)
 struct YearlyAggregate: Identifiable {
     let id = UUID()
     let year: Int

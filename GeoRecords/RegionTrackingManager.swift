@@ -15,8 +15,17 @@ struct DiscoveredRegion: Identifiable {
     let continent: Continent?
     var photoAssets: [PHAsset]
     var confirmed: Bool = true  // Default to selected
+    var selectedPhotoIndex: Int = 0  // Index of photo selected in carousel
 
     var photoCount: Int { photoAssets.count }
+
+    /// Get the currently selected photo asset
+    var selectedAsset: PHAsset? {
+        guard selectedPhotoIndex >= 0 && selectedPhotoIndex < photoAssets.count else {
+            return photoAssets.first
+        }
+        return photoAssets[selectedPhotoIndex]
+    }
 }
 
 // MARK: - Region Tracking Manager
@@ -29,8 +38,9 @@ class RegionTrackingManager: ObservableObject {
 
     // MARK: - Published Properties
 
-    @Published var visitedStates: [VisitedRegion] = []
-    @Published var visitedCountries: [VisitedRegion] = []
+    @Published var visitedStates: [RecordDetail] = []
+    @Published var visitedCountries: [RecordDetail] = []
+    @Published var visitedContinents: [RecordDetail] = []
     @Published var isScanning: Bool = false
     @Published var scanProgress: Double = 0
 
@@ -78,7 +88,9 @@ class RegionTrackingManager: ObservableObject {
             code: regionInfo.code,
             name: regionInfo.name,
             type: regionInfo.type,
-            date: date
+            date: date,
+            coordinate: coordinate,
+            altitude: alt
         )
 
         debugLog("📍 RegionTrackingManager: Recorded visit to \(regionInfo.name) via \(source.rawValue)")
@@ -88,14 +100,27 @@ class RegionTrackingManager: ObservableObject {
     /// - Parameter regions: The confirmed DiscoveredRegion objects
     func recordConfirmedRegions(_ regions: [DiscoveredRegion]) {
         for region in regions where region.confirmed {
-            // Get earliest photo date as the visit date
-            let visitDates = region.photoAssets.compactMap { $0.creationDate }
-            for date in visitDates {
+            // Use the photo selected by the user in the carousel
+            if let selectedAsset = region.selectedAsset,
+               let location = selectedAsset.location,
+               let date = selectedAsset.creationDate {
+                // Get photo identifiers
+                let localId = selectedAsset.localIdentifier
+                let cloudId = PHPhotoLibrary.cloudIdentifier(for: selectedAsset)
+
+                debugLog("📸 Recording region \(region.regionName) with photo localId: \(localId), cloudId: \(cloudId ?? "nil")")
+
                 addVisitToRegion(
                     code: region.regionCode,
                     name: region.regionName,
                     type: region.regionType,
-                    date: date
+                    date: date,
+                    coordinate: location.coordinate,
+                    altitude: location.altitude,
+                    photoAssetIdentifier: localId,
+                    photoCloudIdentifier: cloudId,
+                    suppressNotifications: true,  // Don't spam during photo scan
+                    suppressPhotoPrompts: true    // Already came from photos
                 )
             }
         }
@@ -173,13 +198,12 @@ class RegionTrackingManager: ObservableObject {
         saveContext()
     }
 
-    /// Get visited continents (derived from visited countries)
+    /// Get visited continents (derived from continent records)
     func getVisitedContinents() -> Set<Continent> {
         var continents = Set<Continent>()
 
-        for country in visitedCountries {
-            if let continentString = getContinentForCountry(code: country.regionCode ?? ""),
-               let continent = Continent(rawValue: continentString) {
+        for continentRecord in visitedContinents {
+            if let continent = Continent(rawValue: continentRecord.locationName ?? "") {
                 continents.insert(continent)
             }
         }
@@ -187,35 +211,100 @@ class RegionTrackingManager: ObservableObject {
         return continents
     }
 
-    /// Reload visited regions from Core Data
+    /// Reload visited regions from Core Data (RecordHistoryEntry)
     func loadVisitedRegions() {
-        let request: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
+        // Query for state records
+        let stateRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        stateRequest.predicate = NSPredicate(format: "recordType == %@", RecordType.state.rawValue)
+        stateRequest.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: true)]
+
+        // Query for country records
+        let countryRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        countryRequest.predicate = NSPredicate(format: "recordType == %@", RecordType.country.rawValue)
+        countryRequest.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: true)]
+
+        // Query for continent records
+        let continentRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        continentRequest.predicate = NSPredicate(format: "recordType == %@", RecordType.continent.rawValue)
+        continentRequest.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: true)]
 
         do {
-            let results = try context.fetch(request)
+            let stateEntries = try context.fetch(stateRequest)
+            let countryEntries = try context.fetch(countryRequest)
+            let continentEntries = try context.fetch(continentRequest)
 
-            // Clean up any regions with invalid codes (e.g., "-99" from bad GeoJSON data)
-            cleanupInvalidRegionCodes(results)
+            // Migrate any entries missing regionCode
+            migrateRegionCodes(stateEntries: stateEntries, countryEntries: countryEntries, continentEntries: continentEntries)
 
-            // Deduplicate regions with same code
-            deduplicateRegions()
+            // Convert to RecordDetail and deduplicate by regionCode
+            // (iCloud sync can create duplicates that bypass the addVisitToRegion check)
+            visitedStates = deduplicateByRegionCode(stateEntries.compactMap { RecordDetail(from: $0) })
+            visitedCountries = deduplicateByRegionCode(countryEntries.compactMap { RecordDetail(from: $0) })
+            visitedContinents = deduplicateByRegionCode(continentEntries.compactMap { RecordDetail(from: $0) })
 
-            // Migrate: Add US country if US states exist but US country doesn't
-            migrateUSCountryIfNeeded()
+            // Count only the 50 actual states (exclude DC and territories) for the "X of 50" display
+            let nonStateCodes = Set(["DC", "AS", "GU", "MP", "PR", "VI", "US-DC", "US-AS", "US-GU", "US-MP", "US-PR", "US-VI"])
+            stateCount = visitedStates.filter { state in
+                guard let code = state.regionCode else { return false }
+                return !nonStateCodes.contains(code)
+            }.count
 
-            // Re-fetch after cleanup
-            let cleanedResults = try context.fetch(request)
+            // Count only sovereign countries (exclude territories) for the "X of 195" display
+            // Territories still appear as cards but don't count toward the total
+            countryCount = visitedCountries.filter { country in
+                guard let code = country.regionCode else { return true }
+                return !RegionLookupService.isTerritory(code)
+            }.count
+            continentCount = visitedContinents.count
 
-            visitedStates = cleanedResults.filter { $0.regionType == RegionType.state.rawValue }
-            visitedCountries = cleanedResults.filter { $0.regionType == RegionType.country.rawValue }
-
-            stateCount = visitedStates.count
-            countryCount = visitedCountries.count
-            continentCount = getVisitedContinents().count
-
-            debugLog("📍 RegionTrackingManager: Loaded \(stateCount) states, \(countryCount) countries, \(continentCount) continents")
+            let territoriesCount = visitedStates.count - stateCount
+            debugLog("📍 RegionTrackingManager: Loaded \(stateCount) states + \(territoriesCount) DC/territories, \(countryCount) countries, \(continentCount) continents")
         } catch {
             debugLog("⚠️ RegionTrackingManager: Failed to load visited regions: \(error.localizedDescription)")
+        }
+    }
+
+    /// Migrate existing records to populate missing regionCode fields
+    private func migrateRegionCodes(stateEntries: [RecordHistoryEntry], countryEntries: [RecordHistoryEntry], continentEntries: [RecordHistoryEntry]) {
+        var needsSave = false
+        let lookupService = RegionLookupService.shared
+
+        // Migrate state entries
+        for entry in stateEntries where entry.regionCode == nil {
+            if let locationName = entry.locationName,
+               let stateCode = lookupService.stateCodeForName(locationName) {
+                entry.regionCode = stateCode
+                needsSave = true
+                debugLog("✅ Migrated state '\(locationName)' with code '\(stateCode)'")
+            } else {
+                debugLog("⚠️ Could not find code for state: \(entry.locationName ?? "unknown")")
+            }
+        }
+
+        // Migrate country entries
+        for entry in countryEntries where entry.regionCode == nil {
+            if let locationName = entry.locationName,
+               let countryCode = lookupService.countryCodeForName(locationName) {
+                entry.regionCode = countryCode
+                needsSave = true
+                debugLog("✅ Migrated country '\(locationName)' with code '\(countryCode)'")
+            } else {
+                debugLog("⚠️ Could not find code for country: \(entry.locationName ?? "unknown")")
+            }
+        }
+
+        // Migrate continent entries (continent name is the "code")
+        for entry in continentEntries where entry.regionCode == nil {
+            if let locationName = entry.locationName {
+                entry.regionCode = locationName  // For continents, name is the identifier
+                needsSave = true
+                debugLog("✅ Migrated continent '\(locationName)'")
+            }
+        }
+
+        if needsSave {
+            saveContext()
+            debugLog("✅ Region code migration complete")
         }
     }
 
@@ -406,51 +495,214 @@ class RegionTrackingManager: ObservableObject {
 
     // MARK: - Private Methods
 
-    private func addVisitToRegion(code: String, name: String, type: RegionType, date: Date) {
-        // Find existing region or create new one
-        let request: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
-        request.predicate = NSPredicate(format: "regionCode == %@", code)
+    private func addVisitToRegion(code: String, name: String, type: RegionType, date: Date, coordinate: CLLocationCoordinate2D, altitude: Double = 0, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, suppressNotifications: Bool = false, suppressPhotoPrompts: Bool = false) {
+        // Determine record type
+        let recordTypeString: String
+        switch type {
+        case .state:
+            recordTypeString = RecordType.state.rawValue
+        case .country:
+            recordTypeString = RecordType.country.rawValue
+        }
+
+        // Check if we already have a record for this region
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "recordType == %@ AND regionCode == %@", recordTypeString, code)
         request.fetchLimit = 1
 
-        let region: VisitedRegion
-        let isNewRegion: Bool
-        if let existing = try? context.fetch(request).first {
-            region = existing
-            isNewRegion = false
-        } else {
-            region = VisitedRegion(context: context)
-            region.regionCode = code
-            region.regionName = name
-            region.regionType = type.rawValue
-            region.visitDates = NSArray()
-            isNewRegion = true
+        if let existingEntry = try? context.fetch(request).first {
+            // Already have a record for this region
+            var didUpdate = false
+
+            // Update photo identifiers if not present
+            if photoAssetIdentifier != nil && existingEntry.photoAssetIdentifier == nil {
+                existingEntry.photoAssetIdentifier = photoAssetIdentifier
+                existingEntry.photoCloudIdentifier = photoCloudIdentifier
+                didUpdate = true
+                debugLog("📸 Updated existing region record '\(name)' with photo identifiers")
+            }
+
+            // Update timestamp if this photo is older (earlier first visit)
+            if let existingTimestamp = existingEntry.timestamp, date < existingTimestamp {
+                existingEntry.timestamp = date
+                existingEntry.value = date.timeIntervalSince1970
+                didUpdate = true
+                debugLog("📅 Updated existing region record '\(name)' with earlier date: \(date)")
+            }
+
+            if didUpdate {
+                saveContext()
+                loadVisitedRegions()  // Reload to update UI
+            }
+            return
         }
 
-        // Add date if not already present (dedupe by calendar day)
-        var dates = (region.visitDates as? [Date]) ?? []
-        let calendar = Calendar.current
-
-        let alreadyHasDate = dates.contains { existingDate in
-            calendar.isDate(existingDate, inSameDayAs: date)
+        // Check if this is the home region - skip if it is
+        if let homeCoord = SettingsManager.shared.homeCoordinate {
+            if let homeRegion = RegionLookupService.shared.region(for: homeCoord) {
+                if homeRegion.code == code {
+                    debugLog("📍 RegionTrackingManager: Skipping home region \(name)")
+                    return
+                }
+            }
         }
 
-        if !alreadyHasDate {
-            dates.append(date)
-            dates.sort()
-            region.visitDates = dates as NSArray
-        }
+        // Create new region record
+        let detail = RecordDetail(
+            value: date.timeIntervalSince1970,  // Store timestamp as value
+            timestamp: date,
+            coordinate: coordinate,
+            altitude: altitude,
+            locationName: name,
+            recordType: recordTypeString,
+            timeFrame: .allTime,  // Region records are always lifetime
+            photoAssetIdentifier: photoAssetIdentifier,
+            photoCloudIdentifier: photoCloudIdentifier,
+            notes: nil,
+            dateAdded: Date(),
+            regionCode: code
+        )
+
+        let newEntry = RecordHistoryEntry(context: context)
+        newEntry.id = detail.id
+        newEntry.recordType = detail.recordType
+        newEntry.timeFrame = detail.timeFrame.rawValue
+        newEntry.value = detail.value
+        newEntry.timestamp = detail.timestamp
+        newEntry.latitude = detail.coordinate.latitude
+        newEntry.longitude = detail.coordinate.longitude
+        newEntry.altitude = detail.altitude
+        newEntry.locationName = detail.locationName
+        newEntry.regionCode = code  // Store region code
+        newEntry.photoAssetIdentifier = detail.photoAssetIdentifier
+        newEntry.photoCloudIdentifier = detail.photoCloudIdentifier
+        newEntry.notes = detail.notes
+        newEntry.dateAdded = detail.dateAdded
 
         saveContext()
 
-        // Send notification if this is a new region
-        if isNewRegion && SettingsManager.shared.notifyOnNewRegion {
+        debugLog("📍 RegionTrackingManager: Created new region record for \(name) (\(recordTypeString))")
+
+        // Send notification (unless suppressed)
+        if !suppressNotifications && SettingsManager.shared.notifyOnNewRegion {
             sendNewRegionNotification(name: name, type: type)
         }
 
-        // If this is a US state, also record a visit to the US country
-        if type == .state && code.hasPrefix("US-") {
-            addVisitToRegion(code: "US", name: "United States", type: .country, date: date)
+        // Prompt for photo (unless suppressed)
+        if !suppressPhotoPrompts && SettingsManager.shared.photoPromptsEnabled {
+            RecordManager.shared.promptForPhoto(recordType: recordTypeString, detail: detail)
         }
+
+        // If this is a US state, also record US country (propagate suppression flags and photo identifiers)
+        if type == .state && code.hasPrefix("US-") {
+            addVisitToRegion(code: "US", name: "United States", type: .country, date: date, coordinate: coordinate, altitude: altitude, photoAssetIdentifier: photoAssetIdentifier, photoCloudIdentifier: photoCloudIdentifier, suppressNotifications: suppressNotifications, suppressPhotoPrompts: suppressPhotoPrompts)
+        }
+
+        // If this is a country, also record the continent (propagate suppression flags and photo identifiers)
+        if type == .country {
+            if let continent = getContinentForCountry(code: code) {
+                addContinentVisit(continent: continent, date: date, coordinate: coordinate, altitude: altitude, photoAssetIdentifier: photoAssetIdentifier, photoCloudIdentifier: photoCloudIdentifier, suppressNotifications: suppressNotifications, suppressPhotoPrompts: suppressPhotoPrompts)
+            }
+        }
+
+        // Reload to update UI
+        loadVisitedRegions()
+    }
+
+    private func addContinentVisit(continent: String, date: Date, coordinate: CLLocationCoordinate2D, altitude: Double, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, suppressNotifications: Bool = false, suppressPhotoPrompts: Bool = false) {
+        let recordTypeString = RecordType.continent.rawValue
+
+        // Check if we already have a record for this continent
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "recordType == %@ AND regionCode == %@", recordTypeString, continent)
+        request.fetchLimit = 1
+
+        if let existingEntry = try? context.fetch(request).first {
+            // Already have a record for this continent
+            var didUpdate = false
+
+            // Update photo identifiers if not present
+            if photoAssetIdentifier != nil && existingEntry.photoAssetIdentifier == nil {
+                existingEntry.photoAssetIdentifier = photoAssetIdentifier
+                existingEntry.photoCloudIdentifier = photoCloudIdentifier
+                didUpdate = true
+                debugLog("📸 Updated existing continent record '\(continent)' with photo identifiers")
+            }
+
+            // Update timestamp if this photo is older (earlier first visit)
+            if let existingTimestamp = existingEntry.timestamp, date < existingTimestamp {
+                existingEntry.timestamp = date
+                existingEntry.value = date.timeIntervalSince1970
+                didUpdate = true
+                debugLog("📅 Updated existing continent record '\(continent)' with earlier date: \(date)")
+            }
+
+            if didUpdate {
+                saveContext()
+                loadVisitedRegions()  // Reload to update UI
+            }
+            return
+        }
+
+        // Check if this is the home continent - skip if it is
+        if let homeCoord = SettingsManager.shared.homeCoordinate {
+            if let homeRegion = RegionLookupService.shared.region(for: homeCoord) {
+                if let homeContinentString = getContinentForCountry(code: homeRegion.code),
+                   homeContinentString == continent {
+                    debugLog("📍 RegionTrackingManager: Skipping home continent \(continent)")
+                    return
+                }
+            }
+        }
+
+        // Create new continent record
+        let detail = RecordDetail(
+            value: date.timeIntervalSince1970,
+            timestamp: date,
+            coordinate: coordinate,
+            altitude: altitude,
+            locationName: continent,
+            recordType: recordTypeString,
+            timeFrame: .allTime,
+            photoAssetIdentifier: photoAssetIdentifier,
+            photoCloudIdentifier: photoCloudIdentifier,
+            notes: nil,
+            dateAdded: Date(),
+            regionCode: continent
+        )
+
+        let newEntry = RecordHistoryEntry(context: context)
+        newEntry.id = detail.id
+        newEntry.recordType = detail.recordType
+        newEntry.timeFrame = detail.timeFrame.rawValue
+        newEntry.value = detail.value
+        newEntry.timestamp = detail.timestamp
+        newEntry.latitude = detail.coordinate.latitude
+        newEntry.longitude = detail.coordinate.longitude
+        newEntry.altitude = detail.altitude
+        newEntry.locationName = detail.locationName
+        newEntry.regionCode = continent  // Store continent name as region code
+        newEntry.photoAssetIdentifier = detail.photoAssetIdentifier
+        newEntry.photoCloudIdentifier = detail.photoCloudIdentifier
+        newEntry.notes = detail.notes
+        newEntry.dateAdded = detail.dateAdded
+
+        saveContext()
+
+        debugLog("📍 RegionTrackingManager: Created new continent record for \(continent)")
+
+        // Send notification (unless suppressed)
+        if !suppressNotifications && SettingsManager.shared.notifyOnNewRegion {
+            sendNewContinentNotification(name: continent)
+        }
+
+        // Prompt for photo (unless suppressed)
+        if !suppressPhotoPrompts && SettingsManager.shared.photoPromptsEnabled {
+            RecordManager.shared.promptForPhoto(recordType: recordTypeString, detail: detail)
+        }
+
+        // Reload to update UI
+        loadVisitedRegions()
     }
 
     private func saveContext() {
@@ -460,6 +712,43 @@ class RegionTrackingManager: ObservableObject {
         } catch {
             debugLog("⚠️ RegionTrackingManager: Failed to save context: \(error.localizedDescription)")
         }
+    }
+
+    /// Deduplicate records by regionCode (or locationName as fallback), keeping the one with the earliest timestamp
+    /// This handles duplicates that can be created by iCloud sync or code format changes (e.g., "CA" vs "US-CA")
+    private func deduplicateByRegionCode(_ records: [RecordDetail]) -> [RecordDetail] {
+        var seen: [String: RecordDetail] = [:]
+
+        for record in records {
+            // Use regionCode if available, otherwise fall back to locationName
+            var key = record.regionCode ?? record.locationName ?? record.id.uuidString
+
+            // Normalize US state codes: "CA" and "US-CA" should be treated as the same
+            // If it's a 2-letter code that matches a US state, normalize to US-XX format
+            if key.count == 2 && !key.hasPrefix("US-") {
+                let usStateCodes = Set(["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+                                        "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+                                        "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+                                        "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+                                        "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+                                        "DC", "AS", "GU", "MP", "PR", "VI"])
+                if usStateCodes.contains(key) {
+                    key = "US-\(key)"
+                }
+            }
+
+            if let existing = seen[key] {
+                // Keep the one with the earlier timestamp (first visit)
+                if record.timestamp < existing.timestamp {
+                    seen[key] = record
+                }
+            } else {
+                seen[key] = record
+            }
+        }
+
+        // Return sorted by timestamp (earliest first)
+        return seen.values.sorted { $0.timestamp < $1.timestamp }
     }
 
     /// Send a notification when entering a new region
@@ -498,6 +787,38 @@ class RegionTrackingManager: ObservableObject {
                 debugLog("📍 Sent new region notification for \(name)")
             } catch {
                 debugLog("❌ Failed to send new region notification: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Send a notification when entering a new continent
+    private func sendNewContinentNotification(name: String) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+
+            guard settings.authorizationStatus == .authorized else {
+                debugLog("⚠️ Cannot send new continent notification - authorization status: \(settings.authorizationStatus.rawValue)")
+                return
+            }
+
+            let content = UNMutableNotificationContent()
+            content.title = "New Continent Visited!"
+            content.body = "Welcome to \(name)"
+            content.sound = .default
+            content.categoryIdentifier = "NEW_REGION"
+
+            let request = UNNotificationRequest(
+                identifier: "new-continent-\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            )
+
+            do {
+                try await center.add(request)
+                debugLog("📍 Sent new continent notification for \(name)")
+            } catch {
+                debugLog("❌ Failed to send new continent notification: \(error.localizedDescription)")
             }
         }
     }

@@ -79,6 +79,9 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     /// Cached authorization status to avoid blocking main thread
     private var cachedAuthorizationStatus: CLAuthorizationStatus?
 
+    /// Current location processing task - ensures sequential processing
+    private var locationProcessingTask: Task<Void, Never>?
+
     override init() {
         super.init()
         debugLog("LocationManager initialized")
@@ -143,7 +146,6 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         // All checks passed
         healthStatus = .healthy
-        healthBannerDismissed = false  // Reset dismissal when healthy
     }
 
     /// Async version that checks locationServicesEnabled on background thread
@@ -267,11 +269,16 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         debugLog("Received location: \(currentLocation.coordinate.latitude), \(currentLocation.coordinate.longitude), altitude: \(currentLocation.altitude)")
 
-        // Ensure all @Published property updates and MainActor calls happen on main thread
-        Task { @MainActor in
+        // Wait for previous location processing to complete, then start new one
+        // This ensures sequential processing and prevents data loss from task cancellation
+        let previousTask = locationProcessingTask
+        locationProcessingTask = Task { @MainActor in
+            // Wait for previous task to complete before processing new location
+            await previousTask?.value
+
+            // Process the location update
             self.currentLocation = currentLocation
             RecordManager.shared.updateRecords(with: currentLocation)
-            // Smart Notifications retired - removed call to SmartNotificationManager
 
             // Track visited region (background location update - auto-confirmed, no user intervention)
             RegionTrackingManager.shared.recordVisit(

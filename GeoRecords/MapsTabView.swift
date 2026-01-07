@@ -26,181 +26,359 @@ struct MapsTabView: View {
                 .padding()
 
                 // Map content
-                Group {
-                    switch selectedMapType {
-                    case .states:
-                        StatesMapView()
-                    case .countries:
-                        CountriesMapView()
-                    case .continents:
-                        ContinentsMapView()
-                    }
+                switch selectedMapType {
+                case .states:
+                    StatesMapView()
+                case .countries:
+                    CountriesMapView()
+                case .continents:
+                    ContinentsMapView()
                 }
-                .animation(.easeInOut(duration: 0.2), value: selectedMapType)
             }
             .navigationTitle("Regions")
         }
     }
 }
 
-// MARK: - States Map View
+// MARK: - Visited Region Card Component
 
-/// Map showing visited US states
-struct StatesMapView: View {
-    @StateObject private var regionManager = RegionTrackingManager.shared
+struct VisitedRegionCard: View {
+    let detail: RecordDetail
+    @EnvironmentObject var settings: SettingsManager
 
-    /// All 50 states sorted alphabetically with visit info
-    private var allStatesWithVisitInfo: [(state: RegionInfo, visitDate: Date?, isVisited: Bool)] {
-        // Build dictionary of visited codes and their dates
-        var visitedCodes: [String: Date?] = [:]
-        for region in regionManager.visitedStates {
-            guard let code = region.regionCode else { continue }
-            // Mark as visited even if date is nil
-            let date = region.firstVisitDate
-            if let existingDate = visitedCodes[code] ?? nil, let newDate = date {
-                visitedCodes[code] = min(existingDate, newDate)
-            } else if visitedCodes[code] == nil {
-                visitedCodes[code] = date
+    private let sizing = CardSizing()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: sizing.cardSpacing) {
+            // Header with icon and region info
+            HStack(spacing: sizing.isCompact ? 8 : 12) {
+                Image(systemName: FormatUtils.iconForRecordType(detail.recordType))
+                    .font(sizing.isCompact ? .title3 : .title)
+                    .foregroundColor(FormatUtils.colorForRecordType(detail.recordType))
+                    .frame(width: sizing.iconSize, height: sizing.iconSize)
+                    .background(FormatUtils.colorForRecordType(detail.recordType).opacity(0.1))
+                    .cornerRadius(8)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(detail.recordType)
+                        .font(sizing.isCompact ? .caption : .headline)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    Text(detail.locationName ?? "Unknown")
+                        .font(sizing.isCompact ? .caption2 : .caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+            }
+
+            if !sizing.isCompact {
+                Divider()
+            }
+
+            // Main content with photo on the right
+            HStack(alignment: .top, spacing: sizing.isCompact ? 8 : 16) {
+                // Left side - region name and details
+                VStack(alignment: .leading, spacing: sizing.contentSpacing) {
+                    // Region name as the "value"
+                    VStack(alignment: .leading, spacing: sizing.isCompact ? 2 : 4) {
+                        if !sizing.isCompact {
+                            Text("Region")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        HStack(spacing: 6) {
+                            if let flag = flagEmoji(for: detail.regionCode, recordType: detail.recordType) {
+                                Text(flag)
+                                    .font(.system(size: sizing.isCompact ? 18 : 24))
+                            }
+                            Text(detail.locationName ?? "Unknown")
+                                .font(.system(size: sizing.isCompact ? 20 : 28, weight: .bold, design: .default))
+                                .foregroundColor(FormatUtils.colorForRecordType(detail.recordType))
+                                .minimumScaleFactor(0.7)
+                                .lineLimit(2)
+                        }
+                    }
+
+                    // First visit date
+                    if !sizing.isCompact {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("First Visit")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(detail.timestamp, style: .date)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                // Right side - photo thumbnail
+                if detail.photoAssetIdentifier != nil || detail.photoData != nil {
+                    RecordPhotoThumbnail(
+                        recordId: detail.id,
+                        photoAssetIdentifier: detail.photoAssetIdentifier,
+                        photoCloudIdentifier: detail.photoCloudIdentifier,
+                        photoData: detail.photoData,
+                        timestamp: detail.timestamp,
+                        coordinate: detail.coordinate,
+                        sizing: sizing
+                    )
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(sizing.cardPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: sizing.isCompact ? 16 : 20)
+                .fill(Color(UIColor.secondarySystemBackground))
+        )
+        .padding(.horizontal, sizing.horizontalPadding)
+        .onAppear {
+            if detail.photoAssetIdentifier != nil || detail.photoData != nil {
+                debugLog("📸 Region card '\(detail.locationName ?? "Unknown")' has photo - localId: \(detail.photoAssetIdentifier ?? "nil"), cloudId: \(detail.photoCloudIdentifier ?? "nil")")
+            } else {
+                debugLog("📸 Region card '\(detail.locationName ?? "Unknown")' has NO photo identifier")
+            }
+        }
+    }
+
+    // Helper to get flag emoji from region code (only for countries)
+    // For territories, returns the parent country's flag
+    private func flagEmoji(for regionCode: String?, recordType: String) -> String? {
+        guard let code = regionCode else { return nil }
+
+        // Only show flags for countries, not states or continents
+        guard recordType == RecordType.country.rawValue else { return nil }
+
+        // Get the flag code - for territories, this returns parent country code
+        guard let flagCode = RegionLookupService.flagCode(for: code) else { return nil }
+
+        // Convert ISO 2-letter code to flag emoji
+        // Flag emojis are created by combining regional indicator symbols
+        let uppercaseCode = flagCode.uppercased()
+        guard uppercaseCode.count == 2 else { return nil }
+
+        var flagString = ""
+        for scalar in uppercaseCode.unicodeScalars {
+            // Regional indicator symbols start at U+1F1E6 (A) through U+1F1FF (Z)
+            if let regionalIndicator = UnicodeScalar(127397 + scalar.value) {
+                flagString.append(String(regionalIndicator))
             }
         }
 
-        return RegionLookupService.shared.allUSStates
-            .sorted { $0.name < $1.name }
-            .map { state in
-                let isVisited = visitedCodes.keys.contains(state.code)
-                return (state: state, visitDate: visitedCodes[state.code] ?? nil, isVisited: isVisited)
-            }
+        return flagString.isEmpty ? nil : flagString
+    }
+}
+
+// MARK: - States Map View
+
+/// Shows visited US states as cards
+struct StatesMapView: View {
+    @StateObject private var regionManager = RegionTrackingManager.shared
+    @State private var currentCardIndex = 0
+    @State private var selectedDetail: RecordDetail?
+    @State private var navigateToDetail = false
+
+    // Sorted states alphabetically by name
+    private var sortedStates: [RecordDetail] {
+        regionManager.visitedStates.sorted { ($0.locationName ?? "") < ($1.locationName ?? "") }
+    }
+
+    // Current region to display on map
+    private var currentRegion: RecordDetail? {
+        guard !sortedStates.isEmpty,
+              currentCardIndex < sortedStates.count else {
+            return nil
+        }
+        return sortedStates[currentCardIndex]
+    }
+
+    // Map region for current card (center and span)
+    private var mapRegion: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
+        guard let region = currentRegion, let code = region.regionCode else {
+            let defaultRegion = MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 39.8283, longitude: -98.5795),
+                span: MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 10)
+            )
+            return (defaultRegion.center, defaultRegion.span)
+        }
+
+        let polygonArrays = RegionLookupService.shared.polygons(for: code)
+        let calculatedRegion = calculateMapRegion(
+            for: polygonArrays,
+            defaultRegion: MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 39.8283, longitude: -98.5795),
+                span: MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 10)
+            )
+        )
+        return (calculatedRegion.center, calculatedRegion.span)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Map
-            RegionMapView(
-                regionType: .state,
-                visitedRegions: regionManager.visitedStates,
-                centerCoordinate: CLLocationCoordinate2D(latitude: 39.8283, longitude: -98.5795),
-                span: MKCoordinateSpan(latitudeDelta: 45, longitudeDelta: 60)
-            )
-            .frame(maxWidth: .infinity)
+            // Map showing current state with overlaid stats
+            ZStack(alignment: .top) {
+                RegionMapView(
+                    regionType: .state,
+                    visitedRegions: sortedStates,
+                    currentRegion: currentRegion,
+                    centerCoordinate: mapRegion.center,
+                    span: mapRegion.span
+                )
+                .frame(maxWidth: .infinity)
 
-            // Stats header
-            HStack {
-                Image(systemName: "flag.fill")
-                    .foregroundColor(.orange)
-                Text("\(regionManager.stateCount) of 50 states visited")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                // Stats header overlaid on map
+                HStack {
+                    Image(systemName: "flag.fill")
+                        .foregroundColor(.orange)
+                    Text("\(regionManager.stateCount) of 50 states visited")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(UIColor.systemBackground).opacity(0.9))
+                .cornerRadius(8)
+                .padding(.top, 12)
             }
-            .padding(.vertical, 8)
 
-            // List of all states
-            List {
-                ForEach(allStatesWithVisitInfo, id: \.state.code) { item in
-                    HStack {
-                        Image(systemName: item.isVisited ? "checkmark.circle.fill" : "circle")
-                            .foregroundColor(item.isVisited ? .orange : .secondary.opacity(0.3))
-                            .font(.title3)
-
-                        Text(item.state.name)
-                            .font(.body)
-                            .foregroundColor(item.isVisited ? .primary : .secondary)
+            // Cards
+            if sortedStates.isEmpty {
+                Spacer()
+                EmptyRegionStateView(regionType: .state)
+                Spacer()
+            } else {
+                TabView(selection: $currentCardIndex) {
+                    ForEach(Array(sortedStates.enumerated()), id: \.element.id) { index, detail in
+                        VisitedRegionCard(detail: detail)
+                            .tag(index)
+                            .onTapGesture {
+                                selectedDetail = detail
+                                navigateToDetail = true
+                            }
                     }
-                    .padding(.vertical, 2)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .always))
+                .indexViewStyle(.page(backgroundDisplayMode: .never))
+                .contentMargins(0, for: .scrollContent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 280)
+                .padding(.vertical, 10)
+                .navigationDestination(isPresented: $navigateToDetail) {
+                    if let detail = selectedDetail {
+                        RecordDetailView(record: detail)
+                    }
                 }
             }
-            .listStyle(.plain)
-            .frame(height: 245)
         }
     }
 }
 
 // MARK: - Countries Map View
 
-/// Map showing visited countries
+/// Shows visited countries as cards
 struct CountriesMapView: View {
     @StateObject private var regionManager = RegionTrackingManager.shared
+    @State private var currentCardIndex = 0
+    @State private var selectedDetail: RecordDetail?
+    @State private var navigateToDetail = false
 
-    /// Countries grouped by continent
-    private var countriesByContinent: [(continent: String, countries: [VisitedRegion])] {
-        var grouped: [String: [VisitedRegion]] = [:]
-
-        for country in regionManager.visitedCountries {
-            let continentName = getContinentName(for: country.regionCode ?? "")
-            grouped[continentName, default: []].append(country)
-        }
-
-        // Sort continents alphabetically, then countries within each
-        return grouped.keys.sorted().map { continent in
-            let sortedCountries = grouped[continent]!.sorted { ($0.regionName ?? "") < ($1.regionName ?? "") }
-            return (continent: continent, countries: sortedCountries)
-        }
+    // Sorted countries alphabetically by name
+    private var sortedCountries: [RecordDetail] {
+        regionManager.visitedCountries.sorted { ($0.locationName ?? "") < ($1.locationName ?? "") }
     }
 
-    private func getContinentName(for countryCode: String) -> String {
-        for country in RegionLookupService.shared.allCountries {
-            if country.code == countryCode {
-                return country.continent?.rawValue ?? "Other"
-            }
+    // Current region to display on map
+    private var currentRegion: RecordDetail? {
+        guard !sortedCountries.isEmpty,
+              currentCardIndex < sortedCountries.count else {
+            return nil
         }
-        return "Other"
+        return sortedCountries[currentCardIndex]
+    }
+
+    // Map region for current card (center and span)
+    private var mapRegion: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
+        guard let region = currentRegion, let code = region.regionCode else {
+            let defaultRegion = MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
+                span: MKCoordinateSpan(latitudeDelta: 15, longitudeDelta: 20)
+            )
+            return (defaultRegion.center, defaultRegion.span)
+        }
+
+        let polygonArrays = RegionLookupService.shared.polygons(for: code)
+        let calculatedRegion = calculateMapRegion(
+            for: polygonArrays,
+            defaultRegion: MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
+                span: MKCoordinateSpan(latitudeDelta: 15, longitudeDelta: 20)
+            )
+        )
+        return (calculatedRegion.center, calculatedRegion.span)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Map
-            RegionMapView(
-                regionType: .country,
-                visitedRegions: regionManager.visitedCountries,
-                centerCoordinate: CLLocationCoordinate2D(latitude: 20, longitude: 0),
-                span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 180)
-            )
-            .frame(maxWidth: .infinity)
+            // Map showing current country with overlaid stats
+            ZStack(alignment: .top) {
+                RegionMapView(
+                    regionType: .country,
+                    visitedRegions: sortedCountries,
+                    currentRegion: currentRegion,
+                    centerCoordinate: mapRegion.center,
+                    span: mapRegion.span
+                )
+                .frame(maxWidth: .infinity)
 
-            // Stats header
-            HStack {
-                Image(systemName: "globe.americas.fill")
-                    .foregroundColor(.orange)
-                Text("\(regionManager.countryCount) of 195 countries visited")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.vertical, 8)
-
-            // List of visited countries grouped by continent
-            if regionManager.visitedCountries.isEmpty {
-                VStack(spacing: 12) {
-                    Spacer()
-                    Image(systemName: "globe")
-                        .font(.system(size: 40))
-                        .foregroundColor(.secondary.opacity(0.5))
-                    Text("No countries visited yet")
+                // Stats header overlaid on map
+                HStack {
+                    Image(systemName: "globe.americas.fill")
+                        .foregroundColor(.blue)
+                    Text("\(regionManager.countryCount) of 195 countries visited")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
-                    Spacer()
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 245)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(UIColor.systemBackground).opacity(0.9))
+                .cornerRadius(8)
+                .padding(.top, 12)
+            }
+
+            // Cards
+            if sortedCountries.isEmpty {
+                Spacer()
+                EmptyRegionStateView(regionType: .country)
+                Spacer()
             } else {
-                List {
-                    ForEach(countriesByContinent, id: \.continent) { group in
-                        Section(header: Text(group.continent)) {
-                            ForEach(group.countries, id: \.regionCode) { country in
-                                HStack {
-                                    Text(country.regionName ?? "Unknown")
-                                        .font(.body)
-                                    Spacer()
-                                    if let firstVisit = country.firstVisitDate {
-                                        Text(firstVisit, style: .date)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
+                TabView(selection: $currentCardIndex) {
+                    ForEach(Array(sortedCountries.enumerated()), id: \.element.id) { index, detail in
+                        VisitedRegionCard(detail: detail)
+                            .tag(index)
+                            .onTapGesture {
+                                selectedDetail = detail
+                                navigateToDetail = true
                             }
-                        }
                     }
                 }
-                .listStyle(.plain)
-                .frame(height: 245)
+                .tabViewStyle(.page(indexDisplayMode: .always))
+                .indexViewStyle(.page(backgroundDisplayMode: .never))
+                .contentMargins(0, for: .scrollContent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 280)
+                .padding(.vertical, 10)
+                .navigationDestination(isPresented: $navigateToDetail) {
+                    if let detail = selectedDetail {
+                        RecordDetailView(record: detail)
+                    }
+                }
             }
         }
     }
@@ -208,68 +386,110 @@ struct CountriesMapView: View {
 
 // MARK: - Continents Map View
 
-/// Map showing visited continents (derived from countries)
+/// Shows visited continents as cards
 struct ContinentsMapView: View {
     @StateObject private var regionManager = RegionTrackingManager.shared
+    @State private var currentCardIndex = 0
+    @State private var selectedDetail: RecordDetail?
+    @State private var navigateToDetail = false
 
-    private var visitedContinents: Set<Continent> {
-        regionManager.getVisitedContinents()
+    // Sorted continents alphabetically by name
+    private var sortedContinents: [RecordDetail] {
+        regionManager.visitedContinents.sorted { ($0.locationName ?? "") < ($1.locationName ?? "") }
     }
 
-    /// All continents with their visited country counts
-    private var continentStats: [(continent: Continent, visitedCount: Int, totalCount: Int, isVisited: Bool)] {
-        let allCountries = RegionLookupService.shared.allCountries
-        let visitedCodes = Set(regionManager.visitedCountries.compactMap { $0.regionCode })
+    // Current region to display on map
+    private var currentRegion: RecordDetail? {
+        guard !sortedContinents.isEmpty,
+              currentCardIndex < sortedContinents.count else {
+            return nil
+        }
+        return sortedContinents[currentCardIndex]
+    }
 
-        return Continent.allCases.map { continent in
-            let countriesInContinent = allCountries.filter { $0.continent == continent }
-            let visitedInContinent = countriesInContinent.filter { visitedCodes.contains($0.code) }
-            return (
-                continent: continent,
-                visitedCount: visitedInContinent.count,
-                totalCount: countriesInContinent.count,
-                isVisited: visitedInContinent.count > 0
+    // Map region for current card (center and span based on continent bounds)
+    private var mapRegion: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
+        guard let region = currentRegion,
+              let continent = Continent(rawValue: region.locationName ?? "") else {
+            let defaultRegion = MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
+                span: MKCoordinateSpan(latitudeDelta: 60, longitudeDelta: 80)
             )
-        }.sorted { $0.continent.rawValue < $1.continent.rawValue }
+            return (defaultRegion.center, defaultRegion.span)
+        }
+
+        let polygonArrays = RegionLookupService.shared.continentPolygons(for: continent)
+        let calculatedRegion = calculateMapRegion(
+            for: polygonArrays,
+            padding: 1.3,  // 30% padding for continents
+            minSpan: 5.0,  // Larger minimum span for continents
+            defaultRegion: MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
+                span: MKCoordinateSpan(latitudeDelta: 60, longitudeDelta: 80)
+            )
+        )
+        return (calculatedRegion.center, calculatedRegion.span)
+    }
+
+    private var visitedContinentsSet: Set<Continent> {
+        Set(sortedContinents.compactMap { Continent(rawValue: $0.locationName ?? "") })
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Map showing visited continents
-            ContinentMapView(
-                visitedContinents: visitedContinents,
-                centerCoordinate: CLLocationCoordinate2D(latitude: 20, longitude: 0),
-                span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 180)
-            )
-            .frame(maxWidth: .infinity)
+            // Map showing current continent with overlaid stats
+            ZStack(alignment: .top) {
+                ContinentMapView(
+                    visitedContinents: visitedContinentsSet,
+                    currentContinent: currentRegion.flatMap { Continent(rawValue: $0.locationName ?? "") },
+                    centerCoordinate: mapRegion.center,
+                    span: mapRegion.span
+                )
+                .frame(maxWidth: .infinity)
 
-            // Stats header
-            HStack {
-                Image(systemName: "globe")
-                    .foregroundColor(.orange)
-                Text("\(visitedContinents.count) of 7 continents visited")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                // Stats header overlaid on map
+                HStack {
+                    Image(systemName: "globe")
+                        .foregroundColor(.purple)
+                    Text("\(regionManager.continentCount) of 7 continents visited")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(UIColor.systemBackground).opacity(0.9))
+                .cornerRadius(8)
+                .padding(.top, 12)
             }
-            .padding(.vertical, 8)
 
-            // List of all continents
-            List {
-                ForEach(continentStats, id: \.continent) { stat in
-                    HStack {
-                        Image(systemName: stat.isVisited ? "checkmark.circle.fill" : "circle")
-                            .foregroundColor(stat.isVisited ? .orange : .secondary.opacity(0.3))
-                            .font(.title3)
-
-                        Text(stat.continent.rawValue)
-                            .font(.body)
-                            .foregroundColor(stat.isVisited ? .primary : .secondary)
+            // Cards
+            if sortedContinents.isEmpty {
+                Spacer()
+                EmptyRegionStateView(forContinents: true)
+                Spacer()
+            } else {
+                TabView(selection: $currentCardIndex) {
+                    ForEach(Array(sortedContinents.enumerated()), id: \.element.id) { index, detail in
+                        VisitedRegionCard(detail: detail)
+                            .tag(index)
+                            .onTapGesture {
+                                selectedDetail = detail
+                                navigateToDetail = true
+                            }
                     }
-                    .padding(.vertical, 2)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .always))
+                .indexViewStyle(.page(backgroundDisplayMode: .never))
+                .contentMargins(0, for: .scrollContent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 280)
+                .padding(.vertical, 10)
+                .navigationDestination(isPresented: $navigateToDetail) {
+                    if let detail = selectedDetail {
+                        RecordDetailView(record: detail)
+                    }
                 }
             }
-            .listStyle(.plain)
-            .frame(height: 245)
         }
     }
 }
@@ -279,6 +499,7 @@ struct ContinentsMapView: View {
 /// Map that highlights visited continents using actual continent polygons
 struct ContinentMapView: UIViewRepresentable {
     let visitedContinents: Set<Continent>
+    let currentContinent: Continent?
     let centerCoordinate: CLLocationCoordinate2D
     let span: MKCoordinateSpan
 
@@ -290,6 +511,9 @@ struct ContinentMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
+        // Update coordinator with current continent
+        context.coordinator.currentContinent = currentContinent
+
         // Remove existing overlays
         mapView.removeOverlays(mapView.overlays)
 
@@ -306,6 +530,9 @@ struct ContinentMapView: UIViewRepresentable {
                 }
             }
         }
+
+        // Update map region to center on current coordinate
+        mapView.setRegion(MKCoordinateRegion(center: centerCoordinate, span: span), animated: true)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -314,6 +541,7 @@ struct ContinentMapView: UIViewRepresentable {
 
     class Coordinator: NSObject, MKMapViewDelegate {
         var parent: ContinentMapView
+        var currentContinent: Continent?
 
         init(_ parent: ContinentMapView) {
             self.parent = parent
@@ -322,9 +550,22 @@ struct ContinentMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let polygon = overlay as? MKPolygon {
                 let renderer = MKPolygonRenderer(polygon: polygon)
-                renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
-                renderer.strokeColor = UIColor.systemOrange
-                renderer.lineWidth = 1
+
+                // Check if this is the current continent
+                let isCurrent = polygon.title == currentContinent?.rawValue
+
+                if isCurrent {
+                    // Current continent - red fill and stroke
+                    renderer.fillColor = UIColor.systemRed.withAlphaComponent(0.4)
+                    renderer.strokeColor = UIColor.systemRed
+                    renderer.lineWidth = 2
+                } else {
+                    // Other visited continents - orange fill and stroke
+                    renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
+                    renderer.strokeColor = UIColor.systemOrange
+                    renderer.lineWidth = 1
+                }
+
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)
@@ -337,7 +578,8 @@ struct ContinentMapView: UIViewRepresentable {
 /// Reusable map view for displaying visited regions with polygon overlays
 struct RegionMapView: UIViewRepresentable {
     let regionType: RegionType
-    let visitedRegions: [VisitedRegion]
+    let visitedRegions: [RecordDetail]
+    let currentRegion: RecordDetail?
     let centerCoordinate: CLLocationCoordinate2D
     let span: MKCoordinateSpan
 
@@ -349,6 +591,9 @@ struct RegionMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
+        // Update coordinator with current region code
+        context.coordinator.currentRegionCode = currentRegion?.regionCode
+
         // Remove existing overlays
         mapView.removeOverlays(mapView.overlays)
 
@@ -365,21 +610,32 @@ struct RegionMapView: UIViewRepresentable {
         }
 
         // Add polygon overlays for visited regions
-        for region in visitedRegions {
-            guard let code = region.regionCode else { continue }
+        for detail in visitedRegions {
+            guard let code = detail.regionCode else {
+                debugLog("⚠️ RegionMapView: Missing regionCode for \(detail.locationName ?? "unknown")")
+                continue
+            }
 
             let polygonArrays = RegionLookupService.shared.polygons(for: code)
+            if polygonArrays.isEmpty {
+                debugLog("⚠️ RegionMapView: No polygons found for code '\(code)' (\(detail.locationName ?? "unknown"))")
+            } else {
+                debugLog("📍 RegionMapView: Adding \(polygonArrays.count) polygon groups for '\(code)' (\(detail.locationName ?? "unknown"))")
+            }
             for polygonGroup in polygonArrays {
                 for coordinates in polygonGroup {
                     guard coordinates.count > 2 else { continue }
                     var coords = coordinates
                     let polygon = MKPolygon(coordinates: &coords, count: coords.count)
-                    polygon.title = region.regionName
+                    polygon.title = detail.locationName
                     polygon.subtitle = code
                     mapView.addOverlay(polygon, level: .aboveLabels)
                 }
             }
         }
+
+        // Update map region to center on current coordinate
+        mapView.setRegion(MKCoordinateRegion(center: centerCoordinate, span: span), animated: true)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -388,6 +644,7 @@ struct RegionMapView: UIViewRepresentable {
 
     class Coordinator: NSObject, MKMapViewDelegate {
         var parent: RegionMapView
+        var currentRegionCode: String?
 
         init(_ parent: RegionMapView) {
             self.parent = parent
@@ -395,18 +652,30 @@ struct RegionMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let polyline = overlay as? MKPolyline {
-                // US outline - subtle gray so only visited states stand out in orange
+                // US outline - subtle gray so only visited states stand out
                 let renderer = MKPolylineRenderer(polyline: polyline)
                 renderer.strokeColor = UIColor.systemGray3
                 renderer.lineWidth = 0.5
                 return renderer
             }
             if let polygon = overlay as? MKPolygon {
-                // Visited states - orange fill and stroke
                 let renderer = MKPolygonRenderer(polygon: polygon)
-                renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
-                renderer.strokeColor = UIColor.systemOrange
-                renderer.lineWidth = 1
+
+                // Check if this is the current region
+                let isCurrent = polygon.subtitle == currentRegionCode
+
+                if isCurrent {
+                    // Current region - red fill and stroke
+                    renderer.fillColor = UIColor.systemRed.withAlphaComponent(0.4)
+                    renderer.strokeColor = UIColor.systemRed
+                    renderer.lineWidth = 2
+                } else {
+                    // Other visited regions - orange fill and stroke
+                    renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
+                    renderer.strokeColor = UIColor.systemOrange
+                    renderer.lineWidth = 1
+                }
+
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)

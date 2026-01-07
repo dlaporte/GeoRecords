@@ -206,23 +206,23 @@ class PersistenceController: ObservableObject {
     }
 
     /// Check if CloudKit has any actual records for this app
-    /// This queries the CloudKit zone directly to verify records exist, not just that the zone exists
+    /// This checks if the CloudKit zone exists, then waits for sync to complete and checks local data
     func hasExistingCloudDataThrowing() async throws -> Bool {
-        debugLog("☁️ Checking for iCloud data (querying for actual records)...")
+        debugLog("☁️ Checking for iCloud data...")
 
         // Check iCloud account status first
         let accountStatus = await checkCloudKitAccountStatus()
         debugLog("☁️ CloudKit account status: \(accountStatus)")
 
         guard accountStatus == "available" else {
-            debugLog("☁️ iCloud not available, skipping cloud check")
+            debugLog("☁️ iCloud not available (status: \(accountStatus)), skipping cloud check")
             return false
         }
 
         let ckContainer = CKContainer(identifier: "iCloud.com.georecords")
         let database = ckContainer.privateCloudDatabase
 
-        // First check if the Core Data zone exists
+        // Check if the Core Data zone exists
         let allZones: [CKRecordZone]
         do {
             allZones = try await database.allRecordZones()
@@ -233,56 +233,57 @@ class PersistenceController: ObservableObject {
 
         let dataZone = allZones.first { $0.zoneID.zoneName == "com.apple.coredata.cloudkit.zone" }
 
-        guard let zone = dataZone else {
+        guard dataZone != nil else {
             debugLog("☁️ No CloudKit zone found - this is a new user")
             return false
         }
 
-        debugLog("☁️ CloudKit zone exists, checking for actual records...")
-        let zoneID = zone.zoneID
+        debugLog("☁️ CloudKit zone exists - waiting for sync to complete...")
 
-        // Check for RecordHistoryEntry records (main app data)
-        do {
-            let recordQuery = CKQuery(recordType: "CD_RecordHistoryEntry", predicate: NSPredicate(value: true))
-            let recordResults = try await database.records(
-                matching: recordQuery,
-                inZoneWith: zoneID,
-                desiredKeys: nil,
-                resultsLimit: 1
-            )
+        // Zone exists, so user has synced data before
+        // Wait for CloudKit import to complete, then check local database
+        // This avoids the "recordName not queryable" error from direct CKQuery
+        let maxWaitSeconds = 15
+        let checkIntervalNanos: UInt64 = 1_000_000_000  // 1 second
 
-            if !recordResults.matchResults.isEmpty {
-                debugLog("☁️ Found RecordHistoryEntry in CloudKit - user has data to restore!")
+        for second in 1...maxWaitSeconds {
+            // Wait for sync
+            try? await Task.sleep(nanoseconds: checkIntervalNanos)
+
+            // Check if import has completed by looking at local data
+            let hasLocalData = await hasExistingCloudData()
+            if hasLocalData {
+                debugLog("☁️ Found data after \(second)s of sync - user has data to restore!")
                 return true
             }
-            debugLog("☁️ No RecordHistoryEntry records found in CloudKit")
-        } catch {
-            debugLog("☁️ Error querying RecordHistoryEntry: \(error.localizedDescription)")
-            // Continue to check other record types
-        }
 
-        // Check for VisitedRegion records (visited states/countries)
-        do {
-            let regionQuery = CKQuery(recordType: "CD_VisitedRegion", predicate: NSPredicate(value: true))
-            let regionResults = try await database.records(
-                matching: regionQuery,
-                inZoneWith: zoneID,
-                desiredKeys: nil,
-                resultsLimit: 1
-            )
-
-            if !regionResults.matchResults.isEmpty {
-                debugLog("☁️ Found VisitedRegion in CloudKit - user has data to restore!")
-                return true
+            // Also check if we're still syncing
+            let stillSyncing = await MainActor.run { self.isSyncing }
+            if !stillSyncing && second >= 3 {
+                // Sync finished but no data found - give it a couple more seconds just in case
+                debugLog("☁️ Sync appears complete after \(second)s, checking for data...")
+                try? await Task.sleep(nanoseconds: 2_000_000_000)  // Wait 2 more seconds
+                let finalCheck = await hasExistingCloudData()
+                if finalCheck {
+                    debugLog("☁️ Found data after final check - user has data to restore!")
+                    return true
+                }
+                debugLog("☁️ No data found after sync completed")
+                break
             }
-            debugLog("☁️ No VisitedRegion records found in CloudKit")
-        } catch {
-            debugLog("☁️ Error querying VisitedRegion: \(error.localizedDescription)")
-            // Continue
+
+            debugLog("☁️ Waiting for sync... (\(second)/\(maxWaitSeconds)s, syncing: \(stillSyncing))")
         }
 
-        // No meaningful data found in CloudKit
-        debugLog("☁️ CloudKit zone exists but no user data found - treating as new user")
+        // Zone exists but no data synced - could be empty zone from previous install
+        // Check one final time
+        let finalHasData = await hasExistingCloudData()
+        if finalHasData {
+            debugLog("☁️ Found data on final check!")
+            return true
+        }
+
+        debugLog("☁️ CloudKit zone exists but no data synced after \(maxWaitSeconds)s - treating as new user")
         return false
     }
 

@@ -40,7 +40,7 @@ enum ImportWizardStep: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .allTime: return "All-Time Records"
+        case .allTime: return "Lifetime Records"
         case .yearly: return "Yearly Records"
         case .monthly: return "Monthly Records"
         case .states: return "States Visited"
@@ -50,7 +50,7 @@ enum ImportWizardStep: Int, CaseIterable {
 
     var shortTitle: String {
         switch self {
-        case .allTime: return "All Years"
+        case .allTime: return "Lifetime"
         case .yearly: return "Past Years"
         case .monthly: return "This Year"
         case .states: return "States"
@@ -164,7 +164,9 @@ struct WizardSelection {
 
     /// Mark a selection as modified
     mutating func markModified(timeFrame: String, recordType: String) {
-        userModified.insert(Self.selectionKey(timeFrame: timeFrame, recordType: recordType))
+        let key = Self.selectionKey(timeFrame: timeFrame, recordType: recordType)
+        userModified.insert(key)
+        debugLog("📝 markModified: \(key)")
     }
 }
 
@@ -886,7 +888,17 @@ class PhotoLibraryScanner: ObservableObject {
                     photoCloudIdentifier: photoCloudIdentifier
                 )
 
-                // Always add to history (for stats and historical tracking)
+                // Delete any existing record for this type/timeframe before adding new one
+                // This ensures we don't accumulate duplicate records with different photos
+                await MainActor.run {
+                    RecordHistoryManager.shared.deleteExistingRecord(
+                        type: record.recordType,
+                        timeFrame: timeFrame,
+                        timestamp: record.timestamp
+                    )
+                }
+
+                // Add the new record to history
                 _ = await MainActor.run {
                     RecordHistoryManager.shared.addRecord(recordType: record.recordType, detail: detail)
                 }
@@ -912,8 +924,13 @@ class PhotoLibraryScanner: ObservableObject {
                 }
 
                 if shouldUpdateRecordManager {
-                    _ = await MainActor.run {
-                        RecordManager.shared.updateRecordIfBetter(recordType: record.recordType, detail: detail, timeFrame: timeFrame)
+                    await MainActor.run {
+                        // Use setRecord directly instead of updateRecordIfBetter
+                        // The user explicitly selected this photo in the wizard, so we must respect
+                        // their choice even if a "more extreme" record exists in memory.
+                        // The old record was already deleted from Core Data above.
+                        RecordManager.shared.setRecord(type: record.recordType, timeFrame: timeFrame, record: detail)
+                        debugLog("📸 Updated in-memory record: \(record.recordType) (\(timeFrame.rawValue)) photo=\(detail.photoAssetIdentifier ?? "nil")")
                     }
                 }
             }
@@ -935,6 +952,10 @@ class PhotoLibraryScanner: ObservableObject {
 
             // Also use the time-based suppression system as backup
             RecordManager.shared.suppressNotificationsAfterImport(durationSeconds: postImportNotificationSuppressionSeconds)
+
+            // Persist user's skip choices for future wizard runs
+            persistSkippedRecordChoices()
+
             completion(successCount)
 
             // Start background geocoding for any imported records missing location names
@@ -994,8 +1015,11 @@ class PhotoLibraryScanner: ObservableObject {
             }
         }
 
-        // Copy to wizard's allTimeCandidates
-        allTimeCandidates = filteredAllTimeData
+        // Copy to wizard's allTimeCandidates (sorted by extremeness with favorites in top 10 first)
+        allTimeCandidates = [:]
+        for (recordType, candidates) in filteredAllTimeData {
+            allTimeCandidates[recordType] = sortByExtremeness(candidates, recordType: recordType)
+        }
 
         // Build yearly buckets from filtered candidates
         var yearDict: [Int: [String: [DiscoveredRecord]]] = [:]
@@ -1048,55 +1072,63 @@ class PhotoLibraryScanner: ObservableObject {
         initializeDefaultSelections()
     }
 
-    /// Sort candidates by extremeness for a given record type
-    /// Favorites within threshold of the best value are prioritized to the front
+    /// Sort candidates by extremeness (most extreme first) with favorites in top 10 moved to front
+    /// Used for record candidates (N/S/E/W/Up/FromHome)
     private func sortByExtremeness(_ candidates: [DiscoveredRecord], recordType: String) -> [DiscoveredRecord] {
         guard let type = RecordType.from(string: recordType) else { return candidates }
 
-        // First, sort by extremeness
+        // Sort by extremeness (most extreme first)
         let sorted = candidates.sorted { c1, c2 in
             type.shouldReplace(newValue: c1.value, oldValue: c2.value)
         }
 
-        guard let bestValue = sorted.first?.value else { return sorted }
+        // Move favorites within top 10 to the very front
+        let top10 = Array(sorted.prefix(10))
+        let favoritesInTop10 = top10.filter { $0.photoAsset.isFavorite }
+        let nonFavoritesInTop10 = top10.filter { !$0.photoAsset.isFavorite }
+        let rest = Array(sorted.dropFirst(10))
 
-        // Get threshold for this record type
-        let threshold = getThresholdForFavorites(recordType: recordType)
-
-        // Partition into favorites-within-threshold and others
-        var favoritesInThreshold: [DiscoveredRecord] = []
-        var others: [DiscoveredRecord] = []
-
-        for candidate in sorted {
-            let isWithinThreshold = abs(candidate.value - bestValue) <= threshold
-            if candidate.photoAsset.isFavorite && isWithinThreshold {
-                favoritesInThreshold.append(candidate)
-            } else {
-                others.append(candidate)
-            }
-        }
-
-        // Return favorites first (maintaining their relative order), then others
-        return favoritesInThreshold + others
+        return favoritesInTop10 + nonFavoritesInTop10 + rest
     }
 
-    /// Get the threshold for prioritizing favorites for a given record type
-    private func getThresholdForFavorites(recordType: String) -> Double {
-        let settings = SettingsManager.shared
+    /// Sort PHAssets by date with favorites prioritized within each year
+    /// Order: oldest year first, favorites first within each year, then by date (oldest to newest)
+    /// Used for region photo assets
+    private func sortAssetsByDateWithFavoritesFirstByYear(_ assets: [PHAsset]) -> [PHAsset] {
+        let calendar = Calendar.current
 
-        switch recordType {
-        case RecordType.north.rawValue, RecordType.south.rawValue:
-            return settings.minLatitudeDelta
-        case RecordType.east.rawValue, RecordType.west.rawValue:
-            return settings.minLongitudeDelta
-        case RecordType.up.rawValue:
-            // 50 feet in meters
-            return 50.0 * 0.3048
-        case RecordType.fromHome.rawValue:
-            return settings.minDistanceDeltaMeters
-        default:
-            return 0
+        // Group assets by year
+        var byYear: [Int: [PHAsset]] = [:]
+        for asset in assets {
+            guard let date = asset.creationDate else {
+                byYear[0, default: []].append(asset)  // Unknown year goes to bucket 0
+                continue
+            }
+            let year = calendar.component(.year, from: date)
+            byYear[year, default: []].append(asset)
         }
+
+        // Sort years oldest to newest
+        let sortedYears = byYear.keys.sorted()
+
+        // Build result: for each year, favorites first (by date), then non-favorites (by date)
+        var result: [PHAsset] = []
+        for year in sortedYears {
+            guard let yearAssets = byYear[year] else { continue }
+
+            // Within each year: favorites first (by date), then non-favorites (by date)
+            let favorites = yearAssets
+                .filter { $0.isFavorite }
+                .sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
+            let nonFavorites = yearAssets
+                .filter { !$0.isFavorite }
+                .sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
+
+            result.append(contentsOf: favorites)
+            result.append(contentsOf: nonFavorites)
+        }
+
+        return result
     }
 
     /// Check if a candidate has valid location data (filters Null Island and unrealistic altitudes)
@@ -1130,15 +1162,33 @@ class PhotoLibraryScanner: ObservableObject {
         let currentYear = calendar.component(.year, from: Date())
         let currentMonth = calendar.component(.month, from: Date())
 
+        debugLog("🔍 initializeDefaultSelections: Starting with \(allTimeCandidates.count) allTime types, \(yearlyBuckets.count) yearly buckets, \(monthlyBuckets.count) monthly buckets")
+
         // All-time: try to match existing record photos, otherwise select index 0
+        // Respect previously skipped records
         for recordType in allTimeCandidates.keys {
             if let candidates = allTimeCandidates[recordType], !candidates.isEmpty {
+                let selKey = WizardSelection.selectionKey(timeFrame: "allTime", recordType: recordType)
+
+                // Check if this record was previously skipped by user
+                // Use candidates.count as skip index (matches UI's skipIndex convention)
+                if SettingsManager.shared.isWizardRecordSkipped(timeFrame: "allTime", recordType: recordType) {
+                    let skipIndex = candidates.count
+                    wizardSelections.allTime[recordType] = skipIndex
+                    wizardSelections.initialSelections[selKey] = skipIndex
+                    debugLog("🔍 AllTime \(recordType): Previously skipped by user (index=\(skipIndex))")
+                    continue
+                }
+
                 let existingRecord = RecordManager.shared.getRecord(type: recordType, timeFrame: .allTime)
                 let matchIndex = findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
                 wizardSelections.allTime[recordType] = matchIndex
 
+                if let existing = existingRecord {
+                    debugLog("🔍 AllTime \(recordType): existing photo=\(existing.photoAssetIdentifier ?? "nil"), matchIndex=\(matchIndex)")
+                }
+
                 // Track if record exists
-                let selKey = WizardSelection.selectionKey(timeFrame: "allTime", recordType: recordType)
                 if existingRecord != nil {
                     wizardSelections.existingRecords.insert(selKey)
                 }
@@ -1147,10 +1197,23 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         // Yearly: try to match existing record photos for each year
+        // Respect previously skipped records
         for bucket in yearlyBuckets {
             var yearSelections: [String: Int] = [:]
             for recordType in bucket.availableRecordTypes {
                 if let candidates = bucket.records[recordType], !candidates.isEmpty {
+                    let selKey = WizardSelection.selectionKey(timeFrame: "\(bucket.id)", recordType: recordType)
+
+                    // Check if this record was previously skipped by user
+                    // Use candidates.count as skip index (matches UI's skipIndex convention)
+                    if SettingsManager.shared.isWizardRecordSkipped(timeFrame: "\(bucket.id)", recordType: recordType) {
+                        let skipIndex = candidates.count
+                        yearSelections[recordType] = skipIndex
+                        wizardSelections.initialSelections[selKey] = skipIndex
+                        debugLog("🔍 Year \(bucket.id) \(recordType): Previously skipped by user (index=\(skipIndex))")
+                        continue
+                    }
+
                     // For current year, check RecordManager; for past years, check history
                     let existingRecord: RecordDetail?
                     let hasExistingRecord: Bool
@@ -1170,8 +1233,11 @@ class PhotoLibraryScanner: ObservableObject {
                     let matchIndex = findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
                     yearSelections[recordType] = matchIndex
 
+                    if let existing = existingRecord {
+                        debugLog("🔍 Year \(bucket.id) \(recordType): existing photo=\(existing.photoAssetIdentifier ?? "nil"), matchIndex=\(matchIndex), candidates=\(candidates.count)")
+                    }
+
                     // Track if record exists
-                    let selKey = WizardSelection.selectionKey(timeFrame: "\(bucket.id)", recordType: recordType)
                     if hasExistingRecord {
                         wizardSelections.existingRecords.insert(selKey)
                     }
@@ -1182,11 +1248,24 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         // Monthly: try to match existing record photos for each month
+        // Respect previously skipped records
         for bucket in monthlyBuckets {
             let key = WizardSelection.monthKey(year: bucket.year, month: bucket.id)
             var monthSelections: [String: Int] = [:]
             for recordType in bucket.availableRecordTypes {
                 if let candidates = bucket.records[recordType], !candidates.isEmpty {
+                    let selKey = WizardSelection.selectionKey(timeFrame: key, recordType: recordType)
+
+                    // Check if this record was previously skipped by user
+                    // Use candidates.count as skip index (matches UI's skipIndex convention)
+                    if SettingsManager.shared.isWizardRecordSkipped(timeFrame: key, recordType: recordType) {
+                        let skipIndex = candidates.count
+                        monthSelections[recordType] = skipIndex
+                        wizardSelections.initialSelections[selKey] = skipIndex
+                        debugLog("🔍 Month \(key) \(recordType): Previously skipped by user (index=\(skipIndex))")
+                        continue
+                    }
+
                     // For current month, check RecordManager; for past months, check history
                     let existingRecord: RecordDetail?
                     let hasExistingRecord: Bool
@@ -1207,8 +1286,11 @@ class PhotoLibraryScanner: ObservableObject {
                     let matchIndex = findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
                     monthSelections[recordType] = matchIndex
 
+                    if let existing = existingRecord {
+                        debugLog("🔍 Month \(key) \(recordType): existing photo=\(existing.photoAssetIdentifier ?? "nil"), matchIndex=\(matchIndex), candidates=\(candidates.count)")
+                    }
+
                     // Track if record exists
-                    let selKey = WizardSelection.selectionKey(timeFrame: key, recordType: recordType)
                     if hasExistingRecord {
                         wizardSelections.existingRecords.insert(selKey)
                     }
@@ -1217,12 +1299,17 @@ class PhotoLibraryScanner: ObservableObject {
             }
             wizardSelections.monthly[key] = monthSelections
         }
+
+        debugLog("🔍 initializeDefaultSelections: Done. AllTime selections=\(wizardSelections.allTime.count), Yearly=\(wizardSelections.yearly.count), Monthly=\(wizardSelections.monthly.count)")
     }
 
     /// Find the index of a candidate that matches an existing record's photo
     /// Returns 0 if no match found (default to most extreme)
     private func findMatchingCandidateIndex(candidates: [DiscoveredRecord], existingRecord: RecordDetail?) -> Int {
-        guard let existing = existingRecord else { return 0 }
+        guard let existing = existingRecord else {
+            debugLog("⚠️ findMatchingCandidateIndex: No existing record")
+            return 0
+        }
 
         // Try to match by photo asset identifier
         if let existingAssetId = existing.photoAssetIdentifier {
@@ -1231,6 +1318,9 @@ class PhotoLibraryScanner: ObservableObject {
                     return index
                 }
             }
+            debugLog("⚠️ findMatchingCandidateIndex: Photo \(existingAssetId) not found in \(candidates.count) candidates for \(existing.recordType)")
+        } else {
+            debugLog("⚠️ findMatchingCandidateIndex: No photoAssetIdentifier for \(existing.recordType)")
         }
 
         // Try to match by cloud identifier
@@ -1238,12 +1328,15 @@ class PhotoLibraryScanner: ObservableObject {
             for (index, candidate) in candidates.enumerated() {
                 let cloudId = PHPhotoLibrary.cloudIdentifier(for: candidate.photoAsset)
                 if cloudId == existingCloudId {
+                    debugLog("✅ findMatchingCandidateIndex: Found by cloud ID at index \(index)")
                     return index
                 }
             }
+            debugLog("⚠️ findMatchingCandidateIndex: Cloud ID \(existingCloudId) not found either")
         }
 
         // No match found, default to most extreme (index 0)
+        debugLog("⚠️ findMatchingCandidateIndex: Defaulting to index 0 for \(existing.recordType)")
         return 0
     }
 
@@ -1275,12 +1368,19 @@ class PhotoLibraryScanner: ObservableObject {
         confirmedRecords = []
         recordsToDelete = []
 
+        debugLog("📦 buildConfirmedRecordsFromSelections: Starting...")
+
         // All-time selections
         for (recordType, index) in wizardSelections.allTime {
-            guard let candidates = allTimeCandidates[recordType] else { continue }
+            guard let candidates = allTimeCandidates[recordType] else {
+                debugLog("📦 AllTime \(recordType): No candidates found")
+                continue
+            }
             let exists = wizardSelections.recordExists(timeFrame: "allTime", recordType: recordType)
             let modified = wizardSelections.isModified(timeFrame: "allTime", recordType: recordType)
             let isSkipped = index < 0 || index >= candidates.count
+
+            debugLog("📦 AllTime \(recordType): index=\(index), exists=\(exists), modified=\(modified), skipped=\(isSkipped), candidateCount=\(candidates.count)")
 
             if isSkipped {
                 // User chose to skip this record
@@ -1292,16 +1392,19 @@ class PhotoLibraryScanner: ObservableObject {
                         year: nil,
                         month: nil
                     ))
+                    debugLog("📦 AllTime \(recordType): Marked for deletion (skipped existing)")
                 }
                 // New record skipped = just don't import it
             } else if exists && !modified {
                 // Existing record not modified = skip re-import
+                debugLog("📦 AllTime \(recordType): SKIPPED (exists && !modified)")
                 continue
             } else {
                 // Either new record, or existing record that was modified
                 var record = candidates[index]
                 record.beatsTimeFrames = [.allTime]
                 confirmedRecords.append(record)
+                debugLog("📦 AllTime \(recordType): IMPORTING photo=\(record.photoAsset.localIdentifier), value=\(record.value)")
             }
         }
 
@@ -1315,6 +1418,11 @@ class PhotoLibraryScanner: ObservableObject {
                 let modified = wizardSelections.isModified(timeFrame: "\(year)", recordType: recordType)
                 let isSkipped = index < 0 || index >= candidates.count
 
+                // Only log years with actual selections that might be interesting
+                if modified || !exists || isSkipped {
+                    debugLog("📦 Year \(year) \(recordType): index=\(index), exists=\(exists), modified=\(modified), skipped=\(isSkipped)")
+                }
+
                 if isSkipped {
                     if exists {
                         recordsToDelete.append(RecordToDelete(
@@ -1323,13 +1431,16 @@ class PhotoLibraryScanner: ObservableObject {
                             year: year,
                             month: nil
                         ))
+                        debugLog("📦 Year \(year) \(recordType): Marked for deletion")
                     }
                 } else if exists && !modified {
+                    // Existing record not modified = skip re-import (no log to reduce noise)
                     continue
                 } else {
                     var record = candidates[index]
                     record.beatsTimeFrames = [.year]
                     confirmedRecords.append(record)
+                    debugLog("📦 Year \(year) \(recordType): IMPORTING photo=\(record.photoAsset.localIdentifier)")
                 }
             }
         }
@@ -1382,6 +1493,64 @@ class PhotoLibraryScanner: ObservableObject {
         currentWizardStep = .allTime
         isWizardMode = false
         recordsToDelete = []
+    }
+
+    /// Persist user's skip choices to SettingsManager for future wizard runs
+    private func persistSkippedRecordChoices() {
+        var skippedKeys: Set<String> = []
+        var importedKeys: Set<String> = []
+
+        // Check all-time selections
+        for (recordType, index) in wizardSelections.allTime {
+            let key = WizardSelection.selectionKey(timeFrame: "allTime", recordType: recordType)
+            if let candidates = allTimeCandidates[recordType] {
+                let isSkipped = index < 0 || index >= candidates.count
+                if isSkipped {
+                    skippedKeys.insert(key)
+                } else {
+                    importedKeys.insert(key)
+                }
+            }
+        }
+
+        // Check yearly selections
+        for (year, selections) in wizardSelections.yearly {
+            for (recordType, index) in selections {
+                let key = WizardSelection.selectionKey(timeFrame: "\(year)", recordType: recordType)
+                if let bucket = yearlyBuckets.first(where: { $0.id == year }),
+                   let candidates = bucket.records[recordType] {
+                    let isSkipped = index < 0 || index >= candidates.count
+                    if isSkipped {
+                        skippedKeys.insert(key)
+                    } else {
+                        importedKeys.insert(key)
+                    }
+                }
+            }
+        }
+
+        // Check monthly selections
+        for (monthKey, selections) in wizardSelections.monthly {
+            for (recordType, index) in selections {
+                let key = WizardSelection.selectionKey(timeFrame: monthKey, recordType: recordType)
+                let components = monthKey.split(separator: "-")
+                if components.count == 2,
+                   let month = Int(components[1]),
+                   let bucket = monthlyBuckets.first(where: { $0.id == month }),
+                   let candidates = bucket.records[recordType] {
+                    let isSkipped = index < 0 || index >= candidates.count
+                    if isSkipped {
+                        skippedKeys.insert(key)
+                    } else {
+                        importedKeys.insert(key)
+                    }
+                }
+            }
+        }
+
+        // Update settings
+        SettingsManager.shared.updateSkippedRecordsFromWizard(skippedKeys: skippedKeys, importedKeys: importedKeys)
+        debugLog("📦 Persisted skip choices: \(skippedKeys.count) skipped, \(importedKeys.count) imported")
     }
 
     // MARK: - Monthly Historical Records for Statistics
@@ -1489,15 +1658,32 @@ class PhotoLibraryScanner: ObservableObject {
         var countries: [DiscoveredRegion] = []
         var states: [DiscoveredRegion] = []
 
+        // Get existing region records for photo matching
+        let existingStates = RegionTrackingManager.shared.visitedStates
+        let existingCountries = RegionTrackingManager.shared.visitedCountries
+
         for (code, data) in regionPhotoMap {
-            let region = DiscoveredRegion(
+            // Sort photos by year, favorites first within each year, oldest to newest
+            let sortedAssets = sortAssetsByDateWithFavoritesFirstByYear(data.assets)
+
+            // Find index of existing photo if this region already exists
+            let selectedIndex = findExistingRegionPhotoIndex(
+                regionCode: code,
+                regionType: data.info.type,
+                sortedAssets: sortedAssets,
+                existingStates: existingStates,
+                existingCountries: existingCountries
+            )
+
+            var region = DiscoveredRegion(
                 regionCode: code,
                 regionName: data.info.name,
                 regionType: data.info.type,
                 continent: data.info.continent,
-                photoAssets: data.assets,
+                photoAssets: sortedAssets,
                 confirmed: true  // Default to selected
             )
+            region.selectedPhotoIndex = selectedIndex
 
             switch data.info.type {
             case .state:
@@ -1512,6 +1698,46 @@ class PhotoLibraryScanner: ObservableObject {
         discoveredStates = states.sorted { $0.photoCount > $1.photoCount }
 
         debugLog("📍 PhotoLibraryScanner: Discovered \(discoveredCountries.count) countries, \(discoveredStates.count) states")
+    }
+
+    /// Find the index of an existing region's photo in the sorted assets array
+    /// Returns 0 if no match found (default to first photo)
+    private func findExistingRegionPhotoIndex(
+        regionCode: String,
+        regionType: RegionType,
+        sortedAssets: [PHAsset],
+        existingStates: [RecordDetail],
+        existingCountries: [RecordDetail]
+    ) -> Int {
+        // Get the existing record for this region
+        let existingRecords = regionType == .state ? existingStates : existingCountries
+        guard let existing = existingRecords.first(where: { $0.regionCode == regionCode }) else {
+            return 0  // No existing record
+        }
+
+        // Try to match by photo asset identifier
+        if let existingAssetId = existing.photoAssetIdentifier {
+            for (index, asset) in sortedAssets.enumerated() {
+                if asset.localIdentifier == existingAssetId {
+                    debugLog("📍 Found existing photo match for \(regionCode) at index \(index)")
+                    return index
+                }
+            }
+        }
+
+        // Try to match by cloud identifier
+        if let existingCloudId = existing.photoCloudIdentifier {
+            for (index, asset) in sortedAssets.enumerated() {
+                let cloudId = PHPhotoLibrary.cloudIdentifier(for: asset)
+                if cloudId == existingCloudId {
+                    debugLog("📍 Found existing cloud ID match for \(regionCode) at index \(index)")
+                    return index
+                }
+            }
+        }
+
+        // No match found, default to first photo
+        return 0
     }
 
     /// Check if there are any discovered regions pending confirmation

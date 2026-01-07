@@ -146,19 +146,30 @@ private func getHomeCoordinate() -> CLLocationCoordinate2D? {
 /// Threshold for filtering out records at home (in meters)
 private let widgetAtHomeRadiusMeters: Double = 100.0
 
-/// Calculates the start date for a given time frame
-/// - Parameter timeFrame: The time frame to get the start date for
-/// - Returns: The start date for filtering records
-private func timeFrameStartDate(for timeFrame: WidgetTimeFrame) -> Date {
+/// Gets the timeFrame field values and date range for filtering records
+/// This matches the logic in the main app's RecordHistoryManager.getFurthestRecord()
+/// - Parameter timeFrame: The widget time frame selection
+/// - Returns: Tuple of (timeFrame field values to match, start date, end date)
+private func timeFrameFilter(for timeFrame: WidgetTimeFrame) -> (timeFrameValues: [String], startDate: Date, endDate: Date) {
     let calendar = Calendar.current
     let now = Date()
+
     switch timeFrame {
-    case .allTime:
-        return Date.distantPast
-    case .year:
-        return calendar.dateInterval(of: .year, for: now)?.start ?? now
     case .month:
-        return calendar.dateInterval(of: .month, for: now)?.start ?? now
+        // Monthly records only, within current month
+        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
+        let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart) ?? now
+        return (["Monthly"], monthStart, monthEnd)
+
+    case .year:
+        // Yearly AND Monthly records within current year (Monthly is part of this year)
+        let yearStart = calendar.date(from: calendar.dateComponents([.year], from: now)) ?? now
+        let yearEnd = calendar.date(byAdding: .year, value: 1, to: yearStart) ?? now
+        return (["Yearly", "Monthly"], yearStart, yearEnd)
+
+    case .allTime:
+        // Lifetime records only (handles all historical variations)
+        return (lifetimeTimeFrameVariations, Date.distantPast, Date.distantFuture)
     }
 }
 
@@ -359,14 +370,19 @@ struct Provider: AppIntentTimelineProvider {
                 guard let entries = try context.fetch(request) as? [NSManagedObject] else { return }
 
                 let unitSystem = getUnitSystem()
-                let timeFrameStart = timeFrameStartDate(for: timeFrame)
+                let filter = timeFrameFilter(for: timeFrame)
                 let homeCoord = getHomeCoordinate()
                 let homeLocation: CLLocation? = homeCoord.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
 
-                // Filter entries by time frame and exclude at-home records
+                // Filter entries by timeFrame field AND timestamp range (matching main app logic)
                 let filteredEntries = entries.filter { entry in
+                    // Must have valid timeFrame field that matches our filter
+                    guard let entryTimeFrame = entry.value(forKey: "timeFrame") as? String else { return false }
+                    guard filter.timeFrameValues.contains(entryTimeFrame) else { return false }
+
+                    // Must be within date range
                     guard let timestamp = entry.value(forKey: "timestamp") as? Date else { return false }
-                    guard timestamp >= timeFrameStart else { return false }
+                    guard timestamp >= filter.startDate && timestamp < filter.endDate else { return false }
 
                     // Filter out records at home
                     if let home = homeLocation,
@@ -739,14 +755,19 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
                 guard let entries = try context.fetch(request) as? [NSManagedObject] else { return }
 
                 let unitSystem = getUnitSystem()
-                let timeFrameStart = timeFrameStartDate(for: timeFrame)
+                let filter = timeFrameFilter(for: timeFrame)
                 let homeCoord = getHomeCoordinate()
                 let homeLocation: CLLocation? = homeCoord.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
 
-                // Filter by time frame and exclude at-home records
+                // Filter by timeFrame field AND timestamp range (matching main app logic)
                 let filteredEntries = entries.filter { entry in
+                    // Must have valid timeFrame field that matches our filter
+                    guard let entryTimeFrame = entry.value(forKey: "timeFrame") as? String else { return false }
+                    guard filter.timeFrameValues.contains(entryTimeFrame) else { return false }
+
+                    // Must be within date range
                     guard let timestamp = entry.value(forKey: "timestamp") as? Date else { return false }
-                    guard timestamp >= timeFrameStart else { return false }
+                    guard timestamp >= filter.startDate && timestamp < filter.endDate else { return false }
 
                     // Filter out records at home
                     if let home = homeLocation,

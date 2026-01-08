@@ -213,6 +213,9 @@ class RegionTrackingManager: ObservableObject {
 
     /// Reload visited regions from Core Data (RecordHistoryEntry)
     func loadVisitedRegions() {
+        // First, ensure the home region exists (fixes previously skipped home regions)
+        migrateHomeRegionIfNeeded()
+
         // Query for state records
         let stateRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
         stateRequest.predicate = NSPredicate(format: "recordType == %@", RecordType.state.rawValue)
@@ -280,15 +283,15 @@ class RegionTrackingManager: ObservableObject {
             }
         }
 
-        // Migrate country entries
+        // Migrate country entries (includes territories like Azores, Madeira, etc.)
         for entry in countryEntries where entry.regionCode == nil {
             if let locationName = entry.locationName,
-               let countryCode = lookupService.countryCodeForName(locationName) {
+               let countryCode = lookupService.countryOrTerritoryCodeForName(locationName) {
                 entry.regionCode = countryCode
                 needsSave = true
-                debugLog("✅ Migrated country '\(locationName)' with code '\(countryCode)'")
+                debugLog("✅ Migrated country/territory '\(locationName)' with code '\(countryCode)'")
             } else {
-                debugLog("⚠️ Could not find code for country: \(entry.locationName ?? "unknown")")
+                debugLog("⚠️ Could not find code for country/territory: \(entry.locationName ?? "unknown")")
             }
         }
 
@@ -298,6 +301,37 @@ class RegionTrackingManager: ObservableObject {
                 entry.regionCode = locationName  // For continents, name is the identifier
                 needsSave = true
                 debugLog("✅ Migrated continent '\(locationName)'")
+            }
+        }
+
+        // Migrate records that have parent country codes but should be territory codes
+        // (e.g., records in Azores with code "PT" should be "PT-20")
+        for entry in countryEntries where entry.regionCode == "PT" {
+            let lat = entry.latitude
+            let lon = entry.longitude
+            // Check if in Azores bounding box
+            if lat >= 36.9 && lat <= 39.75 && lon >= -31.3 && lon <= -25.0 {
+                entry.regionCode = "PT-20"
+                needsSave = true
+                debugLog("✅ Migrated Portugal record to Azores (PT-20)")
+            }
+            // Check if in Madeira bounding box
+            else if lat >= 32.6 && lat <= 33.15 && lon >= -17.3 && lon <= -16.25 {
+                entry.regionCode = "PT-30"
+                needsSave = true
+                debugLog("✅ Migrated Portugal record to Madeira (PT-30)")
+            }
+        }
+
+        // Similar migration for Spain -> Canary Islands
+        for entry in countryEntries where entry.regionCode == "ES" {
+            let lat = entry.latitude
+            let lon = entry.longitude
+            // Check if in Canary Islands bounding box
+            if lat >= 27.6 && lat <= 29.5 && lon >= -18.2 && lon <= -13.3 {
+                entry.regionCode = "ES-CN"
+                needsSave = true
+                debugLog("✅ Migrated Spain record to Canary Islands (ES-CN)")
             }
         }
 
@@ -341,6 +375,57 @@ class RegionTrackingManager: ObservableObject {
 
         saveContext()
         debugLog("📍 Migrated: Added US country with \(allDates.count) visit dates from \(usStates.count) states")
+    }
+
+    /// Migrate: Add the home region if it doesn't exist
+    /// This fixes the issue where home regions were previously skipped
+    /// Called before loading regions, so we create the entry directly without triggering reload
+    private func migrateHomeRegionIfNeeded() {
+        guard let homeCoord = SettingsManager.shared.homeCoordinate else {
+            return  // No home set
+        }
+
+        guard let homeRegion = RegionLookupService.shared.region(for: homeCoord) else {
+            return  // Couldn't determine home region
+        }
+
+        // Check if state/country record already exists for this region
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "regionCode == %@", homeRegion.code)
+        request.fetchLimit = 1
+
+        if let _ = try? context.fetch(request).first {
+            return  // Home region already exists
+        }
+
+        // Determine record type
+        let recordTypeString: String
+        switch homeRegion.type {
+        case .state:
+            recordTypeString = RecordType.state.rawValue
+        case .country:
+            recordTypeString = RecordType.country.rawValue
+        }
+
+        // Create the home region record directly (don't use addVisitToRegion to avoid reload loop)
+        debugLog("📍 Adding missing home region: \(homeRegion.name) (\(homeRegion.code))")
+
+        let now = Date()
+        let newEntry = RecordHistoryEntry(context: context)
+        newEntry.id = UUID()
+        newEntry.recordType = recordTypeString
+        newEntry.timeFrame = TimeFrame.allTime.rawValue
+        newEntry.value = now.timeIntervalSince1970
+        newEntry.timestamp = now
+        newEntry.latitude = homeCoord.latitude
+        newEntry.longitude = homeCoord.longitude
+        newEntry.altitude = 0
+        newEntry.locationName = homeRegion.name
+        newEntry.regionCode = homeRegion.code
+        newEntry.dateAdded = now
+
+        saveContext()
+        debugLog("✅ Added home region: \(homeRegion.name) (\(homeRegion.code))")
     }
 
     /// Deduplicate regions with the same regionCode, merging visit dates
@@ -514,15 +599,8 @@ class RegionTrackingManager: ObservableObject {
             return
         }
 
-        // Check if this is the home region - skip if it is
-        if let homeCoord = SettingsManager.shared.homeCoordinate {
-            if let homeRegion = RegionLookupService.shared.region(for: homeCoord) {
-                if homeRegion.code == code {
-                    debugLog("📍 RegionTrackingManager: Skipping home region \(name)")
-                    return
-                }
-            }
-        }
+        // Note: We no longer skip the home region - users should see their home state highlighted
+        // on the map like any other visited region
 
         // Create new region record
         let detail = RecordDetail(
@@ -621,16 +699,8 @@ class RegionTrackingManager: ObservableObject {
             return
         }
 
-        // Check if this is the home continent - skip if it is
-        if let homeCoord = SettingsManager.shared.homeCoordinate {
-            if let homeRegion = RegionLookupService.shared.region(for: homeCoord) {
-                if let homeContinentString = getContinentForCountry(code: homeRegion.code),
-                   homeContinentString == continent {
-                    debugLog("📍 RegionTrackingManager: Skipping home continent \(continent)")
-                    return
-                }
-            }
-        }
+        // Note: We no longer skip the home continent - users should see their home continent highlighted
+        // on the map like any other visited continent
 
         // Create new continent record
         let detail = RecordDetail(

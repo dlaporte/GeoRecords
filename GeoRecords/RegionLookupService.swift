@@ -165,17 +165,19 @@ class RegionLookupService {
             }
         }
 
+        // Check countries by code BEFORE bare 2-letter state codes
+        // This prevents collisions like "CA" (Canada) vs "CA" (California)
+        if let country = countries.first(where: { $0.code == regionCode }) {
+            return convertToCoordinates(polygons: country.polygons)
+        }
+
         // Check if it's a bare 2-letter US state code (without "US-" prefix)
         // This handles legacy data that may not have the prefix
+        // Done AFTER country check to avoid code collisions (e.g., CA, CO, etc.)
         if regionCode.count == 2 {
             if let state = usStates.first(where: { $0.code == regionCode }) {
                 return convertToCoordinates(polygons: state.polygons)
             }
-        }
-
-        // Check countries by code
-        if let country = countries.first(where: { $0.code == regionCode }) {
-            return convertToCoordinates(polygons: country.polygons)
         }
 
         // Check if it's a territory with mapped GeoJSON names
@@ -795,5 +797,75 @@ class RegionLookupService {
             }
         }
         return nil
+    }
+
+    /// Look up country or territory code by name
+    /// First checks territories (e.g., "Azores" -> "PT-20"), then falls back to countries
+    func countryOrTerritoryCodeForName(_ name: String) -> String? {
+        // First check territory names
+        if let territoryCode = territoryCodeForName(name) {
+            return territoryCode
+        }
+
+        // Fall back to country lookup
+        return countryCodeForName(name)
+    }
+
+    /// Look up territory code by name (e.g., "Azores" -> "PT-20")
+    /// Uses the same territory definitions as checkOverseasTerritories
+    func territoryCodeForName(_ name: String) -> String? {
+        // Territory name to code mapping
+        let territoryNameToCode: [String: String] = [
+            // Portuguese territories
+            "azores": "PT-20",
+            "açores": "PT-20",
+            "madeira": "PT-30",
+
+            // Spanish territories
+            "canary islands": "ES-CN",
+            "canarias": "ES-CN",
+            "islas canarias": "ES-CN",
+
+            // French territories
+            "french guiana": "GF",
+            "martinique": "MQ",
+            "guadeloupe": "GP",
+            "réunion": "RE",
+            "reunion": "RE",
+            "mayotte": "YT",
+            "new caledonia": "NC",
+            "french polynesia": "PF",
+
+            // Dutch territories
+            "curaçao": "CW",
+            "curacao": "CW",
+            "aruba": "AW",
+            "sint maarten": "SX",
+
+            // British territories
+            "bermuda": "BM",
+            "british virgin islands": "VG",
+            "cayman islands": "KY",
+            "falkland islands": "FK",
+            "seychelles": "SC",
+            "gibraltar": "GI",
+
+            // Danish territories
+            "faroe islands": "FO",
+            "greenland": "GL",
+
+            // Australian territories
+            "christmas island": "CX",
+            "cocos (keeling) islands": "CC",
+            "cocos islands": "CC",
+            "norfolk island": "NF",
+
+            // New Zealand territories
+            "cook islands": "CK",
+            "niue": "NU",
+            "tokelau": "TK",
+        ]
+
+        return territoryNameToCode[name.lowercased()]
     }
 }

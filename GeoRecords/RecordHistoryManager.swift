@@ -965,7 +965,7 @@ class RecordHistoryManager: ObservableObject {
             }
             if count > 0 {
                 try context.save()
-                debugLog("🗑️ Deleted \(count) record(s) for \(type) in \(year)\(month != nil ? "-\(month!)" : "")")
+                debugLog("🗑️ Deleted \(count) record(s) for \(type) in \(year)\(month.map { "-\($0)" } ?? "")")
             }
             return count
         } catch {

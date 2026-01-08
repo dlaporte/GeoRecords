@@ -62,7 +62,7 @@ class BackgroundGeocoder {
                 // 3. Fall back to Apple geocoder (rate limited)
                 // Rate limit: wait 1.5 seconds between API requests (~40/minute)
                 if geocodedCount > 0 || errorCount > 0 {
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    try? await Task.sleep(nanoseconds: geocodingDelayNanos)
                 }
 
                 let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)

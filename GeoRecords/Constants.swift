@@ -76,11 +76,13 @@ enum UnitSystem: String, Codable {
 ///                → StatisticsView.loadStatistics()
 ///                → Monthly charts
 /// ```
+/// NOTE: WidgetTimeFrame in GeoRecordsWidget.swift duplicates month/year/allTime cases.
+/// When modifying these cases, update BOTH enums to stay in sync.
 enum TimeFrame: String, CaseIterable {
     case daily = "Daily"      // Hidden daily extremes for chart granularity (see doc comment above)
-    case month = "Monthly"
-    case year = "Yearly"
-    case allTime = "Lifetime"
+    case month = "Monthly"    // Widget uses "This Month" display but matches this rawValue
+    case year = "Yearly"      // Widget uses "This Year" display but matches this rawValue
+    case allTime = "Lifetime" // Matches widget exactly
 
     /// Display name for picker UI (e.g., "This Month" instead of "Monthly")
     var displayName: String {
@@ -141,7 +143,9 @@ enum TimeFrame: String, CaseIterable {
     }
 }
 
-/// Record type enum for type safety and comparison logic
+/// Record type enum for type safety and comparison logic.
+/// NOTE: WidgetRecordType in GeoRecordsWidget.swift duplicates the geographic extreme cases.
+/// When modifying north/south/east/west/up/fromHome cases, update BOTH enums to stay in sync.
 enum RecordType: String, CaseIterable {
     case north = "Furthest North"
     case south = "Furthest South"
@@ -276,6 +280,20 @@ enum UserDefaultsKey: String {
 
     // Wizard preferences
     case skippedWizardRecords  // Set of record keys that user chose to skip
+
+    // Widget map regions (user-defined framing for widget maps)
+    case widgetMapStatesLat
+    case widgetMapStatesLon
+    case widgetMapStatesLatDelta
+    case widgetMapStatesLonDelta
+    case widgetMapCountriesLat
+    case widgetMapCountriesLon
+    case widgetMapCountriesLatDelta
+    case widgetMapCountriesLonDelta
+    case widgetMapContinentsLat
+    case widgetMapContinentsLon
+    case widgetMapContinentsLatDelta
+    case widgetMapContinentsLonDelta
 
     // Legacy keys (for migration)
     case notifyOnNewRecord  // Migrated to timeframe-specific settings
@@ -654,6 +672,34 @@ let postImportNotificationSuppressionSeconds: TimeInterval = 180
 
 /// Same value in nanoseconds for Task.sleep
 let postImportNotificationSuppressionNanoseconds: UInt64 = 180_000_000_000
+
+// MARK: - Timing Constants
+
+/// Brief pause for UI animations and state transitions (0.1 seconds)
+let briefPauseNanos: UInt64 = 100_000_000
+
+/// Short delay for UI feedback (0.3 seconds)
+let shortDelayNanos: UInt64 = 300_000_000
+
+/// Medium pause for transitions (0.5 seconds)
+let mediumPauseNanos: UInt64 = 500_000_000
+
+/// Standard delay for background operations (2 seconds)
+let standardDelayNanos: UInt64 = 2_000_000_000
+
+/// Extended delay to avoid conflicts with map rendering (8 seconds)
+let mapGenerationDelayNanos: UInt64 = 8_000_000_000
+
+/// Delay between geocoding requests to avoid rate limiting (1.5 seconds)
+let geocodingDelayNanos: UInt64 = 1_500_000_000
+
+// MARK: - Widget Dimensions
+
+/// Standard size for widget map images (used by WidgetMapGenerator)
+let widgetMapSize = CGSize(width: 680, height: 600)
+
+/// Aspect ratio for widget maps (width / height)
+let widgetMapAspectRatio: CGFloat = 680.0 / 600.0
 
 // MARK: - Notification Identifiers
 

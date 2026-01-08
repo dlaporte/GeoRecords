@@ -1,11 +1,13 @@
 import SwiftUI
 import MapKit
+import WidgetKit
 
 // MARK: - Maps Tab View
 
 /// Container view for the Maps tab with segmented picker for States/Countries/Continents
 struct MapsTabView: View {
     @StateObject private var regionManager = RegionTrackingManager.shared
+    @EnvironmentObject private var deepLinkManager: DeepLinkManager
     @State private var selectedMapType: MapType = .states
 
     enum MapType: String, CaseIterable {
@@ -36,7 +38,28 @@ struct MapsTabView: View {
                 }
             }
             .navigationTitle("Regions")
+            .onAppear {
+                handleDeepLink()
+            }
+            .onChange(of: deepLinkManager.navigateToRegions) { _, _ in
+                handleDeepLink()
+            }
         }
+    }
+
+    private func handleDeepLink() {
+        guard let section = deepLinkManager.navigateToRegions else { return }
+        switch section {
+        case "states":
+            selectedMapType = .states
+        case "countries":
+            selectedMapType = .countries
+        case "continents":
+            selectedMapType = .continents
+        default:
+            break
+        }
+        deepLinkManager.navigateToRegions = nil
     }
 }
 
@@ -156,6 +179,7 @@ struct StatesMapView: View {
     @State private var currentCardIndex = 0
     @State private var selectedDetail: RecordDetail?
     @State private var navigateToDetail = false
+    @State private var showWidgetViewSetter = false
 
     // Sorted states alphabetically by name
     private var sortedStates: [RecordDetail] {
@@ -204,12 +228,24 @@ struct StatesMapView: View {
                     Text("\(regionManager.stateCount) of 50 states visited")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                    Spacer()
+                    Button {
+                        showWidgetViewSetter = true
+                    } label: {
+                        Image(systemName: SettingsManager.shared.widgetMapStatesRegion != nil ? "widget.small.badge.plus" : "widget.small")
+                            .font(.system(size: 16))
+                            .foregroundColor(.blue)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color(UIColor.systemBackground).opacity(0.9))
                 .cornerRadius(8)
                 .padding(.top, 12)
+                .padding(.horizontal, 12)
+            }
+            .sheet(isPresented: $showWidgetViewSetter) {
+                WidgetViewSetterSheet(mapType: "states", regionType: .state, visitedRegions: sortedStates)
             }
 
             // Cards
@@ -252,6 +288,7 @@ struct CountriesMapView: View {
     @State private var currentCardIndex = 0
     @State private var selectedDetail: RecordDetail?
     @State private var navigateToDetail = false
+    @State private var showWidgetViewSetter = false
 
     // Sorted countries alphabetically by name
     private var sortedCountries: [RecordDetail] {
@@ -300,12 +337,24 @@ struct CountriesMapView: View {
                     Text("\(regionManager.countryCount) of 195 countries visited")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                    Spacer()
+                    Button {
+                        showWidgetViewSetter = true
+                    } label: {
+                        Image(systemName: SettingsManager.shared.widgetMapCountriesRegion != nil ? "widget.small.badge.plus" : "widget.small")
+                            .font(.system(size: 16))
+                            .foregroundColor(.blue)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color(UIColor.systemBackground).opacity(0.9))
                 .cornerRadius(8)
                 .padding(.top, 12)
+                .padding(.horizontal, 12)
+            }
+            .sheet(isPresented: $showWidgetViewSetter) {
+                WidgetViewSetterSheet(mapType: "countries", regionType: .country, visitedRegions: sortedCountries)
             }
 
             // Cards
@@ -348,6 +397,7 @@ struct ContinentsMapView: View {
     @State private var currentCardIndex = 0
     @State private var selectedDetail: RecordDetail?
     @State private var navigateToDetail = false
+    @State private var showWidgetViewSetter = false
 
     // Sorted continents alphabetically by name
     private var sortedContinents: [RecordDetail] {
@@ -405,12 +455,24 @@ struct ContinentsMapView: View {
                     Text("\(regionManager.continentCount) of 7 continents visited")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                    Spacer()
+                    Button {
+                        showWidgetViewSetter = true
+                    } label: {
+                        Image(systemName: SettingsManager.shared.widgetMapContinentsRegion != nil ? "widget.small.badge.plus" : "widget.small")
+                            .font(.system(size: 16))
+                            .foregroundColor(.blue)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color(UIColor.systemBackground).opacity(0.9))
                 .cornerRadius(8)
                 .padding(.top, 12)
+                .padding(.horizontal, 12)
+            }
+            .sheet(isPresented: $showWidgetViewSetter) {
+                WidgetViewSetterSheet(mapType: "continents", regionType: .country, visitedRegions: sortedContinents, visitedContinents: visitedContinentsSet)
             }
 
             // Cards
@@ -667,6 +729,298 @@ private struct StyledSegmentedPicker<T: Hashable>: View {
         }
         .background(Color(UIColor.systemGray5))
         .cornerRadius(8)
+    }
+}
+
+// MARK: - Widget View Setter Sheet
+
+/// Sheet for setting the widget map view by panning/zooming
+struct WidgetViewSetterSheet: View {
+    let mapType: String  // "states", "countries", or "continents"
+    let regionType: RegionType
+    let visitedRegions: [RecordDetail]
+    var visitedContinents: Set<Continent>? = nil
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var mapRegion: MKCoordinateRegion
+    @State private var showingSavedConfirmation = false
+
+    init(mapType: String, regionType: RegionType, visitedRegions: [RecordDetail], visitedContinents: Set<Continent>? = nil) {
+        self.mapType = mapType
+        self.regionType = regionType
+        self.visitedRegions = visitedRegions
+        self.visitedContinents = visitedContinents
+
+        // Initialize with saved region or default
+        let settings = SettingsManager.shared
+        let savedRegion: MKCoordinateRegion?
+        switch mapType {
+        case "states":
+            savedRegion = settings.widgetMapStatesRegion
+        case "countries":
+            savedRegion = settings.widgetMapCountriesRegion
+        case "continents":
+            savedRegion = settings.widgetMapContinentsRegion
+        default:
+            savedRegion = nil
+        }
+
+        // Use saved region or fallback to defaults
+        if let saved = savedRegion {
+            _mapRegion = State(initialValue: saved)
+        } else {
+            let defaultRegion: MKCoordinateRegion
+            switch mapType {
+            case "states":
+                defaultRegion = MKCoordinateRegion(
+                    center: CLLocationCoordinate2D(latitude: 45, longitude: -120),
+                    span: MKCoordinateSpan(latitudeDelta: 75, longitudeDelta: 100)
+                )
+            default:
+                defaultRegion = MKCoordinateRegion(
+                    center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
+                    span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 280)
+                )
+            }
+            _mapRegion = State(initialValue: defaultRegion)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                // Instructions
+                Text("Pan and zoom to set the widget map view")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 8)
+
+                // Interactive map with aspect ratio matching widget
+                InteractiveWidgetMapView(
+                    mapType: mapType,
+                    regionType: regionType,
+                    visitedRegions: visitedRegions,
+                    visitedContinents: visitedContinents,
+                    region: $mapRegion
+                )
+                .aspectRatio(mapAspectRatio, contentMode: .fit)
+                .cornerRadius(12)
+                .padding(.horizontal)
+
+                // Current region info
+                VStack(spacing: 4) {
+                    Text("Center: \(String(format: "%.2f", mapRegion.center.latitude))°, \(String(format: "%.2f", mapRegion.center.longitude))°")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("Span: \(String(format: "%.1f", mapRegion.span.latitudeDelta))° × \(String(format: "%.1f", mapRegion.span.longitudeDelta))°")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 8)
+
+                // Clear button if custom region exists
+                if hasCustomRegion {
+                    Button(role: .destructive) {
+                        SettingsManager.shared.clearWidgetMapRegion(for: mapType)
+                        Task {
+                            await WidgetMapGenerator.shared.generateMap(for: widgetMapType)
+                            WidgetCenter.shared.reloadAllTimelines()
+                        }
+                        dismiss()
+                    } label: {
+                        Label("Reset to Default", systemImage: "arrow.counterclockwise")
+                    }
+                    .padding(.bottom, 8)
+                }
+            }
+            .navigationTitle("Set Widget View")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveWidgetView()
+                    }
+                }
+            }
+            .overlay {
+                if showingSavedConfirmation {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text("Widget view saved!")
+                        }
+                        .padding()
+                        .background(Color(UIColor.systemBackground))
+                        .cornerRadius(10)
+                        .shadow(radius: 5)
+                        .padding(.bottom, 100)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+        }
+    }
+
+    private var hasCustomRegion: Bool {
+        let settings = SettingsManager.shared
+        switch mapType {
+        case "states":
+            return settings.widgetMapStatesRegion != nil
+        case "countries":
+            return settings.widgetMapCountriesRegion != nil
+        case "continents":
+            return settings.widgetMapContinentsRegion != nil
+        default:
+            return false
+        }
+    }
+
+    /// Aspect ratio matching the widget map image size (from Constants.swift)
+    private var mapAspectRatio: CGFloat {
+        return widgetMapAspectRatio
+    }
+
+    private var widgetMapType: WidgetMapGenerator.MapType {
+        switch mapType {
+        case "states": return .states
+        case "countries": return .countries
+        case "continents": return .continents
+        default: return .states
+        }
+    }
+
+    private func saveWidgetView() {
+        SettingsManager.shared.setWidgetMapRegion(mapRegion, for: mapType)
+
+        // Regenerate the widget map with the new region
+        Task {
+            await WidgetMapGenerator.shared.generateMap(for: widgetMapType)
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+
+        // Show confirmation
+        withAnimation {
+            showingSavedConfirmation = true
+        }
+
+        // Dismiss after a short delay
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+            dismiss()
+        }
+    }
+}
+
+// MARK: - Interactive Widget Map View
+
+/// Map view that allows user interaction for setting widget view
+struct InteractiveWidgetMapView: UIViewRepresentable {
+    let mapType: String
+    let regionType: RegionType
+    let visitedRegions: [RecordDetail]
+    let visitedContinents: Set<Continent>?
+    @Binding var region: MKCoordinateRegion
+
+    func makeUIView(context: Context) -> MKMapView {
+        let mapView = MKMapView()
+        mapView.delegate = context.coordinator
+        mapView.region = region
+        mapView.isScrollEnabled = true
+        mapView.isZoomEnabled = true
+        mapView.isRotateEnabled = false
+        mapView.isPitchEnabled = false
+        return mapView
+    }
+
+    func updateUIView(_ mapView: MKMapView, context: Context) {
+        // Only update overlays, don't change region (user controls that)
+        if context.coordinator.needsOverlayUpdate {
+            mapView.removeOverlays(mapView.overlays)
+            addOverlays(to: mapView)
+            context.coordinator.needsOverlayUpdate = false
+        }
+    }
+
+    private func addOverlays(to mapView: MKMapView) {
+        if let continents = visitedContinents {
+            // Continent mode
+            for continent in continents {
+                let polygonArrays = RegionLookupService.shared.continentPolygons(for: continent)
+                for polygonGroup in polygonArrays {
+                    for coordinates in polygonGroup {
+                        guard coordinates.count > 2 else { continue }
+                        var coords = coordinates
+                        let polygon = MKPolygon(coordinates: &coords, count: coords.count)
+                        polygon.title = continent.rawValue
+                        mapView.addOverlay(polygon)
+                    }
+                }
+            }
+        } else {
+            // States/Countries mode
+            for detail in visitedRegions {
+                guard let code = detail.regionCode else { continue }
+                let polygonArrays = RegionLookupService.shared.polygons(for: code)
+                for polygonGroup in polygonArrays {
+                    for coordinates in polygonGroup {
+                        guard coordinates.count > 2 else { continue }
+                        var coords = coordinates
+                        let polygon = MKPolygon(coordinates: &coords, count: coords.count)
+                        polygon.title = detail.locationName
+                        mapView.addOverlay(polygon)
+                    }
+                }
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, MKMapViewDelegate {
+        var parent: InteractiveWidgetMapView
+        var needsOverlayUpdate = true
+
+        init(_ parent: InteractiveWidgetMapView) {
+            self.parent = parent
+        }
+
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            // Update the binding when user changes the region
+            DispatchQueue.main.async {
+                self.parent.region = mapView.region
+            }
+        }
+
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let polygon = overlay as? MKPolygon {
+                let renderer = MKPolygonRenderer(polygon: polygon)
+                let color: UIColor
+                switch parent.mapType {
+                case "states":
+                    color = .systemBlue
+                case "countries":
+                    color = .systemGreen
+                case "continents":
+                    color = .systemOrange
+                default:
+                    color = .systemBlue
+                }
+                renderer.fillColor = color.withAlphaComponent(0.4)
+                renderer.strokeColor = color
+                renderer.lineWidth = 1
+                return renderer
+            }
+            return MKOverlayRenderer(overlay: overlay)
+        }
     }
 }
 

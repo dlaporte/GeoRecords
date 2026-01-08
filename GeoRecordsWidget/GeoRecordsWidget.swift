@@ -11,6 +11,7 @@ import CoreData
 import AppIntents
 import ImageIO
 import CoreLocation
+import UIKit
 
 // MARK: - Constants
 
@@ -78,6 +79,8 @@ private let appGroupIdentifier = "group.com.georecords.shared"
 
 /// Widget refresh interval in hours
 private let widgetRefreshIntervalHours = 1
+
+// Note: lifetimeTimeFrameVariations is defined in Constants.swift (shared with widget)
 
 /// Standard record order using WidgetRecordType enum, sorted by sortOrder
 let standardRecordOrder = WidgetRecordType.allCases.sorted { $0.sortOrder < $1.sortOrder }.map { $0.rawValue }
@@ -175,6 +178,10 @@ private func timeFrameFilter(for timeFrame: WidgetTimeFrame) -> (timeFrameValues
 
 // MARK: - App Intent Configuration
 
+/// Record type enum for widget configuration.
+/// IMPORTANT: This is a duplicate of RecordType in Constants.swift (main app).
+/// The rawValue strings MUST match exactly for data sharing to work correctly.
+/// When adding/removing cases, update BOTH enums to stay in sync.
 enum WidgetRecordType: String, CaseIterable, AppEnum {
     case north = "Furthest North"
     case south = "Furthest South"
@@ -256,10 +263,14 @@ enum WidgetRecordType: String, CaseIterable, AppEnum {
     }
 }
 
+/// Time frame enum for widget configuration.
+/// IMPORTANT: This is a duplicate of TimeFrame in Constants.swift (main app).
+/// The rawValue strings MUST match exactly for data sharing to work correctly.
+/// When adding/removing cases, update BOTH enums to stay in sync.
 enum WidgetTimeFrame: String, CaseIterable, AppEnum {
     case allTime = "Lifetime"
-    case year = "This Year"
-    case month = "This Month"
+    case year = "This Year"   // Maps to TimeFrame.year ("Yearly") - display differs but semantics match
+    case month = "This Month" // Maps to TimeFrame.month ("Monthly") - display differs but semantics match
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "Time Frame"
 
@@ -476,6 +487,17 @@ struct GeoRecordsWidgetEntryView : View {
                 SmallWidgetListView(records: entry.records, timeFrame: timeFrame)
             }
         }
+        .widgetURL(deepLinkURL)
+    }
+
+    private var deepLinkURL: URL? {
+        let timeFrameParam: String
+        switch timeFrame {
+        case .month: timeFrameParam = "monthly"
+        case .year: timeFrameParam = "yearly"
+        case .allTime: timeFrameParam = "allTime"
+        }
+        return URL(string: "georecords://records?timeframe=\(timeFrameParam)")
     }
 }
 
@@ -946,6 +968,17 @@ struct SingleRecordContentView: View {
         .padding(.horizontal, 4)
         .padding(.top, 4)
         .padding(.bottom, 0)
+        .widgetURL(deepLinkURL)
+    }
+
+    private var deepLinkURL: URL? {
+        let timeFrameParam: String
+        switch timeFrame {
+        case .month: timeFrameParam = "monthly"
+        case .year: timeFrameParam = "yearly"
+        case .allTime: timeFrameParam = "allTime"
+        }
+        return URL(string: "georecords://records?timeframe=\(timeFrameParam)")
     }
 }
 
@@ -1017,6 +1050,732 @@ struct SingleRecordWidget: Widget {
         .configurationDisplayName("Single Record")
         .description("Display one record with its photo.")
         .supportedFamilies([.systemSmall])
+    }
+}
+
+// MARK: - Region Statistics Widget (Large)
+
+/// Region type for statistics widget configuration
+enum WidgetRegionDisplayType: String, CaseIterable, AppEnum {
+    case states = "States"
+    case countries = "Countries"
+    case continents = "Continents"
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Region Type"
+
+    static var caseDisplayRepresentations: [WidgetRegionDisplayType: DisplayRepresentation] = [
+        .states: DisplayRepresentation(title: "States", image: .init(systemName: "flag.fill")),
+        .countries: DisplayRepresentation(title: "Countries", image: .init(systemName: "globe")),
+        .continents: DisplayRepresentation(title: "Continents", image: .init(systemName: "globe.americas.fill"))
+    ]
+
+    var iconName: String {
+        switch self {
+        case .states: return "flag.fill"
+        case .countries: return "globe"
+        case .continents: return "globe.americas.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .states: return .blue
+        case .countries: return .green
+        case .continents: return .orange
+        }
+    }
+}
+
+/// Intent for region statistics widget configuration
+struct RegionStatsWidgetIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "Configure Display"
+    static var description: IntentDescription = "Choose which regions to display"
+
+    @Parameter(title: "Regions to Show", default: [.states, .countries, .continents])
+    var selectedRegions: [WidgetRegionDisplayType]
+
+    init() {}
+
+    init(selectedRegions: [WidgetRegionDisplayType]) {
+        self.selectedRegions = selectedRegions
+    }
+}
+
+/// Data model for region statistics
+struct RegionStatsData {
+    let stateCount: Int
+    let totalStates: Int
+    let countryCount: Int
+    let totalCountries: Int
+    let continentCount: Int
+    let totalContinents: Int
+
+    static let placeholder = RegionStatsData(
+        stateCount: 0, totalStates: 50,
+        countryCount: 0, totalCountries: 195,
+        continentCount: 0, totalContinents: 7
+    )
+}
+
+/// Timeline entry for region statistics widget
+struct RegionStatsEntry: TimelineEntry {
+    let date: Date
+    let stats: RegionStatsData
+    let configuration: RegionStatsWidgetIntent
+}
+
+/// Provider for region statistics widget
+struct RegionStatsProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> RegionStatsEntry {
+        RegionStatsEntry(
+            date: Date(),
+            stats: RegionStatsData.placeholder,
+            configuration: RegionStatsWidgetIntent()
+        )
+    }
+
+    func snapshot(for configuration: RegionStatsWidgetIntent, in context: Context) async -> RegionStatsEntry {
+        RegionStatsEntry(
+            date: Date(),
+            stats: fetchRegionStats(),
+            configuration: configuration
+        )
+    }
+
+    func timeline(for configuration: RegionStatsWidgetIntent, in context: Context) async -> Timeline<RegionStatsEntry> {
+        let stats = fetchRegionStats()
+        let entry = RegionStatsEntry(date: Date(), stats: stats, configuration: configuration)
+        let refreshDate = Calendar.current.date(byAdding: .hour, value: widgetRefreshIntervalHours, to: Date()) ?? Date()
+        return Timeline(entries: [entry], policy: .after(refreshDate))
+    }
+
+    /// Fetch region counts from Core Data
+    private func fetchRegionStats() -> RegionStatsData {
+        var result = RegionStatsData.placeholder
+
+        let semaphore = DispatchSemaphore(value: 0)
+
+        loadWidgetCoreData { context in
+            defer { semaphore.signal() }
+
+            guard let context = context else { return }
+
+            // Fetch state records
+            let stateRequest: NSFetchRequest<NSManagedObject> = NSFetchRequest(entityName: "RecordHistoryEntry")
+            stateRequest.predicate = NSPredicate(format: "recordType == %@", "New State")
+
+            // Fetch country records
+            let countryRequest: NSFetchRequest<NSManagedObject> = NSFetchRequest(entityName: "RecordHistoryEntry")
+            countryRequest.predicate = NSPredicate(format: "recordType == %@", "New Country")
+
+            // Fetch continent records
+            let continentRequest: NSFetchRequest<NSManagedObject> = NSFetchRequest(entityName: "RecordHistoryEntry")
+            continentRequest.predicate = NSPredicate(format: "recordType == %@", "New Continent")
+
+            do {
+                let states = try context.fetch(stateRequest)
+                let countries = try context.fetch(countryRequest)
+                let continents = try context.fetch(continentRequest)
+
+                // Count states (exclude DC and territories)
+                let stateCount = states.filter { entry in
+                    guard let code = entry.value(forKey: "regionCode") as? String else { return false }
+                    // Exclude DC and US territories from count
+                    let excludedCodes: Set<String> = ["DC", "US-DC", "PR", "US-PR", "VI", "US-VI", "GU", "US-GU", "AS", "US-AS", "MP", "US-MP"]
+                    return !excludedCodes.contains(code)
+                }.count
+
+                // Count countries (exclude territories)
+                let countryCount = countries.filter { entry in
+                    guard let code = entry.value(forKey: "regionCode") as? String else { return true }
+                    // Territory codes that don't count as sovereign countries
+                    let territoryCodes: Set<String> = [
+                        "GF", "MQ", "GP", "RE", "YT", "NC", "PF",  // French
+                        "PT-20", "PT-30",  // Portuguese
+                        "ES-CN",  // Spanish
+                        "CW", "AW", "SX",  // Dutch
+                        "BM", "VG", "KY", "FK", "SC", "GI",  // British
+                        "FO", "GL",  // Danish
+                        "CX", "CC", "NF",  // Australian
+                        "CK", "NU", "TK"  // New Zealand
+                    ]
+                    return !territoryCodes.contains(code)
+                }.count
+
+                let continentCount = continents.count
+
+                result = RegionStatsData(
+                    stateCount: stateCount, totalStates: 50,
+                    countryCount: countryCount, totalCountries: 195,
+                    continentCount: continentCount, totalContinents: 7
+                )
+            } catch {
+                print("RegionStatsWidget: Failed to fetch region stats: \(error)")
+            }
+        }
+
+        semaphore.wait()
+        return result
+    }
+}
+
+/// View for region statistics widget
+struct RegionStatsWidgetView: View {
+    var entry: RegionStatsEntry
+    @Environment(\.widgetFamily) var family
+
+    /// Get the selected regions, ensuring at least one is selected
+    private var selectedRegions: [WidgetRegionDisplayType] {
+        let selected = entry.configuration.selectedRegions
+        return selected.isEmpty ? [.states, .countries, .continents] : selected
+    }
+
+    var body: some View {
+        Group {
+            switch family {
+            case .systemSmall:
+                smallWidgetView
+            case .systemMedium:
+                mediumWidgetView
+            default:
+                mediumWidgetView
+            }
+        }
+        .widgetURL(deepLinkURL)
+    }
+
+    private var deepLinkURL: URL? {
+        // Navigate to the first selected region type
+        let section = selectedRegions.first?.rawValue.lowercased() ?? "states"
+        return URL(string: "georecords://regions?section=\(section)")
+    }
+
+    // MARK: - Small Widget (adapts to selection count)
+    private var smallWidgetView: some View {
+        VStack(spacing: 4) {
+            // Header
+            HStack {
+                Spacer()
+                Text("Regions")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.15))
+                    )
+            }
+
+            // Adapt layout based on selection count
+            if selectedRegions.count == 1 {
+                // Single large display
+                singleStatView(for: selectedRegions[0])
+            } else if selectedRegions.count == 2 {
+                // Two items side by side
+                HStack(spacing: 8) {
+                    ForEach(selectedRegions, id: \.self) { region in
+                        SmallRegionStatCell(
+                            icon: region.iconName,
+                            iconColor: region.color,
+                            count: countFor(region),
+                            total: totalFor(region)
+                        )
+                    }
+                }
+            } else {
+                // Three items in a grid (2 on top, 1 centered below)
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        if selectedRegions.contains(.states) {
+                            SmallRegionStatCell(
+                                icon: WidgetRegionDisplayType.states.iconName,
+                                iconColor: WidgetRegionDisplayType.states.color,
+                                count: entry.stats.stateCount,
+                                total: entry.stats.totalStates
+                            )
+                        }
+                        if selectedRegions.contains(.countries) {
+                            SmallRegionStatCell(
+                                icon: WidgetRegionDisplayType.countries.iconName,
+                                iconColor: WidgetRegionDisplayType.countries.color,
+                                count: entry.stats.countryCount,
+                                total: entry.stats.totalCountries
+                            )
+                        }
+                    }
+                    if selectedRegions.contains(.continents) {
+                        SmallRegionStatCell(
+                            icon: WidgetRegionDisplayType.continents.iconName,
+                            iconColor: WidgetRegionDisplayType.continents.color,
+                            count: entry.stats.continentCount,
+                            total: entry.stats.totalContinents
+                        )
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(2)
+    }
+
+    /// Single stat view for when only one region type is selected
+    private func singleStatView(for region: WidgetRegionDisplayType) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: region.iconName)
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundColor(region.color)
+
+            Text("\(countFor(region))")
+                .font(.system(size: 40, weight: .bold, design: .rounded))
+                .foregroundColor(region.color)
+
+            Text("of \(totalFor(region))")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+
+            Text(region.rawValue)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func countFor(_ region: WidgetRegionDisplayType) -> Int {
+        switch region {
+        case .states: return entry.stats.stateCount
+        case .countries: return entry.stats.countryCount
+        case .continents: return entry.stats.continentCount
+        }
+    }
+
+    private func totalFor(_ region: WidgetRegionDisplayType) -> Int {
+        switch region {
+        case .states: return entry.stats.totalStates
+        case .countries: return entry.stats.totalCountries
+        case .continents: return entry.stats.totalContinents
+        }
+    }
+
+    // MARK: - Medium Widget (3 columns like records widget)
+    private var mediumWidgetView: some View {
+        VStack(spacing: 4) {
+            // Header
+            HStack {
+                Spacer()
+                Text("Regions Visited")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.15))
+                    )
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, 2)
+
+            // 3 column layout
+            LazyVGrid(columns: [
+                GridItem(.flexible()),
+                GridItem(.flexible()),
+                GridItem(.flexible())
+            ], spacing: 4) {
+                MediumRegionStatCell(
+                    icon: "flag.fill",
+                    iconColor: .blue,
+                    count: entry.stats.stateCount,
+                    total: entry.stats.totalStates,
+                    label: "States"
+                )
+                MediumRegionStatCell(
+                    icon: "globe",
+                    iconColor: .green,
+                    count: entry.stats.countryCount,
+                    total: entry.stats.totalCountries,
+                    label: "Countries"
+                )
+                MediumRegionStatCell(
+                    icon: "globe.americas.fill",
+                    iconColor: .orange,
+                    count: entry.stats.continentCount,
+                    total: entry.stats.totalContinents,
+                    label: "Continents"
+                )
+            }
+            .padding(.horizontal, 2)
+            .padding(.bottom, 2)
+        }
+    }
+}
+
+/// Small widget cell for region stats (matches SmallRecordGridCell style)
+struct SmallRegionStatCell: View {
+    let icon: String
+    let iconColor: Color
+    let count: Int
+    let total: Int?
+    var label: String? = nil
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(iconColor)
+
+            if let total = total {
+                Text("\(count)/\(total)")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundColor(iconColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            } else {
+                Text("\(count)")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundColor(iconColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+
+            if let label = label {
+                Text(label)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// Medium widget cell for region stats (matches RecordGridCell style)
+struct MediumRegionStatCell: View {
+    let icon: String
+    let iconColor: Color
+    let count: Int
+    let total: Int
+    let label: String
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(iconColor)
+
+            Text("\(count)")
+                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .foregroundColor(iconColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            VStack(spacing: 0) {
+                Text("of \(total)")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                Text(label)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// Region Statistics Widget definition
+struct RegionStatsWidget: Widget {
+    let kind: String = "RegionStatsWidget"
+
+    var body: some WidgetConfiguration {
+        AppIntentConfiguration(kind: kind, intent: RegionStatsWidgetIntent.self, provider: RegionStatsProvider()) { entry in
+            if #available(iOS 17.0, *) {
+                RegionStatsWidgetView(entry: entry)
+                    .containerBackground(.fill.tertiary, for: .widget)
+            } else {
+                RegionStatsWidgetView(entry: entry)
+                    .padding()
+                    .background()
+            }
+        }
+        .configurationDisplayName("Region Statistics")
+        .description("See how many states, countries, and continents you've visited.")
+        .supportedFamilies([.systemSmall, .systemMedium])
+    }
+}
+
+// MARK: - Region Map Widget (Large)
+
+/// Map display type for map widget configuration
+enum WidgetMapType: String, CaseIterable, AppEnum {
+    case states = "States"
+    case countries = "Countries"
+    case continents = "Continents"
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Map Type"
+
+    static var caseDisplayRepresentations: [WidgetMapType: DisplayRepresentation] = [
+        .states: DisplayRepresentation(title: "States", image: .init(systemName: "flag.fill")),
+        .countries: DisplayRepresentation(title: "Countries", image: .init(systemName: "globe")),
+        .continents: DisplayRepresentation(title: "Continents", image: .init(systemName: "globe.americas.fill"))
+    ]
+
+    /// Filename for the cached map image
+    var cacheFilename: String {
+        switch self {
+        case .states: return "widget_map_states.png"
+        case .countries: return "widget_map_countries.png"
+        case .continents: return "widget_map_continents.png"
+        }
+    }
+}
+
+/// Intent for region map widget configuration
+struct RegionMapWidgetIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "Configure Map"
+    static var description: IntentDescription = "Choose which map to display"
+
+    @Parameter(title: "Map Type", default: .states)
+    var mapType: WidgetMapType
+
+    init() {}
+
+    init(mapType: WidgetMapType) {
+        self.mapType = mapType
+    }
+}
+
+/// Data model for region map
+struct RegionMapData {
+    let mapImage: Data?
+    let regionCount: Int
+    let totalRegions: Int
+    let mapType: WidgetMapType
+
+    static func placeholder(for mapType: WidgetMapType) -> RegionMapData {
+        let (count, total) = switch mapType {
+        case .states: (0, 50)
+        case .countries: (0, 195)
+        case .continents: (0, 7)
+        }
+        return RegionMapData(mapImage: nil, regionCount: count, totalRegions: total, mapType: mapType)
+    }
+}
+
+/// Timeline entry for region map widget
+struct RegionMapEntry: TimelineEntry {
+    let date: Date
+    let mapData: RegionMapData
+    let configuration: RegionMapWidgetIntent
+}
+
+/// Provider for region map widget
+struct RegionMapProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> RegionMapEntry {
+        RegionMapEntry(
+            date: Date(),
+            mapData: RegionMapData.placeholder(for: .states),
+            configuration: RegionMapWidgetIntent()
+        )
+    }
+
+    func snapshot(for configuration: RegionMapWidgetIntent, in context: Context) async -> RegionMapEntry {
+        RegionMapEntry(
+            date: Date(),
+            mapData: fetchMapData(for: configuration.mapType),
+            configuration: configuration
+        )
+    }
+
+    func timeline(for configuration: RegionMapWidgetIntent, in context: Context) async -> Timeline<RegionMapEntry> {
+        let mapData = fetchMapData(for: configuration.mapType)
+        let entry = RegionMapEntry(date: Date(), mapData: mapData, configuration: configuration)
+        let refreshDate = Calendar.current.date(byAdding: .hour, value: widgetRefreshIntervalHours, to: Date()) ?? Date()
+        return Timeline(entries: [entry], policy: .after(refreshDate))
+    }
+
+    /// Fetch map image and region count from shared storage
+    private func fetchMapData(for mapType: WidgetMapType) -> RegionMapData {
+        // Try to load cached map image from App Group
+        var mapImageData: Data?
+        if let appGroupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) {
+            let cacheURL = appGroupURL.appendingPathComponent(mapType.cacheFilename)
+            mapImageData = try? Data(contentsOf: cacheURL)
+        }
+
+        // Fetch region count from Core Data
+        var regionCount = 0
+        let semaphore = DispatchSemaphore(value: 0)
+
+        loadWidgetCoreData { context in
+            defer { semaphore.signal() }
+
+            guard let context = context else { return }
+
+            let recordType: String
+            switch mapType {
+            case .states: recordType = "New State"
+            case .countries: recordType = "New Country"
+            case .continents: recordType = "New Continent"
+            }
+
+            let request: NSFetchRequest<NSManagedObject> = NSFetchRequest(entityName: "RecordHistoryEntry")
+            request.predicate = NSPredicate(format: "recordType == %@", recordType)
+
+            do {
+                let results = try context.fetch(request)
+
+                switch mapType {
+                case .states:
+                    // Exclude DC and territories
+                    let excludedCodes: Set<String> = ["DC", "US-DC", "PR", "US-PR", "VI", "US-VI", "GU", "US-GU", "AS", "US-AS", "MP", "US-MP"]
+                    regionCount = results.filter { entry in
+                        guard let code = entry.value(forKey: "regionCode") as? String else { return false }
+                        return !excludedCodes.contains(code)
+                    }.count
+
+                case .countries:
+                    // Exclude territories
+                    let territoryCodes: Set<String> = [
+                        "GF", "MQ", "GP", "RE", "YT", "NC", "PF",
+                        "PT-20", "PT-30", "ES-CN",
+                        "CW", "AW", "SX",
+                        "BM", "VG", "KY", "FK", "SC", "GI",
+                        "FO", "GL",
+                        "CX", "CC", "NF",
+                        "CK", "NU", "TK"
+                    ]
+                    regionCount = results.filter { entry in
+                        guard let code = entry.value(forKey: "regionCode") as? String else { return true }
+                        return !territoryCodes.contains(code)
+                    }.count
+
+                case .continents:
+                    regionCount = results.count
+                }
+            } catch {
+                print("Widget: Failed to fetch region count: \(error)")
+            }
+        }
+
+        semaphore.wait()
+
+        let totalRegions = switch mapType {
+        case .states: 50
+        case .countries: 195
+        case .continents: 7
+        }
+
+        return RegionMapData(
+            mapImage: mapImageData,
+            regionCount: regionCount,
+            totalRegions: totalRegions,
+            mapType: mapType
+        )
+    }
+}
+
+/// View for region map widget (large size)
+struct RegionMapWidgetView: View {
+    var entry: RegionMapEntry
+
+    var body: some View {
+        VStack(spacing: 8) {
+            // Header row with stats
+            HStack {
+                Image(systemName: iconName)
+                    .font(.system(size: 16))
+                    .foregroundColor(iconColor)
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Text("\(entry.mapData.regionCount)/\(entry.mapData.totalRegions)")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+
+            // Map or placeholder
+            if let imageData = entry.mapData.mapImage,
+               let uiImage = UIImage(data: imageData) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                    .cornerRadius(10)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
+            } else {
+                // Placeholder when no map is cached
+                VStack(spacing: 12) {
+                    Image(systemName: "map")
+                        .font(.system(size: 50))
+                        .foregroundColor(.secondary)
+
+                    Text("Open app to generate map")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .widgetURL(deepLinkURL)
+    }
+
+    private var deepLinkURL: URL? {
+        let section: String
+        switch entry.configuration.mapType {
+        case .states: section = "states"
+        case .countries: section = "countries"
+        case .continents: section = "continents"
+        }
+        return URL(string: "georecords://regions?section=\(section)")
+    }
+
+    private var iconName: String {
+        switch entry.configuration.mapType {
+        case .states: return "flag.fill"
+        case .countries: return "globe"
+        case .continents: return "globe.americas.fill"
+        }
+    }
+
+    private var iconColor: Color {
+        switch entry.configuration.mapType {
+        case .states: return .blue
+        case .countries: return .green
+        case .continents: return .orange
+        }
+    }
+
+    private var title: String {
+        switch entry.configuration.mapType {
+        case .states: return "States"
+        case .countries: return "Countries"
+        case .continents: return "Continents"
+        }
+    }
+}
+
+/// Region Map Widget definition
+struct RegionMapWidget: Widget {
+    let kind: String = "RegionMapWidget"
+
+    var body: some WidgetConfiguration {
+        AppIntentConfiguration(kind: kind, intent: RegionMapWidgetIntent.self, provider: RegionMapProvider()) { entry in
+            if #available(iOS 17.0, *) {
+                RegionMapWidgetView(entry: entry)
+                    .containerBackground(.fill.tertiary, for: .widget)
+            } else {
+                RegionMapWidgetView(entry: entry)
+                    .padding()
+                    .background()
+            }
+        }
+        .configurationDisplayName("Region Map")
+        .description("View your visited regions on a map.")
+        .supportedFamilies([.systemLarge])
     }
 }
 

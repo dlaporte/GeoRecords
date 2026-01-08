@@ -201,6 +201,15 @@ struct RecordsView: View {
             .onChange(of: deepLinkManager.recordType) { _, _ in
                 handleDeepLink()
             }
+            .onChange(of: deepLinkManager.navigateToRecordsTimeFrame) { _, _ in
+                handleDeepLink()
+            }
+            .task(id: deepLinkManager.navigateToRecordsTimeFrame) {
+                // Also handle via task to catch cases where onChange doesn't fire
+                if deepLinkManager.navigateToRecordsTimeFrame != nil {
+                    handleDeepLink()
+                }
+            }
             .onChange(of: persistenceController.lastImportTime) { _, newTime in
                 // Refresh records when iCloud import completes
                 if newTime != nil {
@@ -210,7 +219,8 @@ struct RecordsView: View {
                     // Force view to recompute allRecords
                     refreshTrigger = UUID()
                     // Update map position if we have records
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: briefPauseNanos)
                         if let firstRecord = allRecords.first {
                             withAnimation {
                                 mapPosition = .centered(on: firstRecord.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
@@ -223,6 +233,22 @@ struct RecordsView: View {
     }
 
     private func handleDeepLink() {
+        // Handle timeframe deep link from widgets
+        if let timeFrame = deepLinkManager.navigateToRecordsTimeFrame {
+            switch timeFrame {
+            case "monthly":
+                selectedTimeFrame = .month
+            case "yearly":
+                selectedTimeFrame = .year
+            case "allTime":
+                selectedTimeFrame = .allTime
+            default:
+                break
+            }
+            deepLinkManager.navigateToRecordsTimeFrame = nil
+        }
+
+        // Handle record type deep link from notifications
         guard let recordType = deepLinkManager.recordType else { return }
 
         // Deep links from notifications - find the record in allRecords

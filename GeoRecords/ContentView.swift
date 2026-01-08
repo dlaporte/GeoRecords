@@ -139,6 +139,18 @@ struct ContentView: View {
                 deepLinkManager.navigateToStats = false
             }
         }
+        .onChange(of: deepLinkManager.navigateToRegions) { _, section in
+            if section != nil {
+                selectedTab = 1  // Regions tab
+                // MapsTabView will handle the section selection
+            }
+        }
+        .onChange(of: deepLinkManager.navigateToRecordsTimeFrame) { _, timeFrame in
+            if timeFrame != nil {
+                selectedTab = 0  // Records tab
+                // RecordsView will handle the timeframe selection
+            }
+        }
         .onChange(of: deepLinkManager.pendingBackupURL) { _, url in
             guard let url = url else { return }
             handleIncomingBackupFile(url)
@@ -167,7 +179,8 @@ struct ContentView: View {
         .sheet(isPresented: $showNoRecordsView) {
             NoRecordsView(onScanPhotos: {
                 // Small delay to let the NoRecordsView dismiss first
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: shortDelayNanos)
                     showPhotoImportWizard = true
                 }
             })
@@ -209,7 +222,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .navigateToiCloudSync)) { _ in
             selectedTab = 4  // Settings tab
             // Post a delayed notification to scroll to iCloud section after tab switch
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: briefPauseNanos)
                 NotificationCenter.default.post(name: .scrollToiCloudSync, object: nil)
             }
         }
@@ -477,7 +491,7 @@ struct ContentView: View {
         }
 
         while syncWaitTime < maxSyncWait {
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // Check every 2 seconds
+            try? await Task.sleep(nanoseconds: standardDelayNanos) // Check every 2 seconds
             syncWaitTime += 2
 
             let (isSyncing, currentImportTime) = await MainActor.run {

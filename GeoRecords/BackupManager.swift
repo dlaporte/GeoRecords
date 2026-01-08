@@ -401,7 +401,7 @@ class BackupManager {
                 }
 
                 // Give CloudKit a moment to pick up the changes
-                try await Task.sleep(nanoseconds: 500_000_000)
+                try await Task.sleep(nanoseconds: mediumPauseNanos)
 
                 // Trigger CloudKit to notice the new records
                 context.refreshAllObjects()

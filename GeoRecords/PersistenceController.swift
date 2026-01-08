@@ -244,7 +244,7 @@ class PersistenceController: ObservableObject {
         // Wait for CloudKit import to complete, then check local database
         // This avoids the "recordName not queryable" error from direct CKQuery
         let maxWaitSeconds = 15
-        let checkIntervalNanos: UInt64 = 1_000_000_000  // 1 second
+        let checkIntervalNanos: UInt64 = 1_000_000_000  // 1 second (local constant, not in Constants.swift)
 
         for second in 1...maxWaitSeconds {
             // Wait for sync
@@ -262,7 +262,7 @@ class PersistenceController: ObservableObject {
             if !stillSyncing && second >= 3 {
                 // Sync finished but no data found - give it a couple more seconds just in case
                 debugLog("☁️ Sync appears complete after \(second)s, checking for data...")
-                try? await Task.sleep(nanoseconds: 2_000_000_000)  // Wait 2 more seconds
+                try? await Task.sleep(nanoseconds: standardDelayNanos)  // Wait 2 more seconds
                 let finalCheck = await hasExistingCloudData()
                 if finalCheck {
                     debugLog("☁️ Found data after final check - user has data to restore!")

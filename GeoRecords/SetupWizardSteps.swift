@@ -29,7 +29,7 @@ struct WelcomeStepView: View {
 
             VStack(alignment: .leading, spacing: 16) {
                 FeatureRow(icon: "arrow.up.arrow.down", text: "Track furthest North, South, East, West")
-                FeatureRow(icon: "mountain.2.fill", text: "Record highest and lowest altitudes")
+                FeatureRow(icon: "mountain.2.fill", text: "Record highest altitude reached")
                 FeatureRow(icon: "house.fill", text: "Measure furthest distance from home")
                 FeatureRow(icon: "photo.fill", text: "Attach photos to your records")
             }

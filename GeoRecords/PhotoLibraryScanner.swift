@@ -429,8 +429,8 @@ class PhotoLibraryScanner: ObservableObject {
                 }
             }
 
-            // Brief yield to UI
-            try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
+            // Brief yield to UI (1ms - too small for named constant)
+            try? await Task.sleep(nanoseconds: 1_000_000)
         }
 
         debugLog("📊 Processed daily records for current month photos")
@@ -458,8 +458,8 @@ class PhotoLibraryScanner: ObservableObject {
         isScanning = false
         isProcessing = true
 
-        // Yield to UI so "Processing Results..." screen appears before heavy work
-        try? await Task.sleep(nanoseconds: 50_000_000)  // 50ms
+        // Yield to UI so "Processing Results..." screen appears before heavy work (50ms - too small for named constant)
+        try? await Task.sleep(nanoseconds: 50_000_000)
 
         // Get current month and year boundaries
         let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
@@ -979,7 +979,7 @@ class PhotoLibraryScanner: ObservableObject {
                     }
 
                     // Give CloudKit a moment to pick up the changes
-                    try await Task.sleep(nanoseconds: 500_000_000)
+                    try await Task.sleep(nanoseconds: mediumPauseNanos)
 
                     // Nudge CloudKit to notice the new records
                     context.refreshAllObjects()

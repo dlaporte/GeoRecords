@@ -13,6 +13,8 @@ struct GeoRecordsWidgetBundle: WidgetBundle {
     var body: some Widget {
         GeoRecordsWidget()
         SingleRecordWidget()
+        RegionStatsWidget()
+        RegionMapWidget()
         GeoRecordsWidgetControl()
         GeoRecordsWidgetLiveActivity()
     }

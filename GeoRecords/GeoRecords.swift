@@ -7,6 +7,8 @@ class DeepLinkManager: ObservableObject {
     @Published var recordType: String? = nil
     @Published var navigateToStats = false
     @Published var pendingBackupURL: URL? = nil  // For incoming backup files
+    @Published var navigateToRegions: String? = nil  // "states", "countries", or "continents"
+    @Published var navigateToRecordsTimeFrame: String? = nil  // "monthly", "yearly", or "allTime"
 }
 
 // Notification delegate that handles incoming notifications.
@@ -76,7 +78,7 @@ struct GeoRecords: App {
 
         // Startup maintenance tasks
         Task {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)  // Wait 2 seconds after launch
+            try? await Task.sleep(nanoseconds: standardDelayNanos)  // Wait 2 seconds after launch
 
             // Perform data cleanup (duplicates, at-home records, etc.)
             await MainActor.run {
@@ -92,6 +94,11 @@ struct GeoRecords: App {
             // Generate thumbnails for existing records that don't have cached thumbnails
             // This ensures widget photos work for records imported before this feature
             await ThumbnailCache.shared.generateMissingThumbnails()
+
+            // Generate map snapshots for the region map widget
+            // Delay longer to avoid conflicts with map views during navigation
+            try? await Task.sleep(nanoseconds: mapGenerationDelayNanos)  // Avoid conflicts with map views
+            await WidgetMapGenerator.shared.generateAllMaps()
         }
     }
     
@@ -126,10 +133,31 @@ struct GeoRecords: App {
         // Handle custom scheme URLs (from widgets)
         guard url.scheme == "georecords" else { return }
 
+        // Parse query parameters
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let queryItems = components?.queryItems ?? []
+        let params = Dictionary(uniqueKeysWithValues: queryItems.compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+
         switch url.host {
         case "records":
-            // Navigate to Records tab (already default)
-            debugLog("Deep link: Opening records tab from widget")
+            // Navigate to Records tab with optional timeframe
+            if let timeFrame = params["timeframe"] {
+                DeepLinkManager.shared.navigateToRecordsTimeFrame = timeFrame
+                debugLog("Deep link: Opening records tab with timeframe \(timeFrame)")
+            } else {
+                debugLog("Deep link: Opening records tab from widget")
+            }
+        case "regions":
+            // Navigate to Regions tab with optional section
+            if let section = params["section"] {
+                DeepLinkManager.shared.navigateToRegions = section
+                debugLog("Deep link: Opening regions tab with section \(section)")
+            } else {
+                DeepLinkManager.shared.navigateToRegions = "states"  // Default to states
+                debugLog("Deep link: Opening regions tab from widget")
+            }
         case "stats":
             // Navigate to Stats tab
             DeepLinkManager.shared.navigateToStats = true

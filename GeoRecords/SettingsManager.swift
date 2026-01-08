@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CoreLocation
+import MapKit
 import UserNotifications
 
 // UnitSystem enum is now in Constants.swift (shared with widget)
@@ -56,6 +57,12 @@ class SettingsManager: ObservableObject, SettingsManaging {
     // Wizard preferences - tracks which records user has chosen to skip
     // Keys are in format "timeFrame_recordType" e.g., "allTime_Furthest Up", "2024_Furthest North"
     @Published var skippedWizardRecords: Set<String> = []
+
+    // Widget map regions - user-defined framing for widget maps
+    // Each region is stored as center lat/lon and span lat/lon delta
+    @Published var widgetMapStatesRegion: MKCoordinateRegion?
+    @Published var widgetMapCountriesRegion: MKCoordinateRegion?
+    @Published var widgetMapContinentsRegion: MKCoordinateRegion?
 
     // Separate settings for Imperial and Metric
     @Published var minAltitudeDeltaMetersImperial: Double  // Stored in meters
@@ -274,6 +281,11 @@ class SettingsManager: ObservableObject, SettingsManaging {
             self.skippedWizardRecords = []
         }
 
+        // Load widget map regions (device-local, not synced to iCloud)
+        self.widgetMapStatesRegion = loadWidgetRegion(from: defaults, prefix: "widgetMapStates")
+        self.widgetMapCountriesRegion = loadWidgetRegion(from: defaults, prefix: "widgetMapCountries")
+        self.widgetMapContinentsRegion = loadWidgetRegion(from: defaults, prefix: "widgetMapContinents")
+
         // Perform migration cleanup after all properties are initialized
         if defaults.object(forKey: UserDefaultsKey.minAltitudeDeltaFeet.rawValue) != nil {
             defaults.removeObject(forKey: UserDefaultsKey.minAltitudeDeltaFeet.rawValue)
@@ -421,6 +433,11 @@ class SettingsManager: ObservableObject, SettingsManaging {
 
         // Save skipped wizard records as array (device-local, not synced to iCloud)
         defaults.set(Array(skippedWizardRecords), forKey: UserDefaultsKey.skippedWizardRecords.rawValue)
+
+        // Save widget map regions (device-local, not synced to iCloud)
+        saveWidgetRegion(widgetMapStatesRegion, to: defaults, prefix: "widgetMapStates")
+        saveWidgetRegion(widgetMapCountriesRegion, to: defaults, prefix: "widgetMapCountries")
+        saveWidgetRegion(widgetMapContinentsRegion, to: defaults, prefix: "widgetMapContinents")
     }
 
     // MARK: - Persistence
@@ -566,5 +583,68 @@ class SettingsManager: ObservableObject, SettingsManaging {
                 }
             }
         }
+    }
+
+    // MARK: - Widget Map Region Helpers
+
+    /// Load a widget map region from UserDefaults
+    private func loadWidgetRegion(from defaults: UserDefaults, prefix: String) -> MKCoordinateRegion? {
+        guard let lat = defaults.object(forKey: "\(prefix)Lat") as? Double,
+              let lon = defaults.object(forKey: "\(prefix)Lon") as? Double,
+              let latDelta = defaults.object(forKey: "\(prefix)LatDelta") as? Double,
+              let lonDelta = defaults.object(forKey: "\(prefix)LonDelta") as? Double else {
+            return nil
+        }
+
+        let center = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        let span = MKCoordinateSpan(latitudeDelta: latDelta, longitudeDelta: lonDelta)
+        return MKCoordinateRegion(center: center, span: span)
+    }
+
+    /// Save a widget map region to UserDefaults
+    private func saveWidgetRegion(_ region: MKCoordinateRegion?, to defaults: UserDefaults, prefix: String) {
+        if let region = region {
+            defaults.set(region.center.latitude, forKey: "\(prefix)Lat")
+            defaults.set(region.center.longitude, forKey: "\(prefix)Lon")
+            defaults.set(region.span.latitudeDelta, forKey: "\(prefix)LatDelta")
+            defaults.set(region.span.longitudeDelta, forKey: "\(prefix)LonDelta")
+        } else {
+            defaults.removeObject(forKey: "\(prefix)Lat")
+            defaults.removeObject(forKey: "\(prefix)Lon")
+            defaults.removeObject(forKey: "\(prefix)LatDelta")
+            defaults.removeObject(forKey: "\(prefix)LonDelta")
+        }
+    }
+
+    /// Set widget map region for a specific map type and save
+    func setWidgetMapRegion(_ region: MKCoordinateRegion, for mapType: String) {
+        switch mapType {
+        case "states":
+            widgetMapStatesRegion = region
+        case "countries":
+            widgetMapCountriesRegion = region
+        case "continents":
+            widgetMapContinentsRegion = region
+        default:
+            break
+        }
+        saveSettings()
+        debugLog("📍 Saved widget map region for \(mapType): center=(\(region.center.latitude), \(region.center.longitude)), span=(\(region.span.latitudeDelta), \(region.span.longitudeDelta))")
+    }
+
+    /// Clear widget map region for a specific map type
+    func clearWidgetMapRegion(for mapType: String) {
+        switch mapType {
+        case "states":
+            widgetMapStatesRegion = nil
+        case "countries":
+            widgetMapCountriesRegion = nil
+        case "continents":
+            widgetMapContinentsRegion = nil
+        default:
+            break
+        }
+        saveSettings()
+        debugLog("📍 Cleared widget map region for \(mapType)")
     }
 }

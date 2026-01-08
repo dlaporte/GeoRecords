@@ -447,7 +447,8 @@ struct SettingsView: View {
                     onComplete: {
                         showClearRecordsSheet = false
                         // Small delay to let sheet dismiss, then show no records view
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: shortDelayNanos)
                             showNoRecordsView = true
                         }
                     },
@@ -457,7 +458,8 @@ struct SettingsView: View {
                     onFullReset: {
                         showClearRecordsSheet = false
                         // Small delay to let sheet dismiss, then show setup wizard
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: shortDelayNanos)
                             showSetupWizard = true
                         }
                     }
@@ -500,7 +502,8 @@ struct SettingsView: View {
             .sheet(isPresented: $showNoRecordsView) {
                 NoRecordsView(onScanPhotos: {
                     // Small delay to let the NoRecordsView dismiss first
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: shortDelayNanos)
                         showImportView = true
                     }
                 })
@@ -774,12 +777,12 @@ struct ClearRecordsSheet: View {
                             statusMessage = "App reset complete"
                         }
 
-                        try? await Task.sleep(nanoseconds: 500_000_000) // Brief pause
+                        try? await Task.sleep(nanoseconds: mediumPauseNanos) // Brief pause
                         await MainActor.run {
                             onFullReset()
                         }
                     } else {
-                        try? await Task.sleep(nanoseconds: 500_000_000) // Brief pause
+                        try? await Task.sleep(nanoseconds: mediumPauseNanos) // Brief pause
                         await MainActor.run {
                             onComplete()
                         }
@@ -796,7 +799,7 @@ struct ClearRecordsSheet: View {
                     let timeout = Date().addingTimeInterval(30)
 
                     while Date() < timeout {
-                        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                        try? await Task.sleep(nanoseconds: mediumPauseNanos) // 0.5 seconds
 
                         // Check if a new export completed
                         if let newExportTime = persistenceController.lastExportTime,
@@ -804,7 +807,7 @@ struct ClearRecordsSheet: View {
                             await MainActor.run {
                                 statusMessage = "Deletion synced to iCloud"
                             }
-                            try? await Task.sleep(nanoseconds: 500_000_000) // Brief pause
+                            try? await Task.sleep(nanoseconds: mediumPauseNanos) // Brief pause
                             await MainActor.run {
                                 onComplete()
                             }
@@ -842,7 +845,7 @@ struct ClearRecordsSheet: View {
                 }
 
                 // Brief pause to show completion message
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(nanoseconds: mediumPauseNanos)
 
                 await MainActor.run {
                     onComplete()

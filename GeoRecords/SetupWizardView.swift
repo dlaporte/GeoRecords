@@ -274,7 +274,7 @@ struct SetupWizardView: View {
                 // Start scanning after view appears - ImportPreviewView will display progress
                 Task {
                     // Small delay to ensure view transition completes
-                    try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+                    try? await Task.sleep(nanoseconds: briefPauseNanos) // 0.1 seconds
                     await self.photoScanner.scanPhotoLibrary(homeCoordinate: self.settings.homeCoordinate)
                 }
             }
@@ -285,7 +285,7 @@ struct SetupWizardView: View {
                         self.showImportPreview = true
                         Task {
                             // Small delay to ensure view transition completes
-                            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+                            try? await Task.sleep(nanoseconds: briefPauseNanos) // 0.1 seconds
                             await self.photoScanner.scanPhotoLibrary(homeCoordinate: self.settings.homeCoordinate)
                         }
                     } else {

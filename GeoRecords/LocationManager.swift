@@ -284,7 +284,7 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             RegionTrackingManager.shared.recordVisit(
                 coordinate: currentLocation.coordinate,
                 date: Date(),
-                source: .backgroundLocation,
+                source: .location,
                 altitude: currentLocation.altitude
             )
         }

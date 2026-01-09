@@ -2,6 +2,7 @@ import Foundation
 import CoreData
 import UIKit
 import UserNotifications
+import Photos
 
 /// Manager for exporting and importing GeoRecords data backups
 /// Backups are JSON files containing record metadata and photo asset identifiers
@@ -43,14 +44,35 @@ class BackupManager {
         let homeLatitude: Double?
         let homeLongitude: Double?
         let homeLocationName: String?
+        let homeAddress: String?  // Added in version 6
         let notifyOnMonthlyRecords: Bool
         let notifyOnYearlyRecords: Bool
         let notifyOnAllTimeRecords: Bool
         let notifyOnNewRegion: Bool?  // Optional for backward compatibility with older backups
         let photoPromptsEnabled: Bool
         let inactivityReminderEnabled: Bool
+        let inactivityReminderDays: Int?  // Added in version 6
         let summaryNotificationsEnabled: Bool
         let unitSystem: String  // "metric" or "imperial"
+        // Threshold settings (added in version 6)
+        let minLatitudeDelta: Double?
+        let minLongitudeDelta: Double?
+        let minAltitudeDeltaMetersImperial: Double?
+        let minDistanceDeltaMetersImperial: Double?
+        let minAltitudeDeltaMetersMetric: Double?
+        let minDistanceDeltaMetersMetric: Double?
+    }
+
+    /// Represents a processed photo cache entry (added in version 5)
+    struct BackupPhotoCache: Codable {
+        let id: String
+        let photoLocalIdentifier: String?
+        let photoCloudIdentifier: String?
+        let photoDate: Date?
+        let photoLatitude: Double
+        let photoLongitude: Double
+        let regionCode: String?
+        let processedDate: Date?
     }
 
     /// The complete backup file structure
@@ -66,6 +88,9 @@ class BackupManager {
         let visitedRegions: [BackupVisitedRegion]?
         // Added in version 3
         let settings: BackupSettings?
+        // Added in version 5
+        let photoCacheCount: Int?
+        let photoCache: [BackupPhotoCache]?
     }
 
     // MARK: - Export
@@ -83,9 +108,14 @@ class BackupManager {
         let regionRequest: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
         regionRequest.sortDescriptors = [NSSortDescriptor(key: "regionCode", ascending: true)]
 
+        // Fetch photo cache (tracks processed photos)
+        let cacheRequest: NSFetchRequest<PhotoRegionCache> = PhotoRegionCache.fetchRequest()
+        cacheRequest.sortDescriptors = [NSSortDescriptor(key: "processedDate", ascending: false)]
+
         do {
             let entries = try context.fetch(recordRequest)
             let regions = try context.fetch(regionRequest)
+            let cacheEntries = try context.fetch(cacheRequest)
 
             // Convert records to backup format
             let backupRecords = entries.compactMap { entry -> BackupRecord? in
@@ -132,6 +162,24 @@ class BackupManager {
                 )
             }
 
+            // Convert photo cache to backup format
+            let backupCache = cacheEntries.compactMap { cache -> BackupPhotoCache? in
+                guard let id = cache.id else {
+                    return nil
+                }
+
+                return BackupPhotoCache(
+                    id: id.uuidString,
+                    photoLocalIdentifier: cache.photoLocalIdentifier,
+                    photoCloudIdentifier: cache.photoCloudIdentifier,
+                    photoDate: cache.photoDate,
+                    photoLatitude: cache.photoLatitude,
+                    photoLongitude: cache.photoLongitude,
+                    regionCode: cache.regionCode,
+                    processedDate: cache.processedDate
+                )
+            }
+
             let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
             let deviceName = UIDevice.current.name
 
@@ -141,18 +189,26 @@ class BackupManager {
                 homeLatitude: settingsManager.homeCoordinate?.latitude,
                 homeLongitude: settingsManager.homeCoordinate?.longitude,
                 homeLocationName: settingsManager.homeLocationName,
+                homeAddress: settingsManager.homeAddress,
                 notifyOnMonthlyRecords: settingsManager.notifyOnMonthlyRecords,
                 notifyOnYearlyRecords: settingsManager.notifyOnYearlyRecords,
                 notifyOnAllTimeRecords: settingsManager.notifyOnAllTimeRecords,
                 notifyOnNewRegion: settingsManager.notifyOnNewRegion,
                 photoPromptsEnabled: settingsManager.photoPromptsEnabled,
                 inactivityReminderEnabled: settingsManager.inactivityReminderEnabled,
+                inactivityReminderDays: settingsManager.inactivityReminderDays,
                 summaryNotificationsEnabled: settingsManager.summaryNotificationsEnabled,
-                unitSystem: settingsManager.unitSystem.rawValue
+                unitSystem: settingsManager.unitSystem.rawValue,
+                minLatitudeDelta: settingsManager.minLatitudeDelta,
+                minLongitudeDelta: settingsManager.minLongitudeDelta,
+                minAltitudeDeltaMetersImperial: settingsManager.minAltitudeDeltaMetersImperial,
+                minDistanceDeltaMetersImperial: settingsManager.minDistanceDeltaMetersImperial,
+                minAltitudeDeltaMetersMetric: settingsManager.minAltitudeDeltaMetersMetric,
+                minDistanceDeltaMetersMetric: settingsManager.minDistanceDeltaMetersMetric
             )
 
             let backup = BackupFile(
-                version: 4,  // Updated version to include regionCode
+                version: 6,  // Updated version to include threshold settings
                 exportDate: Date(),
                 appVersion: appVersion,
                 deviceName: deviceName,
@@ -160,7 +216,9 @@ class BackupManager {
                 records: backupRecords,
                 visitedRegionCount: backupRegions.count,
                 visitedRegions: backupRegions,
-                settings: backupSettings
+                settings: backupSettings,
+                photoCacheCount: backupCache.count,
+                photoCache: backupCache
             )
 
             // Encode to JSON
@@ -179,7 +237,7 @@ class BackupManager {
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
             try jsonData.write(to: tempURL)
 
-            debugLog("✅ Backup exported: \(backupRecords.count) records, \(backupRegions.count) visited regions to \(fileName)")
+            debugLog("✅ Backup exported: \(backupRecords.count) records, \(backupRegions.count) visited regions, \(backupCache.count) photo cache entries to \(fileName)")
             return tempURL
 
         } catch {
@@ -193,8 +251,8 @@ class BackupManager {
     /// Import records from a backup file (replaces all existing data)
     /// Uses transaction-safe approach: validates all data first, creates rollback point, then imports
     /// - Parameter url: URL to the backup JSON file
-    /// - Returns: Tuple with (records imported, regions imported), or nil if import failed
-    func importBackup(from url: URL) async -> (records: Int, regions: Int)? {
+    /// - Returns: Tuple with (records imported, regions imported, cache entries imported), or nil if import failed
+    func importBackup(from url: URL) async -> (records: Int, regions: Int, cache: Int)? {
         do {
             // PHASE 1: Parse and validate backup file BEFORE any destructive operations
             let jsonData = try Data(contentsOf: url)
@@ -204,10 +262,11 @@ class BackupManager {
             let backup = try decoder.decode(BackupFile.self, from: jsonData)
 
             let regionCount = backup.visitedRegionCount ?? 0
-            debugLog("📥 Importing backup: version \(backup.version), \(backup.recordCount) records, \(regionCount) visited regions from \(backup.deviceName)")
+            let cacheCount = backup.photoCacheCount ?? 0
+            debugLog("📥 Importing backup: version \(backup.version), \(backup.recordCount) records, \(regionCount) visited regions, \(cacheCount) photo cache entries from \(backup.deviceName)")
 
-            // Validate version (support v1, v2, v3, and v4)
-            guard backup.version >= 1 && backup.version <= 4 else {
+            // Validate version (support v1, v2, v3, v4, v5, and v6)
+            guard backup.version >= 1 && backup.version <= 6 else {
                 debugLog("❌ Unsupported backup version: \(backup.version)")
                 return nil
             }
@@ -228,6 +287,9 @@ class BackupManager {
                 }
 
                 let timeFrame = TimeFrame(rawValue: record.timeFrame) ?? .allTime
+                // Normalize region code for US states (fixes "AL" -> "US-AL" collision with Albania)
+                let isState = record.recordType == RecordType.state.rawValue
+                let normalizedRegionCode = record.regionCode.map { normalizeRegionCode($0, isState: isState) }
                 let detail = RecordDetail(
                     id: uuid,
                     value: record.value,
@@ -243,12 +305,12 @@ class BackupManager {
                     photoAssetIdentifier: record.photoAssetIdentifier,
                     photoCloudIdentifier: record.photoCloudIdentifier,
                     notes: record.notes,
-                    regionCode: record.regionCode  // Optional for backward compatibility
+                    regionCode: normalizedRegionCode
                 )
                 recordsToImport.append((record.recordType, detail))
             }
 
-            // Validate regions
+            // Validate regions and normalize state codes
             var regionsToImport: [BackupVisitedRegion] = []
             if let visitedRegions = backup.visitedRegions {
                 for region in visitedRegions {
@@ -256,7 +318,16 @@ class BackupManager {
                         debugLog("⚠️ Skipping region with empty code or name")
                         continue
                     }
-                    regionsToImport.append(region)
+                    // Normalize region code for US states (fixes "AL" -> "US-AL" collision with Albania)
+                    let isState = region.regionType == RegionType.state.rawValue
+                    let normalizedCode = normalizeRegionCode(region.regionCode, isState: isState)
+                    let normalizedRegion = BackupVisitedRegion(
+                        regionCode: normalizedCode,
+                        regionName: region.regionName,
+                        regionType: region.regionType,
+                        visitDates: region.visitDates
+                    )
+                    regionsToImport.append(normalizedRegion)
                 }
             }
 
@@ -266,14 +337,22 @@ class BackupManager {
             let settingsManager = SettingsManager.shared
             let previousHomeCoordinate = settingsManager.homeCoordinate
             let previousHomeLocationName = settingsManager.homeLocationName
+            let previousHomeAddress = settingsManager.homeAddress
             let previousNotifyMonthly = settingsManager.notifyOnMonthlyRecords
             let previousNotifyYearly = settingsManager.notifyOnYearlyRecords
             let previousNotifyAllTime = settingsManager.notifyOnAllTimeRecords
             let previousNotifyNewRegion = settingsManager.notifyOnNewRegion
             let previousPhotoPrompts = settingsManager.photoPromptsEnabled
             let previousInactivityReminder = settingsManager.inactivityReminderEnabled
+            let previousInactivityReminderDays = settingsManager.inactivityReminderDays
             let previousSummaryNotifications = settingsManager.summaryNotificationsEnabled
             let previousUnitSystem = settingsManager.unitSystem
+            let previousMinLatDelta = settingsManager.minLatitudeDelta
+            let previousMinLonDelta = settingsManager.minLongitudeDelta
+            let previousMinAltImperial = settingsManager.minAltitudeDeltaMetersImperial
+            let previousMinDistImperial = settingsManager.minDistanceDeltaMetersImperial
+            let previousMinAltMetric = settingsManager.minAltitudeDeltaMetersMetric
+            let previousMinDistMetric = settingsManager.minDistanceDeltaMetersMetric
 
             // PHASE 4: Clear existing data (point of no return for data, but settings can be restored)
             debugLog("🗑️ Clearing existing data before restore...")
@@ -291,6 +370,11 @@ class BackupManager {
                 }
                 settingsManager.homeLocationName = backupSettings.homeLocationName
 
+                // Restore home address (version 6+)
+                if let homeAddress = backupSettings.homeAddress {
+                    settingsManager.homeAddress = homeAddress
+                }
+
                 // Restore notification settings
                 settingsManager.notifyOnMonthlyRecords = backupSettings.notifyOnMonthlyRecords
                 settingsManager.notifyOnYearlyRecords = backupSettings.notifyOnYearlyRecords
@@ -298,11 +382,37 @@ class BackupManager {
                 settingsManager.notifyOnNewRegion = backupSettings.notifyOnNewRegion ?? false  // Default for older backups
                 settingsManager.photoPromptsEnabled = backupSettings.photoPromptsEnabled
                 settingsManager.inactivityReminderEnabled = backupSettings.inactivityReminderEnabled
+
+                // Restore inactivity reminder days (version 6+)
+                if let reminderDays = backupSettings.inactivityReminderDays {
+                    settingsManager.inactivityReminderDays = reminderDays
+                }
+
                 settingsManager.summaryNotificationsEnabled = backupSettings.summaryNotificationsEnabled
 
                 // Restore unit system
                 if let unitSystem = UnitSystem(rawValue: backupSettings.unitSystem) {
                     settingsManager.unitSystem = unitSystem
+                }
+
+                // Restore threshold settings (version 6+)
+                if let minLatDelta = backupSettings.minLatitudeDelta {
+                    settingsManager.minLatitudeDelta = minLatDelta
+                }
+                if let minLonDelta = backupSettings.minLongitudeDelta {
+                    settingsManager.minLongitudeDelta = minLonDelta
+                }
+                if let minAltImperial = backupSettings.minAltitudeDeltaMetersImperial {
+                    settingsManager.minAltitudeDeltaMetersImperial = minAltImperial
+                }
+                if let minDistImperial = backupSettings.minDistanceDeltaMetersImperial {
+                    settingsManager.minDistanceDeltaMetersImperial = minDistImperial
+                }
+                if let minAltMetric = backupSettings.minAltitudeDeltaMetersMetric {
+                    settingsManager.minAltitudeDeltaMetersMetric = minAltMetric
+                }
+                if let minDistMetric = backupSettings.minDistanceDeltaMetersMetric {
+                    settingsManager.minDistanceDeltaMetersMetric = minDistMetric
                 }
 
                 settingsManager.saveSettings()
@@ -356,6 +466,29 @@ class BackupManager {
                 importedRegionCount += 1
             }
 
+            // PHASE 7.5: Import photo cache (version 5+)
+            var importedCacheCount = 0
+            if let photoCacheEntries = backup.photoCache {
+                for cacheEntry in photoCacheEntries {
+                    guard let uuid = UUID(uuidString: cacheEntry.id) else {
+                        debugLog("⚠️ Skipping cache entry with invalid UUID: \(cacheEntry.id)")
+                        continue
+                    }
+
+                    let newCache = PhotoRegionCache(context: context)
+                    newCache.id = uuid
+                    newCache.photoLocalIdentifier = cacheEntry.photoLocalIdentifier
+                    newCache.photoCloudIdentifier = cacheEntry.photoCloudIdentifier
+                    newCache.photoDate = cacheEntry.photoDate
+                    newCache.photoLatitude = cacheEntry.photoLatitude
+                    newCache.photoLongitude = cacheEntry.photoLongitude
+                    newCache.regionCode = cacheEntry.regionCode
+                    newCache.processedDate = cacheEntry.processedDate
+                    importedCacheCount += 1
+                }
+                debugLog("📸 Restored \(importedCacheCount) photo cache entries")
+            }
+
             // PHASE 8: Save to Core Data
             do {
                 if context.hasChanges {
@@ -367,14 +500,22 @@ class BackupManager {
                 debugLog("🔄 Restoring previous settings...")
                 settingsManager.homeCoordinate = previousHomeCoordinate
                 settingsManager.homeLocationName = previousHomeLocationName
+                settingsManager.homeAddress = previousHomeAddress
                 settingsManager.notifyOnMonthlyRecords = previousNotifyMonthly
                 settingsManager.notifyOnYearlyRecords = previousNotifyYearly
                 settingsManager.notifyOnAllTimeRecords = previousNotifyAllTime
                 settingsManager.notifyOnNewRegion = previousNotifyNewRegion
                 settingsManager.photoPromptsEnabled = previousPhotoPrompts
                 settingsManager.inactivityReminderEnabled = previousInactivityReminder
+                settingsManager.inactivityReminderDays = previousInactivityReminderDays
                 settingsManager.summaryNotificationsEnabled = previousSummaryNotifications
                 settingsManager.unitSystem = previousUnitSystem
+                settingsManager.minLatitudeDelta = previousMinLatDelta
+                settingsManager.minLongitudeDelta = previousMinLonDelta
+                settingsManager.minAltitudeDeltaMetersImperial = previousMinAltImperial
+                settingsManager.minDistanceDeltaMetersImperial = previousMinDistImperial
+                settingsManager.minAltitudeDeltaMetersMetric = previousMinAltMetric
+                settingsManager.minDistanceDeltaMetersMetric = previousMinDistMetric
                 settingsManager.saveSettings()
                 return nil
             }
@@ -393,7 +534,35 @@ class BackupManager {
             // Old daily records from previous months will be cleaned up automatically
             RecordHistoryManager.shared.cleanupOldDailyRecords()
 
-            // PHASE 10: Trigger CloudKit sync
+            // PHASE 10: Request photo library access if backup contains photos
+            let recordsWithPhotos = recordsToImport.filter { $0.detail.photoAssetIdentifier != nil }.count
+            if recordsWithPhotos > 0 {
+                debugLog("📸 Backup contains \(recordsWithPhotos) records with photos - checking photo library access...")
+                let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+
+                if status == .notDetermined {
+                    debugLog("📸 Requesting photo library access...")
+                    let newStatus = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+                    debugLog("📸 Photo library access: \(newStatus.rawValue)")
+
+                    // If still not authorized after request, show alert
+                    if newStatus != .authorized && newStatus != .limited {
+                        await showPhotoAccessAlert(recordCount: recordsWithPhotos)
+                    }
+                } else if status == .authorized || status == .limited {
+                    debugLog("📸 Photo library access already granted")
+                } else {
+                    debugLog("⚠️ Photo library access denied - photos in backup will not be accessible")
+                    // Show alert directing user to Settings
+                    await showPhotoAccessAlert(recordCount: recordsWithPhotos)
+                }
+            }
+
+            // PHASE 11: Generate thumbnails for restored records with photos
+            debugLog("📸 Generating thumbnails for restored records...")
+            await ThumbnailCache.shared.generateMissingThumbnails()
+
+            // PHASE 12: Trigger CloudKit sync
             do {
                 if context.hasChanges {
                     try context.save()
@@ -411,13 +580,38 @@ class BackupManager {
                 debugLog("⚠️ Error triggering sync: \(error.localizedDescription)")
             }
 
-            debugLog("✅ Backup imported: \(importedRecordCount) records, \(importedRegionCount) new regions processed")
+            debugLog("✅ Backup imported: \(importedRecordCount) records, \(importedRegionCount) new regions processed, \(importedCacheCount) photo cache entries")
             debugLog("☁️ IMPORTANT: Wait for 'Export completed' in logs before deleting app!")
-            return (records: importedRecordCount, regions: importedRegionCount)
+            return (records: importedRecordCount, regions: importedRegionCount, cache: importedCacheCount)
 
         } catch {
             debugLog("❌ Backup import failed: \(error.localizedDescription)")
             return nil
+        }
+    }
+
+    // MARK: - Photo Access Alert
+
+    /// Show alert when photo access is needed but not granted
+    private func showPhotoAccessAlert(recordCount: Int) async {
+        let alert = UIAlertController(
+            title: "Photo Access Required",
+            message: "Your backup includes \(recordCount) records with photos. To view these photos, please grant photo library access in Settings → Privacy & Security → Photos → GeoRecords.",
+            preferredStyle: .alert
+        )
+
+        alert.addAction(UIAlertAction(title: "Open Settings", style: .default) { _ in
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url)
+            }
+        })
+
+        alert.addAction(UIAlertAction(title: "Not Now", style: .cancel))
+
+        // Present on the root view controller
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootViewController = windowScene.windows.first?.rootViewController {
+            rootViewController.present(alert, animated: true)
         }
     }
 

@@ -19,10 +19,11 @@ struct RecordDetail: Identifiable {
     var notes: String?          // User-added notes/description for this record
     var dateAdded: Date?        // When record was imported/created
     var regionCode: String?     // For region records (state code, country code, continent name)
+    var source: RecordSource?   // How this record was added (photo, location, home, manual)
 
     /// Initialize with coordinate validation
     /// - Warning: Coordinates are validated and must be valid. Invalid coordinates will trigger an assertion in debug builds.
-    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, notes: String? = nil, dateAdded: Date? = nil, regionCode: String? = nil) {
+    init(id: UUID = UUID(), value: Double, timestamp: Date, coordinate: CLLocationCoordinate2D, altitude: Double, locationName: String?, recordType: String, timeFrame: TimeFrame = .allTime, photoData: Data? = nil, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, notes: String? = nil, dateAdded: Date? = nil, regionCode: String? = nil, source: RecordSource? = nil) {
         self.id = id
         self.value = value
         self.timestamp = timestamp
@@ -36,6 +37,7 @@ struct RecordDetail: Identifiable {
         self.notes = notes
         self.dateAdded = dateAdded
         self.regionCode = regionCode
+        self.source = source
 
         // Validate coordinate
         if CLLocationCoordinate2DIsValid(coordinate) {
@@ -72,6 +74,14 @@ struct RecordDetail: Identifiable {
             return .allTime  // Default for old entries without timeFrame
         }()
 
+        // Parse source from stored string
+        let source: RecordSource? = {
+            if let sourceString = entry.source {
+                return RecordSource(rawValue: sourceString)
+            }
+            return nil
+        }()
+
         self.init(
             id: entry.id ?? UUID(),
             value: entry.value,
@@ -86,7 +96,8 @@ struct RecordDetail: Identifiable {
             photoCloudIdentifier: entry.photoCloudIdentifier,
             notes: entry.notes,
             dateAdded: entry.dateAdded,
-            regionCode: entry.regionCode
+            regionCode: entry.regionCode,
+            source: source
         )
     }
 }
@@ -509,7 +520,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                     altitude: location.altitude,
                     locationName: reverseGeocodedName,
                     recordType: type,
-                    timeFrame: timeFrame
+                    timeFrame: timeFrame,
+                    source: .location
                 )
 
                 // Try to save to Core Data first - only update in-memory if successful
@@ -559,7 +571,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                 altitude: location.altitude,
                 locationName: reverseGeocodedName,
                 recordType: type,
-                timeFrame: timeFrame
+                timeFrame: timeFrame,
+                source: .location
             )
 
             // Try to save to Core Data first

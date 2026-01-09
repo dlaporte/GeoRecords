@@ -182,7 +182,7 @@ private func timeFrameFilter(for timeFrame: WidgetTimeFrame) -> (timeFrameValues
 /// IMPORTANT: This is a duplicate of RecordType in Constants.swift (main app).
 /// The rawValue strings MUST match exactly for data sharing to work correctly.
 /// When adding/removing cases, update BOTH enums to stay in sync.
-enum WidgetRecordType: String, CaseIterable, AppEnum {
+enum WidgetRecordType: String, CaseIterable, Codable, AppEnum {
     case north = "Furthest North"
     case south = "Furthest South"
     case east = "Furthest East"
@@ -267,7 +267,7 @@ enum WidgetRecordType: String, CaseIterable, AppEnum {
 /// IMPORTANT: This is a duplicate of TimeFrame in Constants.swift (main app).
 /// The rawValue strings MUST match exactly for data sharing to work correctly.
 /// When adding/removing cases, update BOTH enums to stay in sync.
-enum WidgetTimeFrame: String, CaseIterable, AppEnum {
+enum WidgetTimeFrame: String, CaseIterable, Codable, AppEnum {
     case allTime = "Lifetime"
     case year = "This Year"   // Maps to TimeFrame.year ("Yearly") - display differs but semantics match
     case month = "This Month" // Maps to TimeFrame.month ("Monthly") - display differs but semantics match
@@ -1056,7 +1056,7 @@ struct SingleRecordWidget: Widget {
 // MARK: - Region Statistics Widget (Large)
 
 /// Region type for statistics widget configuration
-enum WidgetRegionDisplayType: String, CaseIterable, AppEnum {
+enum WidgetRegionDisplayType: String, CaseIterable, Codable, AppEnum {
     case states = "States"
     case countries = "Countries"
     case continents = "Continents"
@@ -1506,7 +1506,7 @@ struct RegionStatsWidget: Widget {
 // MARK: - Region Map Widget (Large)
 
 /// Map display type for map widget configuration
-enum WidgetMapType: String, CaseIterable, AppEnum {
+enum WidgetMapType: String, CaseIterable, Codable, AppEnum {
     case states = "States"
     case countries = "Countries"
     case continents = "Continents"

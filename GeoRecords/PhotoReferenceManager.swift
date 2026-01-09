@@ -11,6 +11,12 @@ class PhotoReferenceManager {
 
     private init() {}
 
+    /// Check if photo library access is authorized
+    private var isPhotoAccessAuthorized: Bool {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        return status == .authorized || status == .limited
+    }
+
     /// Fetch a photo from the Photos library using its asset identifier
     /// - Parameters:
     ///   - identifier: The PHAsset.localIdentifier stored with the record
@@ -22,6 +28,9 @@ class PhotoReferenceManager {
         targetSize: CGSize = PHImageManagerMaximumSize,
         contentMode: PHImageContentMode = .aspectFit
     ) async -> UIImage? {
+        // Skip if photo access not authorized to avoid repeated errors
+        guard isPhotoAccessAuthorized else { return nil }
+
         guard let asset = PhotoAssetFinder.findAssetByLocalIdentifier(identifier) else {
             debugLog("📷 Photo not found in library: \(identifier)")
             return nil
@@ -48,6 +57,9 @@ class PhotoReferenceManager {
         targetSize: CGSize = PHImageManagerMaximumSize,
         contentMode: PHImageContentMode = .aspectFit
     ) async -> UIImage? {
+        // Skip if photo access not authorized to avoid repeated errors
+        guard isPhotoAccessAuthorized else { return nil }
+
         guard let asset = PhotoAssetFinder.findAsset(
             localIdentifier: identifier,
             cloudIdentifier: cloudIdentifier,

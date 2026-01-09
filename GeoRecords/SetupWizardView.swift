@@ -246,6 +246,9 @@ struct SetupWizardView: View {
         settings.hasCompletedSetup = true
         settings.saveSettings()
 
+        // Create region records for the home location (state, country, continent)
+        RegionTrackingManager.shared.addHomeRegionRecords()
+
         // Schedule inactivity reminder if enabled
         if notificationsEnabled {
             Task { @MainActor in

@@ -173,6 +173,10 @@ struct HomePickerView: View {
         settings.homeCoordinate = currentCoordinate
         settings.homeLocationName = locationName
         settings.saveSettings()
+
+        // Create region records for the home location (state, country, continent)
+        RegionTrackingManager.shared.addHomeRegionRecords()
+
         dismiss()
     }
 

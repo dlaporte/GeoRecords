@@ -236,7 +236,10 @@ struct NoRecordsView: View {
                     if result.regions > 0 {
                         parts.append("\(result.regions) visited region\(result.regions == 1 ? "" : "s")")
                     }
-                    let summary = parts.isEmpty ? "backup data" : parts.joined(separator: " and ")
+                    if result.cache > 0 {
+                        parts.append("\(result.cache) photo cache entr\(result.cache == 1 ? "y" : "ies")")
+                    }
+                    let summary = parts.isEmpty ? "backup data" : parts.joined(separator: ", ")
                     importResultMessage = "Successfully imported \(summary) from backup."
                     showImportResult = true
                     clearBackupInfo()

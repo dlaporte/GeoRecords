@@ -27,7 +27,7 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
 
     /// Time window for considering a record as a "recent duplicate" (in seconds)
     /// Records created within this window can be replaced by photo-based records
-    private let recentRecordWindowSeconds: TimeInterval = 300  // 5 minutes
+    private let recentRecordWindowSeconds: TimeInterval = photoProcessingWindowSeconds
 
     /// Track whether we're currently monitoring
     @Published private(set) var isMonitoring = false
@@ -262,7 +262,8 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
             recordType: recordType.rawValue,
             timeFrame: timeFrame,
             photoAssetIdentifier: asset.localIdentifier,
-            photoCloudIdentifier: cloudId
+            photoCloudIdentifier: cloudId,
+            source: .photo
         )
 
         if shouldReplaceRecent, let oldRecord = currentRecord {

@@ -132,7 +132,7 @@ struct AllTimeStepView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Select your all-time best records")
+                Text("Select your all-time best records. Swipe to change.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .padding(.horizontal)
@@ -184,7 +184,7 @@ struct YearlyStepView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Select records for each year")
+                Text("Select records for each year. Swipe to change.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .padding(.horizontal)
@@ -266,7 +266,7 @@ struct MonthlyStepView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Select records for each month of \(currentYear)")
+                Text("Select records for each month of \(currentYear). Swipe to change.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .padding(.horizontal)

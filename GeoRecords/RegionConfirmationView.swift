@@ -33,7 +33,7 @@ struct RegionConfirmationView: View {
             // Content
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Select \(regionType.pluralName.lowercased()) to import")
+                    Text("Select \(regionType.pluralName.lowercased()) to import. Swipe to change.")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .padding(.horizontal)

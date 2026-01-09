@@ -61,7 +61,11 @@ struct DetailContentView: View {
 
     private var formattedDateAdded: String? {
         guard let dateAdded = record.dateAdded else { return nil }
-        return dateAddedFormatter.string(from: dateAdded)
+        return fullWeekdayDateFormatter.string(from: dateAdded)
+    }
+
+    private var sourceDisplayName: String? {
+        record.source?.displayName
     }
 
     private var formattedAltitude: String {
@@ -145,28 +149,38 @@ struct DetailContentView: View {
     }
 
     private func loadPhoto() async {
+        debugLog("🖼️ DetailContentView.loadPhoto() called for '\(record.locationName ?? "Unknown")'")
+        debugLog("🖼️ Photo identifiers - local: \(record.photoAssetIdentifier ?? "nil"), cloud: \(record.photoCloudIdentifier ?? "nil")")
+        debugLog("🖼️ Timestamp: \(record.timestamp), Coordinate: \(record.coordinate.latitude), \(record.coordinate.longitude)")
+
         // Try to load from Photos library using identifier with fallback
         if let identifier = record.photoAssetIdentifier {
             // Use fallback method that tries: local ID → cloud ID → timestamp/location
             // This helps when restoring backups on different devices with same iCloud Photo Library
+            debugLog("🖼️ Calling fetchMediumPhotoWithFallback...")
             if let photo = await PhotoReferenceManager.shared.fetchMediumPhotoWithFallback(
                 identifier: identifier,
                 cloudIdentifier: record.photoCloudIdentifier,
                 timestamp: record.timestamp,
                 coordinate: record.coordinate
             ) {
+                debugLog("🖼️ ✅ Photo loaded successfully!")
                 loadedPhoto = photo
                 return
             }
             // Photo not found in library even with all fallback methods
+            debugLog("🖼️ ❌ Photo not found in library - all methods exhausted")
             photoNotAvailable = true
         }
 
         // Fallback to legacy embedded photo data
         if let data = record.photoData, let image = UIImage(data: data) {
+            debugLog("🖼️ Loading from legacy embedded photo data")
             loadedPhoto = image
             return
         }
+
+        debugLog("🖼️ No photo loaded")
     }
 
     /// Prioritize geocoding for this record if it doesn't have a location name
@@ -554,8 +568,19 @@ struct DetailContentView: View {
                 DetailRow(
                     icon: "plus.circle",
                     iconColor: .gray,
-                    label: "Imported",
+                    label: "Added on",
                     value: dateAdded
+                )
+            }
+
+            if let source = sourceDisplayName {
+                Divider().padding(.leading, 44)
+
+                DetailRow(
+                    icon: "arrow.down.circle",
+                    iconColor: .gray,
+                    label: "Added by",
+                    value: source
                 )
             }
         }

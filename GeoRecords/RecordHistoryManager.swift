@@ -46,6 +46,8 @@ class RecordHistoryManager: ObservableObject {
         newEntry.photoAssetIdentifier = detail.photoAssetIdentifier
         newEntry.photoCloudIdentifier = detail.photoCloudIdentifier
         newEntry.notes = detail.notes
+        newEntry.source = detail.source?.rawValue
+        newEntry.regionCode = detail.regionCode
 
         if let photoId = detail.photoAssetIdentifier {
             debugLog("💾 Saving record with photo: \(photoId)")
@@ -113,17 +115,88 @@ class RecordHistoryManager: ObservableObject {
         showError = true
     }
 
-    func updateRecordPhoto(recordId: UUID, photoData: Data?) {
+    // MARK: - Fetch Request Helpers
+    // TODO: Add unit tests for these helper methods when test coverage is expanded
+
+    /// Fetch the first record matching a predicate
+    /// Encapsulates common NSFetchRequest pattern to reduce code duplication
+    /// - Parameters:
+    ///   - predicate: The predicate to filter records (e.g., `NSPredicate(format: "id == %@", uuid)`)
+    ///   - sortDescriptors: Optional sort descriptors (defaults to none)
+    /// - Returns: The first matching record, or nil if none found or error occurred
+    /// - Note: Returns nil on fetch errors (logged via debugLog) for safe failure handling
+    private func fetchFirstRecord(
+        predicate: NSPredicate,
+        sortDescriptors: [NSSortDescriptor]? = nil
+    ) -> RecordHistoryEntry? {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "id == %@", recordId as CVarArg)
+        request.predicate = predicate
         request.fetchLimit = 1
+        request.sortDescriptors = sortDescriptors
 
         do {
-            let results = try context.fetch(request)
-            if let entry = results.first {
-                entry.photoData = photoData
-                try context.save()
-            }
+            return try context.fetch(request).first
+        } catch {
+            debugLog("❌ Fetch error: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Fetch all records matching a predicate
+    /// Encapsulates common NSFetchRequest pattern for multi-record queries
+    /// - Parameters:
+    ///   - predicate: The predicate to filter records (e.g., `NSPredicate(format: "recordType == %@", type)`)
+    ///   - sortDescriptors: Optional sort descriptors (e.g., `[NSSortDescriptor(key: "timestamp", ascending: false)]`)
+    /// - Returns: Array of matching records (empty if none found or error occurred)
+    /// - Note: Returns empty array on fetch errors (logged via debugLog) for safe iteration
+    private func fetchRecords(
+        predicate: NSPredicate,
+        sortDescriptors: [NSSortDescriptor]? = nil
+    ) -> [RecordHistoryEntry] {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = predicate
+        request.sortDescriptors = sortDescriptors
+
+        do {
+            return try context.fetch(request)
+        } catch {
+            debugLog("❌ Fetch error: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Delete all records matching a predicate
+    /// Encapsulates common NSFetchRequest + delete pattern
+    /// - Parameter predicate: The predicate to filter records (e.g., `NSPredicate(format: "timeFrame == %@", "Daily")`)
+    /// - Returns: Number of records deleted, or 0 if error occurred
+    /// - Note: Automatically saves context after deletion; returns 0 on save errors (logged via debugLog)
+    @discardableResult
+    private func deleteRecords(predicate: NSPredicate) -> Int {
+        let records = fetchRecords(predicate: predicate)
+        let count = records.count
+
+        for record in records {
+            context.delete(record)
+        }
+
+        do {
+            try context.save()
+            return count
+        } catch {
+            debugLog("❌ Delete error: \(error.localizedDescription)")
+            return 0
+        }
+    }
+
+    func updateRecordPhoto(recordId: UUID, photoData: Data?) {
+        guard let entry = fetchFirstRecord(predicate: NSPredicate(format: "id == %@", recordId as CVarArg)) else {
+            debugLog("⚠️ Record not found with id: \(recordId)")
+            return
+        }
+
+        do {
+            entry.photoData = photoData
+            try context.save()
         } catch {
             let message = "Failed to update photo: \(error.localizedDescription)"
             debugLog(message)
@@ -134,20 +207,18 @@ class RecordHistoryManager: ObservableObject {
     /// Update the photo asset identifier for a record
     /// Also updates the cloud identifier for cross-device sync
     func updateRecordPhotoAsset(recordId: UUID, localIdentifier: String, cloudIdentifier: String?) {
-        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "id == %@", recordId as CVarArg)
-        request.fetchLimit = 1
+        guard let entry = fetchFirstRecord(predicate: NSPredicate(format: "id == %@", recordId as CVarArg)) else {
+            debugLog("⚠️ Record not found with id: \(recordId)")
+            return
+        }
 
         do {
-            let results = try context.fetch(request)
-            if let entry = results.first {
-                entry.photoAssetIdentifier = localIdentifier
-                entry.photoCloudIdentifier = cloudIdentifier
-                // Clear legacy photo data since we're using asset reference now
-                entry.photoData = nil
-                try context.save()
-                debugLog("📸 Updated photo for record \(recordId)")
-            }
+            entry.photoAssetIdentifier = localIdentifier
+            entry.photoCloudIdentifier = cloudIdentifier
+            // Clear legacy photo data since we're using asset reference now
+            entry.photoData = nil
+            try context.save()
+            debugLog("📸 Updated photo for record \(recordId)")
         } catch {
             let message = "Failed to update photo asset: \(error.localizedDescription)"
             debugLog(message)
@@ -156,16 +227,14 @@ class RecordHistoryManager: ObservableObject {
     }
 
     func updateRecordNotes(recordId: UUID, notes: String?) {
-        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "id == %@", recordId as CVarArg)
-        request.fetchLimit = 1
+        guard let entry = fetchFirstRecord(predicate: NSPredicate(format: "id == %@", recordId as CVarArg)) else {
+            debugLog("⚠️ Record not found with id: \(recordId)")
+            return
+        }
 
         do {
-            let results = try context.fetch(request)
-            if let entry = results.first {
-                entry.notes = notes
-                try context.save()
-            }
+            entry.notes = notes
+            try context.save()
         } catch {
             let message = "Failed to update notes: \(error.localizedDescription)"
             debugLog(message)
@@ -175,16 +244,14 @@ class RecordHistoryManager: ObservableObject {
 
     /// Update the location name for a specific record
     func updateRecordLocationName(recordId: UUID, locationName: String?) {
-        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "id == %@", recordId as CVarArg)
-        request.fetchLimit = 1
+        guard let entry = fetchFirstRecord(predicate: NSPredicate(format: "id == %@", recordId as CVarArg)) else {
+            debugLog("⚠️ Record not found with id: \(recordId)")
+            return
+        }
 
         do {
-            let results = try context.fetch(request)
-            if let entry = results.first {
-                entry.locationName = locationName
-                try context.save()
-            }
+            entry.locationName = locationName
+            try context.save()
         } catch {
             let message = "Failed to update location name: \(error.localizedDescription)"
             debugLog(message)

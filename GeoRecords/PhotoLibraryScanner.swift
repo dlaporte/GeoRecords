@@ -885,7 +885,8 @@ class PhotoLibraryScanner: ObservableObject {
                     recordType: record.recordType,
                     timeFrame: timeFrame,
                     photoAssetIdentifier: photoAssetIdentifier,
-                    photoCloudIdentifier: photoCloudIdentifier
+                    photoCloudIdentifier: photoCloudIdentifier,
+                    source: .photo
                 )
 
                 // Delete any existing record for this type/timeframe before adding new one
@@ -1638,7 +1639,8 @@ class PhotoLibraryScanner: ObservableObject {
                     recordType: recordType,
                     timeFrame: .month,
                     photoAssetIdentifier: candidate.asset.localIdentifier,
-                    photoCloudIdentifier: photoCloudIdentifier
+                    photoCloudIdentifier: photoCloudIdentifier,
+                    source: .photo
                 )
 
                 _ = await MainActor.run {

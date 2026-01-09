@@ -8,6 +8,7 @@
 import Foundation
 import MapKit
 import UIKit
+import WidgetKit
 
 /// Generates and caches map images for widget display
 @MainActor
@@ -86,20 +87,32 @@ class WidgetMapGenerator {
             await generateMap(for: mapType)
         }
         debugLog("📍 WidgetMapGenerator: Generated all map snapshots")
+
+        // Verify all files exist
+        verifyAllMaps()
+
+        // Trigger widget refresh so they pick up the new map images
+        WidgetCenter.shared.reloadAllTimelines()
+        debugLog("📍 WidgetMapGenerator: Triggered widget timeline refresh")
     }
 
     /// Generate and cache a specific map type
     func generateMap(for mapType: MapType) async {
+        debugLog("📍 WidgetMapGenerator: Starting generation for \(mapType)")
+
         let regionCodes: [String]
 
         switch mapType {
         case .states:
             regionCodes = RegionTrackingManager.shared.visitedStates.compactMap { $0.regionCode }
+            debugLog("📍 WidgetMapGenerator: Found \(regionCodes.count) visited states")
         case .countries:
             regionCodes = RegionTrackingManager.shared.visitedCountries.compactMap { $0.regionCode }
+            debugLog("📍 WidgetMapGenerator: Found \(regionCodes.count) visited countries")
         case .continents:
             // For continents, we handle separately below
             regionCodes = []
+            debugLog("📍 WidgetMapGenerator: Processing continents separately")
         }
 
         // Get polygons for all visited regions
@@ -153,14 +166,19 @@ class WidgetMapGenerator {
 
         // Get region (saved custom region or default)
         let region: MKCoordinateRegion
+        let hasCustomRegion: Bool
         switch mapType {
         case .states:
+            hasCustomRegion = SettingsManager.shared.widgetMapStatesRegion != nil
             region = SettingsManager.shared.widgetMapStatesRegion ?? mapType.defaultRegion
         case .countries:
+            hasCustomRegion = SettingsManager.shared.widgetMapCountriesRegion != nil
             region = SettingsManager.shared.widgetMapCountriesRegion ?? mapType.defaultRegion
         case .continents:
+            hasCustomRegion = SettingsManager.shared.widgetMapContinentsRegion != nil
             region = SettingsManager.shared.widgetMapContinentsRegion ?? mapType.defaultRegion
         }
+        debugLog("📍 WidgetMapGenerator: \(mapType) using \(hasCustomRegion ? "custom" : "default") region - center: (\(region.center.latitude), \(region.center.longitude)), span: (\(region.span.latitudeDelta), \(region.span.longitudeDelta))")
 
         // Generate the map snapshot
         let options = MKMapSnapshotter.Options()
@@ -171,16 +189,18 @@ class WidgetMapGenerator {
         let snapshotter = MKMapSnapshotter(options: options)
 
         do {
+            debugLog("📍 WidgetMapGenerator: Starting MKMapSnapshotter for \(mapType)...")
             let snapshot = try await snapshotter.start()
+            debugLog("📍 WidgetMapGenerator: Snapshot completed for \(mapType), drawing \(allPolygons.count) polygons...")
 
             // Draw the snapshot with polygons overlaid
             let image = drawPolygons(allPolygons, on: snapshot, mapType: mapType)
+            debugLog("📍 WidgetMapGenerator: Drawing complete for \(mapType), image size: \(image.size.width)x\(image.size.height)")
 
             // Save to App Group
             saveImage(image, for: mapType)
-            debugLog("📍 WidgetMapGenerator: Generated \(mapType) map with \(allPolygons.count) polygons, size: \(image.size.width)x\(image.size.height)")
         } catch {
-            debugLog("⚠️ WidgetMapGenerator: Failed to generate snapshot: \(error)")
+            debugLog("⚠️ WidgetMapGenerator: Failed to generate snapshot for \(mapType): \(error)")
         }
     }
 
@@ -200,6 +220,9 @@ class WidgetMapGenerator {
         context.setStrokeColor(mapType.strokeColor.cgColor)
         context.setLineWidth(1.0)
 
+        // Threshold for detecting antimeridian crossing - if X jumps more than 40% of image width, skip segment
+        let antimeridianThreshold = image.size.width * 0.4
+
         for polygon in polygons {
             let path = UIBezierPath()
             let points = polygon.points()
@@ -209,17 +232,32 @@ class WidgetMapGenerator {
 
             // Convert the first point
             let firstCoord = points[0].coordinate
-            let firstPoint = snapshot.point(for: firstCoord)
-            path.move(to: firstPoint)
+            var lastPoint = snapshot.point(for: firstCoord)
+            path.move(to: lastPoint)
 
-            // Add remaining points
+            // Add remaining points, but skip segments that cross the antimeridian
             for i in 1..<pointCount {
                 let coord = points[i].coordinate
                 let point = snapshot.point(for: coord)
-                path.addLine(to: point)
+
+                // Check if this segment crosses the antimeridian (huge X jump)
+                let xDelta = abs(point.x - lastPoint.x)
+                if xDelta > antimeridianThreshold {
+                    // Start a new subpath instead of drawing a line across the map
+                    path.move(to: point)
+                } else {
+                    path.addLine(to: point)
+                }
+                lastPoint = point
             }
 
-            path.close()
+            // Don't close the path if it would cross the antimeridian
+            let firstPoint = snapshot.point(for: firstCoord)
+            let closingXDelta = abs(firstPoint.x - lastPoint.x)
+            if closingXDelta <= antimeridianThreshold {
+                path.close()
+            }
+
             path.fill()
             path.stroke()
         }
@@ -246,19 +284,54 @@ class WidgetMapGenerator {
 
         do {
             try data.write(to: fileURL)
-            debugLog("📍 WidgetMapGenerator: Saved \(mapType) to \(fileURL.lastPathComponent)")
+            debugLog("📍 WidgetMapGenerator: ✅ Successfully saved \(mapType) to \(fileURL.path)")
+
+            // Verify the file was written and can be read back
+            let fileExists = FileManager.default.fileExists(atPath: fileURL.path)
+            if fileExists {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+                let fileSize = attrs?[.size] as? Int ?? 0
+                debugLog("📍 WidgetMapGenerator: ✅ Verified \(mapType) file exists, size: \(fileSize) bytes")
+            } else {
+                debugLog("⚠️ WidgetMapGenerator: ❌ File verification failed - file does not exist after save!")
+            }
         } catch {
-            debugLog("⚠️ WidgetMapGenerator: Failed to save image: \(error)")
+            debugLog("⚠️ WidgetMapGenerator: ❌ Failed to save \(mapType) image: \(error)")
         }
     }
 
     /// Clear cached map image
     private func clearCachedMap(for mapType: MapType) {
         guard let appGroupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) else {
+            debugLog("⚠️ WidgetMapGenerator: Could not get App Group URL for clearing \(mapType)")
             return
         }
 
         let fileURL = appGroupURL.appendingPathComponent(mapType.rawValue)
-        try? FileManager.default.removeItem(at: fileURL)
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            try? FileManager.default.removeItem(at: fileURL)
+            debugLog("📍 WidgetMapGenerator: Cleared cached \(mapType)")
+        }
+    }
+
+    /// Verify all map files exist (for debugging)
+    func verifyAllMaps() {
+        guard let appGroupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) else {
+            debugLog("⚠️ WidgetMapGenerator: Could not get App Group URL")
+            return
+        }
+
+        debugLog("📍 WidgetMapGenerator: App Group URL = \(appGroupURL.path)")
+
+        for mapType in MapType.allCases {
+            let fileURL = appGroupURL.appendingPathComponent(mapType.rawValue)
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+                let fileSize = attrs?[.size] as? Int ?? 0
+                debugLog("📍 WidgetMapGenerator: ✅ \(mapType.rawValue) exists (\(fileSize) bytes)")
+            } else {
+                debugLog("📍 WidgetMapGenerator: ❌ \(mapType.rawValue) NOT FOUND")
+            }
+        }
     }
 }

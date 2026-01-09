@@ -235,12 +235,54 @@ enum Continent: String, CaseIterable {
     static var totalCount: Int { 7 }
 }
 
-/// Visit source for tracking how a region visit was recorded
-enum VisitSource: String {
+/// Source for tracking how a record was added
+enum RecordSource: String, Codable {
     case photo = "photo"
-    case backgroundLocation = "location"
+    case location = "location"
+    case home = "home"
     case manual = "manual"
+
+    /// User-friendly display name for the source
+    var displayName: String {
+        switch self {
+        case .photo:
+            return "Photo Library"
+        case .location:
+            return "Automatic"
+        case .home:
+            return "Home Location"
+        case .manual:
+            return "Manual Entry"
+        }
+    }
 }
+
+/// Legacy alias for backward compatibility
+typealias VisitSource = RecordSource
+
+// MARK: - Thresholds and Tolerances
+
+/// Photo asset matching: threshold for matching photos by GPS location (in meters)
+/// Used when identifiers don't match but timestamp and location do
+let photoLocationMatchThresholdMeters: Double = 100.0
+
+/// Photo asset matching: threshold for matching photos by timestamp (in seconds)
+/// Photos within this time window are considered candidates for location matching
+let photoTimestampMatchThresholdSeconds: TimeInterval = 2.0
+
+/// Photo region processing: time window for avoiding duplicate processing (in seconds)
+/// If a photo was processed within this window, skip it to avoid duplicates
+let photoProcessingWindowSeconds: TimeInterval = 300 // 5 minutes
+
+/// Duplicate record detection: time tolerance for considering records duplicates (in seconds)
+let duplicateTimeToleranceSeconds: TimeInterval = 1.0
+
+/// Duplicate record detection: value tolerance for numeric comparisons
+let duplicateValueTolerance: Double = 0.0001
+
+/// Duplicate record detection: coordinate tolerance for GPS location comparisons (in degrees)
+/// ~11 meters at the equator
+let duplicateCoordinateToleranceDegrees: Double = 0.0001
 
 // MARK: - UserDefaults Keys
 
@@ -338,6 +380,20 @@ let nonStateCodesForCount: Set<String> = {
     }
     return codes
 }()
+
+/// Normalize a region code for US states to use "US-" prefix
+/// Fixes backups and data that may have bare 2-letter state codes that collide with country codes
+/// - Parameters:
+///   - code: The region code to normalize (e.g., "AL", "US-AL", "FR")
+///   - isState: Whether this is a state/territory record
+/// - Returns: Normalized code (e.g., "AL" → "US-AL" for states, unchanged for countries)
+func normalizeRegionCode(_ code: String, isState: Bool) -> String {
+    // If it's a state with a bare 2-letter code that matches a US state, prefix it
+    if isState && code.count == 2 && !code.hasPrefix("US-") && allUSStateCodes.contains(code) {
+        return "US-\(code)"
+    }
+    return code
+}
 
 /// FIPS code to postal code mapping for US states and territories
 let fipsToPostalCode: [String: String] = [
@@ -569,15 +625,6 @@ let atHomeRadiusMeters: Double = 100.0
 
 /// Maximum realistic altitude on Earth (meters) - Mount Everest is 8,849m
 let maxRealisticAltitudeMeters = 9000.0
-
-/// Coordinate tolerance for duplicate detection in degrees (approximately 1 meter)
-let duplicateCoordinateToleranceDegrees = 0.00001
-
-/// Value tolerance for duplicate detection (dimensionless)
-let duplicateValueTolerance = 0.0001
-
-/// Time tolerance for duplicate detection in seconds
-let duplicateTimeToleranceSeconds: TimeInterval = 1.0
 
 /// Coordinate tolerance for location name proximity in degrees (approximately 11 meters)
 /// Used for both looking up existing location names and propagating name changes

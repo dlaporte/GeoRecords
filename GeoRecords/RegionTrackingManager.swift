@@ -90,7 +90,8 @@ class RegionTrackingManager: ObservableObject {
             type: regionInfo.type,
             date: date,
             coordinate: coordinate,
-            altitude: alt
+            altitude: alt,
+            source: source
         )
 
         debugLog("📍 RegionTrackingManager: Recorded visit to \(regionInfo.name) via \(source.rawValue)")
@@ -120,13 +121,93 @@ class RegionTrackingManager: ObservableObject {
                     photoAssetIdentifier: localId,
                     photoCloudIdentifier: cloudId,
                     suppressNotifications: true,  // Don't spam during photo scan
-                    suppressPhotoPrompts: true    // Already came from photos
+                    suppressPhotoPrompts: true,   // Already came from photos
+                    source: .photo
                 )
             }
         }
 
         saveContext()
         loadVisitedRegions()
+    }
+
+    /// Add region records for the home location (state, country, continent)
+    /// Called when user sets their home location in settings or setup wizard
+    /// Creates records silently without notifications
+    func addHomeRegionRecords() {
+        guard let homeCoord = SettingsManager.shared.homeCoordinate else {
+            debugLog("📍 RegionTrackingManager: No home coordinate set, skipping home region records")
+            return
+        }
+
+        guard let homeRegion = RegionLookupService.shared.region(for: homeCoord) else {
+            debugLog("📍 RegionTrackingManager: Could not determine region for home coordinate")
+            return
+        }
+
+        let now = Date()
+        var addedAny = false
+
+        // 1. Add state record if this is a US state
+        if homeRegion.type == .state {
+            if !regionExists(code: homeRegion.code) {
+                createRegionRecord(
+                    code: homeRegion.code,
+                    name: homeRegion.name,
+                    recordType: .state,
+                    coordinate: homeCoord,
+                    date: now,
+                    source: .home
+                )
+                addedAny = true
+            }
+
+            // Also add the country (US) if not already present
+            if !regionExists(code: "US") {
+                createRegionRecord(
+                    code: "US",
+                    name: "United States",
+                    recordType: .country,
+                    coordinate: homeCoord,
+                    date: now,
+                    source: .home
+                )
+                addedAny = true
+            }
+        } else if homeRegion.type == .country {
+            // 2. Add country record
+            if !regionExists(code: homeRegion.code) {
+                createRegionRecord(
+                    code: homeRegion.code,
+                    name: homeRegion.name,
+                    recordType: .country,
+                    coordinate: homeCoord,
+                    date: now,
+                    source: .home
+                )
+                addedAny = true
+            }
+        }
+
+        // 3. Add continent record
+        if let continent = homeRegion.continent {
+            if !regionExists(code: continent.rawValue) {
+                createRegionRecord(
+                    code: continent.rawValue,
+                    name: continent.rawValue,
+                    recordType: .continent,
+                    coordinate: homeCoord,
+                    date: now,
+                    source: .home
+                )
+                addedAny = true
+            }
+        }
+
+        if addedAny {
+            saveContext()
+            loadVisitedRegions()  // Reload to update published properties
+        }
     }
 
     /// Check if a photo has already been processed for region tracking
@@ -380,6 +461,7 @@ class RegionTrackingManager: ObservableObject {
     /// Migrate: Add the home region if it doesn't exist
     /// This fixes the issue where home regions were previously skipped
     /// Called before loading regions, so we create the entry directly without triggering reload
+    /// Now creates state (if applicable), country, AND continent records
     private func migrateHomeRegionIfNeeded() {
         guard let homeCoord = SettingsManager.shared.homeCoordinate else {
             return  // No home set
@@ -389,43 +471,72 @@ class RegionTrackingManager: ObservableObject {
             return  // Couldn't determine home region
         }
 
-        // Check if state/country record already exists for this region
-        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "regionCode == %@", homeRegion.code)
-        request.fetchLimit = 1
-
-        if let _ = try? context.fetch(request).first {
-            return  // Home region already exists
-        }
-
-        // Determine record type
-        let recordTypeString: String
-        switch homeRegion.type {
-        case .state:
-            recordTypeString = RecordType.state.rawValue
-        case .country:
-            recordTypeString = RecordType.country.rawValue
-        }
-
-        // Create the home region record directly (don't use addVisitToRegion to avoid reload loop)
-        debugLog("📍 Adding missing home region: \(homeRegion.name) (\(homeRegion.code))")
-
         let now = Date()
-        let newEntry = RecordHistoryEntry(context: context)
-        newEntry.id = UUID()
-        newEntry.recordType = recordTypeString
-        newEntry.timeFrame = TimeFrame.allTime.rawValue
-        newEntry.value = now.timeIntervalSince1970
-        newEntry.timestamp = now
-        newEntry.latitude = homeCoord.latitude
-        newEntry.longitude = homeCoord.longitude
-        newEntry.altitude = 0
-        newEntry.locationName = homeRegion.name
-        newEntry.regionCode = homeRegion.code
-        newEntry.dateAdded = now
+        var addedAny = false
 
-        saveContext()
-        debugLog("✅ Added home region: \(homeRegion.name) (\(homeRegion.code))")
+        // 1. Add state record if this is a US state
+        if homeRegion.type == .state {
+            if !regionExists(code: homeRegion.code) {
+                createRegionRecord(
+                    code: homeRegion.code,
+                    name: homeRegion.name,
+                    recordType: .state,
+                    coordinate: homeCoord,
+                    date: now,
+                    source: .home,
+                    logPrefix: "Adding missing home region"
+                )
+                addedAny = true
+            }
+
+            // Also add the country (US) if not already present
+            if !regionExists(code: "US") {
+                createRegionRecord(
+                    code: "US",
+                    name: "United States",
+                    recordType: .country,
+                    coordinate: homeCoord,
+                    date: now,
+                    source: .home,
+                    logPrefix: "Adding missing home region"
+                )
+                addedAny = true
+            }
+        } else if homeRegion.type == .country {
+            // 2. Add country record
+            if !regionExists(code: homeRegion.code) {
+                createRegionRecord(
+                    code: homeRegion.code,
+                    name: homeRegion.name,
+                    recordType: .country,
+                    coordinate: homeCoord,
+                    date: now,
+                    source: .home,
+                    logPrefix: "Adding missing home region"
+                )
+                addedAny = true
+            }
+        }
+
+        // 3. Add continent record
+        if let continent = homeRegion.continent {
+            if !regionExists(code: continent.rawValue) {
+                createRegionRecord(
+                    code: continent.rawValue,
+                    name: continent.rawValue,
+                    recordType: .continent,
+                    coordinate: homeCoord,
+                    date: now,
+                    source: .home,
+                    logPrefix: "Adding missing home region"
+                )
+                addedAny = true
+            }
+        }
+
+        if addedAny {
+            saveContext()
+        }
     }
 
     /// Deduplicate regions with the same regionCode, merging visit dates
@@ -557,7 +668,69 @@ class RegionTrackingManager: ObservableObject {
 
     // MARK: - Private Methods
 
-    private func addVisitToRegion(code: String, name: String, type: RegionType, date: Date, coordinate: CLLocationCoordinate2D, altitude: Double = 0, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, suppressNotifications: Bool = false, suppressPhotoPrompts: Bool = false) {
+    // MARK: Region Record Helpers
+    // TODO: Add unit tests for regionExists() and createRegionRecord() when test coverage is expanded
+
+    /// Check if a region record already exists by region code
+    /// - Parameter code: The region code to check (e.g., "US-CA", "FR")
+    /// - Returns: true if a record with this regionCode exists, false otherwise
+    /// - Note: Returns false on fetch errors (logged via debugLog) for safe failure handling
+    private func regionExists(code: String) -> Bool {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "regionCode == %@", code)
+        request.fetchLimit = 1
+
+        do {
+            return try context.fetch(request).first != nil
+        } catch {
+            debugLog("❌ Error checking if region exists: \(error.localizedDescription)")
+            return false  // Safe default: assume doesn't exist
+        }
+    }
+
+    /// Create a new region record entry
+    /// - Parameters:
+    ///   - code: Region code (e.g., "US-CA", "FR", "Europe")
+    ///   - name: Display name
+    ///   - recordType: Type of region (state, country, continent)
+    ///   - coordinate: GPS coordinate
+    ///   - date: Timestamp for the record
+    ///   - source: How the record was created (home, location, photo, etc.)
+    ///   - logPrefix: Optional prefix for debug log (e.g., "Adding missing home region")
+    private func createRegionRecord(
+        code: String,
+        name: String,
+        recordType: RecordType,
+        coordinate: CLLocationCoordinate2D,
+        date: Date,
+        source: RecordSource,
+        logPrefix: String? = nil
+    ) {
+        let newEntry = RecordHistoryEntry(context: context)
+        newEntry.id = UUID()
+        newEntry.recordType = recordType.rawValue
+        newEntry.timeFrame = TimeFrame.allTime.rawValue
+        newEntry.value = date.timeIntervalSince1970
+        newEntry.timestamp = date
+        newEntry.latitude = coordinate.latitude
+        newEntry.longitude = coordinate.longitude
+        newEntry.altitude = 0
+        newEntry.locationName = name
+        newEntry.regionCode = code
+        newEntry.dateAdded = date
+        newEntry.source = source.rawValue
+
+        // Single log message with optional prefix
+        if let prefix = logPrefix {
+            debugLog("📍 \(prefix): \(name) (\(code))")
+        } else {
+            debugLog("📍 RegionTrackingManager: Added region record: \(name) (\(code))")
+        }
+    }
+
+    // MARK: Region Visit Recording
+
+    private func addVisitToRegion(code: String, name: String, type: RegionType, date: Date, coordinate: CLLocationCoordinate2D, altitude: Double = 0, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, suppressNotifications: Bool = false, suppressPhotoPrompts: Bool = false, source: RecordSource = .location) {
         // Determine record type
         let recordTypeString: String
         switch type {
@@ -615,7 +788,8 @@ class RegionTrackingManager: ObservableObject {
             photoCloudIdentifier: photoCloudIdentifier,
             notes: nil,
             dateAdded: Date(),
-            regionCode: code
+            regionCode: code,
+            source: source
         )
 
         let newEntry = RecordHistoryEntry(context: context)
@@ -633,6 +807,7 @@ class RegionTrackingManager: ObservableObject {
         newEntry.photoCloudIdentifier = detail.photoCloudIdentifier
         newEntry.notes = detail.notes
         newEntry.dateAdded = detail.dateAdded
+        newEntry.source = source.rawValue
 
         saveContext()
 
@@ -648,15 +823,15 @@ class RegionTrackingManager: ObservableObject {
             RecordManager.shared.promptForPhoto(recordType: recordTypeString, detail: detail)
         }
 
-        // If this is a US state, also record US country (propagate suppression flags and photo identifiers)
+        // If this is a US state, also record US country (propagate suppression flags, photo identifiers, and source)
         if type == .state && code.hasPrefix("US-") {
-            addVisitToRegion(code: "US", name: "United States", type: .country, date: date, coordinate: coordinate, altitude: altitude, photoAssetIdentifier: photoAssetIdentifier, photoCloudIdentifier: photoCloudIdentifier, suppressNotifications: suppressNotifications, suppressPhotoPrompts: suppressPhotoPrompts)
+            addVisitToRegion(code: "US", name: "United States", type: .country, date: date, coordinate: coordinate, altitude: altitude, photoAssetIdentifier: photoAssetIdentifier, photoCloudIdentifier: photoCloudIdentifier, suppressNotifications: suppressNotifications, suppressPhotoPrompts: suppressPhotoPrompts, source: source)
         }
 
-        // If this is a country, also record the continent (propagate suppression flags and photo identifiers)
+        // If this is a country, also record the continent (propagate suppression flags, photo identifiers, and source)
         if type == .country {
             if let continent = getContinentForCountry(code: code) {
-                addContinentVisit(continent: continent, date: date, coordinate: coordinate, altitude: altitude, photoAssetIdentifier: photoAssetIdentifier, photoCloudIdentifier: photoCloudIdentifier, suppressNotifications: suppressNotifications, suppressPhotoPrompts: suppressPhotoPrompts)
+                addContinentVisit(continent: continent, date: date, coordinate: coordinate, altitude: altitude, photoAssetIdentifier: photoAssetIdentifier, photoCloudIdentifier: photoCloudIdentifier, suppressNotifications: suppressNotifications, suppressPhotoPrompts: suppressPhotoPrompts, source: source)
             }
         }
 
@@ -664,7 +839,7 @@ class RegionTrackingManager: ObservableObject {
         loadVisitedRegions()
     }
 
-    private func addContinentVisit(continent: String, date: Date, coordinate: CLLocationCoordinate2D, altitude: Double, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, suppressNotifications: Bool = false, suppressPhotoPrompts: Bool = false) {
+    private func addContinentVisit(continent: String, date: Date, coordinate: CLLocationCoordinate2D, altitude: Double, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, suppressNotifications: Bool = false, suppressPhotoPrompts: Bool = false, source: RecordSource = .location) {
         let recordTypeString = RecordType.continent.rawValue
 
         // Check if we already have a record for this continent
@@ -715,7 +890,8 @@ class RegionTrackingManager: ObservableObject {
             photoCloudIdentifier: photoCloudIdentifier,
             notes: nil,
             dateAdded: Date(),
-            regionCode: continent
+            regionCode: continent,
+            source: source
         )
 
         let newEntry = RecordHistoryEntry(context: context)
@@ -733,6 +909,7 @@ class RegionTrackingManager: ObservableObject {
         newEntry.photoCloudIdentifier = detail.photoCloudIdentifier
         newEntry.notes = detail.notes
         newEntry.dateAdded = detail.dateAdded
+        newEntry.source = source.rawValue
 
         saveContext()
 
@@ -771,10 +948,9 @@ class RegionTrackingManager: ObservableObject {
             var key = record.regionCode ?? record.locationName ?? record.id.uuidString
 
             // Normalize US state codes: "CA" and "US-CA" should be treated as the same
-            // If it's a 2-letter code that matches a US state, normalize to US-XX format
-            if key.count == 2 && !key.hasPrefix("US-") && allUSStateCodes.contains(key) {
-                key = "US-\(key)"
-            }
+            // Check if this is a state record to apply normalization
+            let isState = record.recordType == RecordType.state.rawValue
+            key = normalizeRegionCode(key, isState: isState)
 
             if let existing = seen[key] {
                 // Keep the one with the earlier timestamp (first visit)

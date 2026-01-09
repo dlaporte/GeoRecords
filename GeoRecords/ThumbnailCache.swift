@@ -25,6 +25,12 @@ class ThumbnailCache {
         return appGroupURL.appendingPathComponent(thumbnailDirectoryName)
     }
 
+    /// Check if photo library access is authorized
+    private var isPhotoAccessAuthorized: Bool {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        return status == .authorized || status == .limited
+    }
+
     private init() {
         createThumbnailDirectoryIfNeeded()
     }
@@ -135,6 +141,9 @@ class ThumbnailCache {
         coordinate: CLLocationCoordinate2D?,
         for recordId: UUID
     ) async -> Bool {
+        // Skip if photo access not authorized to avoid repeated errors
+        guard isPhotoAccessAuthorized else { return false }
+
         if let asset = PhotoAssetFinder.findAsset(
             localIdentifier: assetIdentifier,
             cloudIdentifier: cloudIdentifier,
@@ -240,6 +249,12 @@ class ThumbnailCache {
     /// Generate thumbnails for all existing records that have photos but no cached thumbnail
     /// Call this on app launch or when migrating
     func generateMissingThumbnails() async {
+        // Skip entirely if photo access not authorized to avoid repeated errors
+        guard isPhotoAccessAuthorized else {
+            debugLog("📸 ThumbnailCache: Skipping thumbnail generation - photo access not authorized")
+            return
+        }
+
         let context = PersistenceController.shared.container.viewContext
         let request = NSFetchRequest<RecordHistoryEntry>(entityName: "RecordHistoryEntry")
 

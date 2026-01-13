@@ -483,7 +483,7 @@ private struct TimeFramePickerWithBadges: View {
                 Button {
                     selectedYear = nil
                 } label: {
-                    Label("Current Year", systemImage: selectedYear == nil ? "checkmark" : "calendar")
+                    Label("This Year", systemImage: selectedYear == nil ? "checkmark" : "calendar")
                 }
                 Divider()
                 ForEach(availableYears, id: \.self) { year in

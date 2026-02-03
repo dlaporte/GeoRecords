@@ -233,14 +233,14 @@ struct RecordsView: View {
     }
 
     private func handleDeepLink() {
-        // Handle timeframe deep link from widgets
+        // Handle timeframe deep link from widgets and notifications
         if let timeFrame = deepLinkManager.navigateToRecordsTimeFrame {
             switch timeFrame {
-            case "monthly":
+            case "monthly", "Monthly":  // Widget uses lowercase, TimeFrame.rawValue is "Monthly"
                 selectedTimeFrame = .month
-            case "yearly":
+            case "yearly", "Yearly":    // Widget uses lowercase, TimeFrame.rawValue is "Yearly"
                 selectedTimeFrame = .year
-            case "allTime":
+            case "allTime", "Lifetime": // Widget uses "allTime", TimeFrame.rawValue is "Lifetime"
                 selectedTimeFrame = .allTime
             default:
                 break

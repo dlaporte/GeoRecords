@@ -899,7 +899,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             content.body = "(\(formattedValue))"
             content.sound = .default
 
-            content.userInfo = ["recordType": recordType]
+            content.userInfo = ["recordType": recordType, "timeFrame": detail.timeFrame.rawValue]
 
             let request = UNNotificationRequest(identifier: NotificationIdentifier.newRecord(type: recordType), content: content, trigger: nil)
 

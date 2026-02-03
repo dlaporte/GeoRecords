@@ -36,6 +36,12 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         if let recordType = userInfo["recordType"] as? String {
             DeepLinkManager.shared.recordType = recordType
             debugLog("DeepLink: recordType set to \(recordType)")
+
+            // Also extract timeFrame if present (for monthly/yearly records)
+            if let timeFrameRaw = userInfo["timeFrame"] as? String {
+                DeepLinkManager.shared.navigateToRecordsTimeFrame = timeFrameRaw
+                debugLog("DeepLink: timeFrame set to \(timeFrameRaw)")
+            }
         }
 
         // Handle stats page deep link

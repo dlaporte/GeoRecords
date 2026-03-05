@@ -84,6 +84,16 @@ enum TimeFrame: String, CaseIterable {
     case year = "Yearly"      // Widget uses "This Year" display but matches this rawValue
     case allTime = "Lifetime" // Matches widget exactly
 
+    /// Initialize from deep link URL parameter (e.g., "monthly", "yearly", "allTime")
+    init?(deepLinkParam param: String) {
+        switch param {
+        case "monthly": self = .month
+        case "yearly": self = .year
+        case "allTime": self = .allTime
+        default: return nil
+        }
+    }
+
     /// Display name for picker UI (e.g., "This Month" instead of "Monthly")
     var displayName: String {
         switch self {

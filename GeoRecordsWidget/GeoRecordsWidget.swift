@@ -279,6 +279,15 @@ enum WidgetTimeFrame: String, CaseIterable, Codable, AppEnum {
         .year: DisplayRepresentation(title: "This Year"),
         .month: DisplayRepresentation(title: "This Month")
     ]
+
+    /// URL parameter value for deep links (must match TimeFrame.init(deepLinkParam:) in main app)
+    var deepLinkParam: String {
+        switch self {
+        case .month: return "monthly"
+        case .year: return "yearly"
+        case .allTime: return "allTime"
+        }
+    }
 }
 
 struct GeoRecordsWidgetIntent: WidgetConfigurationIntent {
@@ -491,13 +500,7 @@ struct GeoRecordsWidgetEntryView : View {
     }
 
     private var deepLinkURL: URL? {
-        let timeFrameParam: String
-        switch timeFrame {
-        case .month: timeFrameParam = "monthly"
-        case .year: timeFrameParam = "yearly"
-        case .allTime: timeFrameParam = "allTime"
-        }
-        return URL(string: "georecords://records?timeframe=\(timeFrameParam)")
+        URL(string: "georecords://records?timeframe=\(timeFrame.deepLinkParam)")
     }
 }
 
@@ -972,13 +975,7 @@ struct SingleRecordContentView: View {
     }
 
     private var deepLinkURL: URL? {
-        let timeFrameParam: String
-        switch timeFrame {
-        case .month: timeFrameParam = "monthly"
-        case .year: timeFrameParam = "yearly"
-        case .allTime: timeFrameParam = "allTime"
-        }
-        return URL(string: "georecords://records?timeframe=\(timeFrameParam)")
+        URL(string: "georecords://records?timeframe=\(timeFrame.deepLinkParam)")
     }
 }
 

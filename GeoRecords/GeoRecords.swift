@@ -8,7 +8,7 @@ class DeepLinkManager: ObservableObject {
     @Published var navigateToStats = false
     @Published var pendingBackupURL: URL? = nil  // For incoming backup files
     @Published var navigateToRegions: String? = nil  // "states", "countries", or "continents"
-    @Published var navigateToRecordsTimeFrame: String? = nil  // "monthly", "yearly", or "allTime"
+    @Published var navigateToRecordsTimeFrame: TimeFrame? = nil
 }
 
 // Notification delegate that handles incoming notifications.
@@ -38,9 +38,10 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             debugLog("DeepLink: recordType set to \(recordType)")
 
             // Also extract timeFrame if present (for monthly/yearly records)
-            if let timeFrameRaw = userInfo["timeFrame"] as? String {
-                DeepLinkManager.shared.navigateToRecordsTimeFrame = timeFrameRaw
-                debugLog("DeepLink: timeFrame set to \(timeFrameRaw)")
+            if let timeFrameRaw = userInfo["timeFrame"] as? String,
+               let timeFrame = TimeFrame(rawValue: timeFrameRaw) {
+                DeepLinkManager.shared.navigateToRecordsTimeFrame = timeFrame
+                debugLog("DeepLink: timeFrame set to \(timeFrame)")
             }
         }
 
@@ -149,7 +150,8 @@ struct GeoRecords: App {
         switch url.host {
         case "records":
             // Navigate to Records tab with optional timeframe
-            if let timeFrame = params["timeframe"] {
+            if let timeFrameParam = params["timeframe"],
+               let timeFrame = TimeFrame(deepLinkParam: timeFrameParam) {
                 DeepLinkManager.shared.navigateToRecordsTimeFrame = timeFrame
                 debugLog("Deep link: Opening records tab with timeframe \(timeFrame)")
             } else {

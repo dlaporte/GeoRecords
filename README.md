@@ -1,11 +1,11 @@
 # GeoRecords
 
-An iOS/iPadOS app that automatically tracks your geographical extremes — furthest north, south, east, west, highest altitude, lowest altitude, and furthest from home. Available on the [App Store](https://apps.apple.com/us/app/georecords/id6743328334).
+An iOS/iPadOS app that automatically tracks your geographical extremes — furthest north, south, east, west, highest altitude, and furthest from home. Available on the [App Store](https://apps.apple.com/us/app/georecords/id6743328334).
 
 ## Features
 
 - **Automatic Record Tracking** — Runs in the background using significant location changes (~500m), detecting new geographical records with zero interaction required
-- **Seven Record Types** — Furthest North, South, East, West, Up (highest altitude), Down (lowest altitude), and Furthest from Home
+- **Six Record Types** — Furthest North, South, East, West, Up (highest altitude), and Furthest from Home
 - **Three Timeframes** — Monthly, Yearly, and All-Time records tracked independently
 - **Region Tracking** — Tracks visited US states, countries, and continents with interactive maps
 - **Statistics & Charts** — Visualize your geographical history with Swift Charts

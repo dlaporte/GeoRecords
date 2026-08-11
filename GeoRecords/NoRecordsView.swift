@@ -229,18 +229,7 @@ struct NoRecordsView: View {
         Task {
             if let result = await BackupManager.shared.importBackup(from: url) {
                 await MainActor.run {
-                    var parts: [String] = []
-                    if result.records > 0 {
-                        parts.append("\(result.records) record\(result.records == 1 ? "" : "s")")
-                    }
-                    if result.regions > 0 {
-                        parts.append("\(result.regions) visited region\(result.regions == 1 ? "" : "s")")
-                    }
-                    if result.cache > 0 {
-                        parts.append("\(result.cache) photo cache entr\(result.cache == 1 ? "y" : "ies")")
-                    }
-                    let summary = parts.isEmpty ? "backup data" : parts.joined(separator: ", ")
-                    importResultMessage = "Successfully imported \(summary) from backup."
+                    importResultMessage = BackupManager.importResultMessage(for: result)
                     showImportResult = true
                     clearBackupInfo()
                 }

@@ -9,6 +9,7 @@ class DeepLinkManager: ObservableObject {
     @Published var pendingBackupURL: URL? = nil  // For incoming backup files
     @Published var navigateToRegions: String? = nil  // "states", "countries", or "continents"
     @Published var navigateToRecordsTimeFrame: TimeFrame? = nil
+    @Published var navigateToRecordsTab = false  // Plain tab switch, no timeframe change
 }
 
 // Notification delegate that handles incoming notifications.
@@ -45,11 +46,20 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             }
         }
 
-        // Handle stats page deep link
-        if let deepLink = userInfo["deepLink"] as? String, deepLink == "stats" {
+        // Handle page deep links (summary notifications, catch-up digest)
+        if let deepLink = userInfo["deepLink"] as? String {
             Task { @MainActor in
-                DeepLinkManager.shared.navigateToStats = true
-                debugLog("DeepLink: navigating to stats")
+                switch deepLink {
+                case "stats":
+                    DeepLinkManager.shared.navigateToStats = true
+                case "regions":
+                    DeepLinkManager.shared.navigateToRegions = "countries"
+                case "records":
+                    DeepLinkManager.shared.navigateToRecordsTab = true
+                default:
+                    break
+                }
+                debugLog("DeepLink: navigating to \(deepLink)")
             }
         }
 
@@ -83,6 +93,12 @@ struct GeoRecords: App {
         // Start monitoring photo library for new photos (catches extreme locations from camera)
         PhotoLocationMonitor.shared.startMonitoring()
 
+        // Warm the region-boundary data (~36MB of GeoJSON) off the main thread so the
+        // first Maps view or photo scan doesn't pay the parse as a main-thread hang
+        Task.detached(priority: .utility) {
+            RegionLookupService.shared.loadBoundaries()
+        }
+
         // Startup maintenance tasks
         Task {
             try? await Task.sleep(nanoseconds: standardDelayNanos)  // Wait 2 seconds after launch
@@ -94,6 +110,10 @@ struct GeoRecords: App {
                     debugLog("🧹 Startup cleanup: cleaned \(cleaned) record(s)")
                 }
             }
+
+            // Catch up on photos taken while the app wasn't running
+            // (the live photo monitor only sees changes while the app is alive)
+            await PhotoLocationMonitor.shared.performCatchUpScan()
 
             // Start background geocoding for any records missing location names
             await BackgroundGeocoder.shared.geocodeMissingLocations()

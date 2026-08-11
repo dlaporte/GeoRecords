@@ -253,13 +253,24 @@ class PhotoLibraryScanner: ObservableObject {
     func requestPhotoLibraryAccess(completion: @escaping (Bool) -> Void) {
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
             _ = Task { @MainActor in
-                completion(status == .authorized)
+                // Limited access is usable: the scan simply sees the user's selected
+                // subset (every other photo consumer in the app accepts .limited too)
+                completion(status == .authorized || status == .limited)
             }
         }
     }
 
-    func scanPhotoLibrary(homeCoordinate: CLLocationCoordinate2D?) async {
-        guard !isScanning else { return }
+    /// - Parameters:
+    ///   - startDate: when set, only photos taken on/after this date are scanned
+    ///     (user-selectable from the manual import flow; nil scans the entire library)
+    ///   - includeRecords: collect geographic-extreme record candidates (and their
+    ///     daily/monthly backfill rows)
+    ///   - includeRegions: collect state/country/continent visit detection
+    func scanPhotoLibrary(homeCoordinate: CLLocationCoordinate2D?, startDate: Date? = nil, includeRecords: Bool = true, includeRegions: Bool = true) async {
+        // Also guard isProcessing: the post-scan phase mutates the same arrays a new
+        // scan would reset, and a stale armed cancel flag must never kill a fresh scan
+        guard !isScanning, !isProcessing else { return }
+        cancelRequested = false
 
         isScanning = true
         progress = 0
@@ -288,15 +299,20 @@ class PhotoLibraryScanner: ObservableObject {
         // Reset wizard state
         resetWizardState()
 
-        // Fetch all photos (can't filter by location in predicate)
+        // Fetch photos (can't filter by location in predicate; date range is optional)
         let fetchOptions = PHFetchOptions()
         fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        if let startDate = startDate {
+            fetchOptions.predicate = NSPredicate(format: "creationDate >= %@", startDate as NSDate)
+        }
 
         let allPhotos = PHAsset.fetchAssets(with: .image, options: fetchOptions)
         totalPhotos = allPhotos.count
 
         guard totalPhotos > 0 else {
-            errorMessage = "No photos found in library"
+            errorMessage = startDate == nil
+                ? "No photos found in library"
+                : "No photos found after the selected date"
             isScanning = false
             return
         }
@@ -319,6 +335,10 @@ class PhotoLibraryScanner: ObservableObject {
         var regionInfoCache: [String: RegionInfo] = [:]
 
         for batchStart in stride(from: 0, to: count, by: batchSize) {
+            if cancelRequested {
+                finishCancelledScan()
+                return
+            }
             let batchEnd = min(batchStart + batchSize, count)
             var batchPhotosWithLocation = 0
             var batchRegionUpdates: [(code: String, asset: PHAsset, info: RegionInfo?)] = []
@@ -336,32 +356,47 @@ class PhotoLibraryScanner: ObservableObject {
                     let lon = location.coordinate.longitude
                     let alt = location.altitude
 
-                    // Skip invalid locations (Null Island or unrealistic altitude)
-                    if case .valid = validateLocation(latitude: lat, longitude: lon, altitude: alt) {
-                        // Location is valid, continue processing
-                    } else {
+                    // Skip invalid locations. An in-flight photo (unrealistic altitude) still
+                    // has valid lat/lon — exactly the photos that set the big N/S/E/W and
+                    // from-home records — so it stays a candidate for everything except the
+                    // altitude record and region visits (flying over a country isn't a visit).
+                    let altitudeIsTrustworthy: Bool
+                    switch validateLocation(latitude: lat, longitude: lon, altitude: alt) {
+                    case .valid:
+                        altitudeIsTrustworthy = true
+                    case .unrealisticAltitude:
+                        altitudeIsTrustworthy = false
+                    case .nullIsland:
                         continue
                     }
 
                     batchPhotosWithLocation += 1
 
-                    // Collect photo location for daily statistics
-                    if let photoDate = asset.creationDate {
-                        batchPhotoLocations.append((location: location, timestamp: photoDate))
+                    if includeRecords {
+                        // Collect photo location for daily statistics
+                        // (updateAllDailyRecords itself skips the altitude record when unrealistic)
+                        if let photoDate = asset.creationDate {
+                            batchPhotoLocations.append((location: location, timestamp: photoDate))
+                        }
+
+                        // Collect ALL candidates for each direction
+                        northCandidates.append((lat, asset, location))
+                        southCandidates.append((lat, asset, location))
+                        eastCandidates.append((lon, asset, location))
+                        westCandidates.append((lon, asset, location))
+                        if altitudeIsTrustworthy {
+                            upCandidates.append((alt, asset, location))
+                        }
+
+                        // Distance from home
+                        if let homeCoord = homeCoordinate {
+                            let distance = distanceBetween(from: location.coordinate, to: homeCoord)
+                            fromHomeCandidates.append((distance, asset, location))
+                        }
                     }
 
-                    // Collect ALL candidates for each direction
-                    northCandidates.append((lat, asset, location))
-                    southCandidates.append((lat, asset, location))
-                    eastCandidates.append((lon, asset, location))
-                    westCandidates.append((lon, asset, location))
-                    upCandidates.append((alt, asset, location))
-
-                    // Distance from home
-                    if let homeCoord = homeCoordinate {
-                        let distance = distanceBetween(from: location.coordinate, to: homeCoord)
-                        fromHomeCandidates.append((distance, asset, location))
-                    }
+                    // In-flight photos must not mark flyover regions as visited
+                    guard includeRegions, altitudeIsTrustworthy else { continue }
 
                     // Collect region for this photo using spatial cache for performance
                     let cacheKey = self.regionCacheKey(lat: lat, lon: lon)
@@ -638,19 +673,36 @@ class PhotoLibraryScanner: ObservableObject {
             }
         }
 
-        if totalCandidates == 0 {
+        // The user may have cancelled while post-scan processing was running;
+        // don't let the finished results overwrite the discard
+        if cancelRequested {
+            finishCancelledScan()
+            return
+        }
+
+        // Regions discovered without record candidates (e.g., a regions-only scan)
+        // must still enter the wizard — the region steps stand on their own
+        let hasDiscoveredRegions = !discoveredCountries.isEmpty || !discoveredStates.isEmpty
+
+        if totalCandidates == 0 && !hasDiscoveredRegions {
             isProcessing = false
             if photosWithLocation == 0 {
                 errorMessage = "No photos with location data found in your library"
             } else {
-                errorMessage = "No records found that would beat your current records"
+                errorMessage = "Nothing new found in the scanned photos"
             }
         } else {
             // Organize into wizard buckets and start wizard mode
             organizeIntoTimeBuckets()
             debugLog("📊 Processing: organizeIntoTimeBuckets took \(Date().timeIntervalSince(processingStart))s total")
             isProcessing = false
-            currentWizardStep = .allTime
+            // Start at the first step that has content (a regions-only scan jumps
+            // straight to the region confirmation steps)
+            if totalCandidates > 0 {
+                currentWizardStep = .allTime
+            } else {
+                currentWizardStep = discoveredStates.isEmpty ? .countries : .states
+            }
             isWizardMode = true
             isConfirming = true  // Keep for compatibility with ImportPreviewView
         }
@@ -886,7 +938,7 @@ class PhotoLibraryScanner: ObservableObject {
                     timeFrame: timeFrame,
                     photoAssetIdentifier: photoAssetIdentifier,
                     photoCloudIdentifier: photoCloudIdentifier,
-                    source: .photo
+                    source: .wizard  // Explicit user choice: outranks extremeness in slot selection
                 )
 
                 // Delete any existing record for this type/timeframe before adding new one
@@ -945,13 +997,9 @@ class PhotoLibraryScanner: ObservableObject {
             // Log summary
             debugLog("✅ Import completed successfully. \(successCount) records imported.")
 
-            // Unblock alerts after a delay
-            _ = Task {
-                try? await Task.sleep(nanoseconds: postImportNotificationSuppressionNanoseconds)
-                RecordManager.shared.blockAlertsDuringImport(block: false)
-            }
-
-            // Also use the time-based suppression system as backup
+            // Switch from the hard import block to the time-based suppression window.
+            // (A fixed-delay unblock Task here could outlive this import and clear a
+            // LATER import's block mid-run — one mechanism, deadline-based, is enough.)
             RecordManager.shared.suppressNotificationsAfterImport(durationSeconds: postImportNotificationSuppressionSeconds)
 
             // Persist user's skip choices for future wizard runs
@@ -971,6 +1019,10 @@ class PhotoLibraryScanner: ObservableObject {
                 if cleaned > 0 {
                     debugLog("🧹 Post-import cleanup: cleaned \(cleaned) record(s)")
                 }
+
+                // Reload in-memory records: imported rows from earlier months/years don't go
+                // through setRecord above, so the current timeframe slots must be recomputed
+                RecordManager.shared.loadRecordsFromHistory()
 
                 let context = PersistenceController.shared.container.viewContext
                 do {
@@ -1033,9 +1085,9 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         // Sort each year's candidates by extremeness and create buckets
-        // Exclude current year since it's covered by monthly buckets
+        // The current year IS included: monthly buckets only produce "Monthly" rows, so
+        // without a current-year bucket the scan could never create this year's "Yearly" records.
         yearlyBuckets = yearDict.keys.sorted(by: >).compactMap { year in
-            guard year != currentYear else { return nil }  // Skip current year
             guard let yearData = yearDict[year] else { return nil }
             var records: [String: [DiscoveredRecord]] = [:]
             for (recordType, candidates) in yearData {
@@ -1149,8 +1201,12 @@ class PhotoLibraryScanner: ObservableObject {
             debugLog("⚠️ Filtering Null Island candidate for \(recordType)")
             return false
         case .unrealisticAltitude(let meters):
-            debugLog("⚠️ Filtering unrealistic altitude (\(meters)m) candidate for \(recordType)")
-            return false
+            // In-flight photos have valid lat/lon; only the altitude record can't trust them
+            if recordType == RecordType.up.rawValue {
+                debugLog("⚠️ Filtering unrealistic altitude (\(meters)m) candidate for \(recordType)")
+                return false
+            }
+            return true
         }
     }
 
@@ -1182,15 +1238,26 @@ class PhotoLibraryScanner: ObservableObject {
                 }
 
                 let existingRecord = RecordManager.shared.getRecord(type: recordType, timeFrame: .allTime)
-                let matchIndex = findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
+
+                // A slot only counts as "existing" while the record on file is still the best
+                // known value. If the scan found a meaningfully more extreme photo, treat the
+                // slot as new so the better candidate imports by default (import replaces the
+                // old row) instead of being dropped by the exists-and-unmodified gate.
+                let upToDate = existingRecord.map { existing in
+                    !scanFoundBetterCandidate(than: existing, candidates: candidates, recordType: recordType)
+                } ?? false
+
+                let matchIndex = upToDate
+                    ? findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
+                    : 0
                 wizardSelections.allTime[recordType] = matchIndex
 
                 if let existing = existingRecord {
-                    debugLog("🔍 AllTime \(recordType): existing photo=\(existing.photoAssetIdentifier ?? "nil"), matchIndex=\(matchIndex)")
+                    debugLog("🔍 AllTime \(recordType): existing photo=\(existing.photoAssetIdentifier ?? "nil"), matchIndex=\(matchIndex), upToDate=\(upToDate)")
                 }
 
-                // Track if record exists
-                if existingRecord != nil {
+                // Track if record exists (and is still the best known value)
+                if upToDate {
                     wizardSelections.existingRecords.insert(selKey)
                 }
                 wizardSelections.initialSelections[selKey] = matchIndex
@@ -1217,29 +1284,33 @@ class PhotoLibraryScanner: ObservableObject {
 
                     // For current year, check RecordManager; for past years, check history
                     let existingRecord: RecordDetail?
-                    let hasExistingRecord: Bool
 
                     if bucket.id == currentYear {
                         existingRecord = RecordManager.shared.getRecord(type: recordType, timeFrame: .year)
-                        hasExistingRecord = existingRecord != nil
                     } else {
                         // Check history for past years
                         existingRecord = RecordHistoryManager.shared.getBestRecord(
                             type: recordType,
                             year: bucket.id
                         )
-                        hasExistingRecord = existingRecord != nil
                     }
 
-                    let matchIndex = findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
+                    // Existing only counts if the scan didn't find something better (see all-time step)
+                    let upToDate = existingRecord.map { existing in
+                        !scanFoundBetterCandidate(than: existing, candidates: candidates, recordType: recordType)
+                    } ?? false
+
+                    let matchIndex = upToDate
+                        ? findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
+                        : 0
                     yearSelections[recordType] = matchIndex
 
                     if let existing = existingRecord {
-                        debugLog("🔍 Year \(bucket.id) \(recordType): existing photo=\(existing.photoAssetIdentifier ?? "nil"), matchIndex=\(matchIndex), candidates=\(candidates.count)")
+                        debugLog("🔍 Year \(bucket.id) \(recordType): existing photo=\(existing.photoAssetIdentifier ?? "nil"), matchIndex=\(matchIndex), candidates=\(candidates.count), upToDate=\(upToDate)")
                     }
 
-                    // Track if record exists
-                    if hasExistingRecord {
+                    // Track if record exists (and is still the best known value)
+                    if upToDate {
                         wizardSelections.existingRecords.insert(selKey)
                     }
                     wizardSelections.initialSelections[selKey] = matchIndex
@@ -1269,11 +1340,9 @@ class PhotoLibraryScanner: ObservableObject {
 
                     // For current month, check RecordManager; for past months, check history
                     let existingRecord: RecordDetail?
-                    let hasExistingRecord: Bool
 
                     if bucket.id == currentMonth && bucket.year == currentYear {
                         existingRecord = RecordManager.shared.getRecord(type: recordType, timeFrame: .month)
-                        hasExistingRecord = existingRecord != nil
                     } else {
                         // Check history for past months
                         existingRecord = RecordHistoryManager.shared.getBestRecord(
@@ -1281,18 +1350,24 @@ class PhotoLibraryScanner: ObservableObject {
                             year: bucket.year,
                             month: bucket.id
                         )
-                        hasExistingRecord = existingRecord != nil
                     }
 
-                    let matchIndex = findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
+                    // Existing only counts if the scan didn't find something better (see all-time step)
+                    let upToDate = existingRecord.map { existing in
+                        !scanFoundBetterCandidate(than: existing, candidates: candidates, recordType: recordType)
+                    } ?? false
+
+                    let matchIndex = upToDate
+                        ? findMatchingCandidateIndex(candidates: candidates, existingRecord: existingRecord)
+                        : 0
                     monthSelections[recordType] = matchIndex
 
                     if let existing = existingRecord {
-                        debugLog("🔍 Month \(key) \(recordType): existing photo=\(existing.photoAssetIdentifier ?? "nil"), matchIndex=\(matchIndex), candidates=\(candidates.count)")
+                        debugLog("🔍 Month \(key) \(recordType): existing photo=\(existing.photoAssetIdentifier ?? "nil"), matchIndex=\(matchIndex), candidates=\(candidates.count), upToDate=\(upToDate)")
                     }
 
-                    // Track if record exists
-                    if hasExistingRecord {
+                    // Track if record exists (and is still the best known value)
+                    if upToDate {
                         wizardSelections.existingRecords.insert(selKey)
                     }
                     wizardSelections.initialSelections[selKey] = matchIndex
@@ -1339,6 +1414,33 @@ class PhotoLibraryScanner: ObservableObject {
         // No match found, default to most extreme (index 0)
         debugLog("⚠️ findMatchingCandidateIndex: Defaulting to index 0 for \(existing.recordType)")
         return 0
+    }
+
+    /// Whether any scanned candidate meaningfully beats the existing record's value.
+    /// Uses the same minimum-delta settings as live record updates, so GPS jitter in photo
+    /// metadata doesn't re-flag an up-to-date record as new on every scan.
+    private func scanFoundBetterCandidate(than existing: RecordDetail, candidates: [DiscoveredRecord], recordType: String) -> Bool {
+        guard let type = RecordType.from(string: recordType) else { return false }
+
+        let settings = SettingsManager.shared
+        let threshold: Double
+        switch type {
+        case .north, .south:
+            threshold = settings.minLatitudeDelta
+        case .east, .west:
+            threshold = settings.minLongitudeDelta
+        case .up:
+            threshold = settings.minAltitudeDeltaMeters
+        case .fromHome:
+            threshold = settings.minDistanceDeltaMeters
+        case .state, .country, .continent:
+            return false  // Region visits have no comparable value
+        }
+
+        return candidates.contains { candidate in
+            let delta = type.isAscending ? (candidate.value - existing.value) : (existing.value - candidate.value)
+            return delta > threshold
+        }
     }
 
     /// Update selection for all-time record
@@ -1447,12 +1549,14 @@ class PhotoLibraryScanner: ObservableObject {
         }
 
         // Monthly selections
-        let currentYear = Calendar.current.component(.year, from: Date())
         for (monthKey, selections) in wizardSelections.monthly {
+            // monthKey is "YYYY-MM" — use ITS year, not the current year, so a deletion
+            // can never target the wrong year's month
             let components = monthKey.split(separator: "-")
             guard components.count == 2,
+                  let year = Int(components[0]),
                   let month = Int(components[1]),
-                  let bucket = monthlyBuckets.first(where: { $0.id == month }) else { continue }
+                  let bucket = monthlyBuckets.first(where: { $0.id == month && $0.year == year }) else { continue }
 
             for (recordType, index) in selections {
                 guard let candidates = bucket.records[recordType] else { continue }
@@ -1465,7 +1569,7 @@ class PhotoLibraryScanner: ObservableObject {
                         recordsToDelete.append(RecordToDelete(
                             recordType: recordType,
                             timeFrame: .month,
-                            year: currentYear,
+                            year: year,
                             month: month
                         ))
                     }
@@ -1494,6 +1598,42 @@ class PhotoLibraryScanner: ObservableObject {
         currentWizardStep = .allTime
         isWizardMode = false
         recordsToDelete = []
+    }
+
+    // MARK: - Cancellation
+
+    /// Set when the user cancels; the scan's batch loop notices and cleans up
+    private var cancelRequested = false
+
+    /// Cancel any in-flight scan and discard results, so the next Import Photos
+    /// starts fresh at the scan options screen. Called when the user leaves the
+    /// import flow (Cancel/Close/Done) — the scanner outlives the sheet, so without
+    /// this, stale results reappear on the next open.
+    func cancelAndReset() {
+        if isScanning || isProcessing {
+            cancelRequested = true  // the scan/processing pipeline performs the cleanup
+        } else {
+            discardResults()
+        }
+    }
+
+    private func finishCancelledScan() {
+        cancelRequested = false
+        isScanning = false
+        isProcessing = false
+        discardResults()
+        debugLog("📸 Scan cancelled by user")
+    }
+
+    private func discardResults() {
+        resetWizardState()
+        discoveredRecords = []
+        discoveredCountries = []
+        discoveredStates = []
+        confirmedRecords = []
+        candidatesByTimeFrame = [:]
+        errorMessage = nil
+        isConfirming = false
     }
 
     /// Persist user's skip choices to SettingsManager for future wizard runs

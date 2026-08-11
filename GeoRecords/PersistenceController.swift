@@ -138,15 +138,23 @@ class PersistenceController: ObservableObject {
     }
 
     func attemptDatabaseRecovery(storeURL: URL) {
-        debugLog("User approved database recovery. Removing corrupted store at: \(storeURL)")
+        debugLog("User approved database recovery. Setting aside corrupted store at: \(storeURL)")
 
-        // Remove corrupted store with explicit error handling
-        do {
-            try FileManager.default.removeItem(at: storeURL)
-            debugLog("✅ Successfully removed corrupted database file")
-        } catch {
-            debugLog("⚠️ Failed to remove corrupted database: \(error.localizedDescription)")
-            // Continue anyway - the store might not exist or might be removed on retry
+        // Move the corrupted store ASIDE instead of deleting it: if the user's recent
+        // records had not yet exported to CloudKit, the set-aside file is the only
+        // remaining copy and may be recoverable with support
+        let timestamp = Int(Date().timeIntervalSince1970)
+        for suffix in ["", "-shm", "-wal"] {
+            let source = URL(fileURLWithPath: storeURL.path + suffix)
+            guard FileManager.default.fileExists(atPath: source.path) else { continue }
+            let destination = URL(fileURLWithPath: storeURL.path + "-corrupt-\(timestamp)" + suffix)
+            do {
+                try FileManager.default.moveItem(at: source, to: destination)
+                debugLog("✅ Set aside corrupted database file: \(destination.lastPathComponent)")
+            } catch {
+                debugLog("⚠️ Failed to set aside \(source.lastPathComponent): \(error.localizedDescription) - deleting instead")
+                try? FileManager.default.removeItem(at: source)
+            }
         }
 
         // Create backup file to indicate deletion happened

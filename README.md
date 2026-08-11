@@ -5,15 +5,17 @@ An iOS/iPadOS app that automatically tracks your geographical extremes — furth
 ## Features
 
 - **Automatic Record Tracking** — Runs in the background using significant location changes (~500m), detecting new geographical records with zero interaction required
+- **Photo Catch-Up** — Automatically detects records from photos taken while the app wasn't running, so nothing is missed after a force-quit or reboot
 - **Six Record Types** — Furthest North, South, East, West, Up (highest altitude), and Furthest from Home
-- **Three Timeframes** — Monthly, Yearly, and All-Time records tracked independently
-- **Region Tracking** — Tracks visited US states, countries, and continents with interactive maps
+- **Three Timeframes** — Monthly, Yearly, and All-Time records tracked independently, with browsing of any past month or year
+- **Region Tracking** — Tracks visited US states, countries, and continents with interactive maps; tap a region to jump to its card
 - **Statistics & Charts** — Visualize your geographical history with Swift Charts
-- **Photo Integration** — Attach photos to records from your camera or library; scan your photo library to import historical records from geotagged photos
+- **Photo Integration** — Attach photos to records from your camera or library; scan your photo library (entire library or from a chosen date) to import historical records from geotagged photos
 - **iCloud Sync** — Records sync across devices via CloudKit
-- **Backup & Restore** — Export/import `.georecords` backup files
+- **Backup & Restore** — Export/import `.georecords` backup files, with automatic safety snapshots before destructive operations
+- **Siri & Shortcuts** — Ask for any record ("What's my furthest north this year?") or your region counts
 - **Home Screen Widgets** — Record and region widgets with map snapshots and photo thumbnails
-- **Configurable Notifications** — Get notified when you break records, with per-timeframe controls
+- **Configurable Notifications** — One notification per record event, highlighting your biggest achievement, with per-timeframe controls
 - **Metric & Imperial** — Toggle between unit systems for altitude and distance display
 
 ## Requirements

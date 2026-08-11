@@ -220,6 +220,7 @@ struct ManualRecordImportView: View {
         Task {
             // Track records by type -> timeframes
             var recordsByType: [String: [TimeFrame]] = [:]
+            var createdRecordIds: [UUID] = []
             var regionsAdded: [String] = []
 
             // Get altitude (use 0 if not specified)
@@ -309,15 +310,18 @@ struct ManualRecordImportView: View {
 
                         // Track what was added
                         recordsByType[recordType.rawValue, default: []].append(timeFrame)
+                        createdRecordIds.append(detail.id)
                     }
                 }
             }
 
-            // Save thumbnail if we have a photo
+            // Save a thumbnail for each created record (thumbnails are keyed by record ID;
+            // saving under a fresh UUID produced an orphan file no record could ever load)
             if let image = selectedPhotoImage {
-                // Use a consistent ID for the thumbnail
-                let thumbnailId = UUID()
-                ThumbnailCache.shared.saveThumbnail(from: image, for: thumbnailId)
+                let source = selectedPhotoAssetIdentifier ?? ThumbnailCache.embeddedPhotoSource
+                for recordId in createdRecordIds {
+                    ThumbnailCache.shared.saveThumbnail(from: image, for: recordId, source: source)
+                }
             }
 
             // Check for new state/country

@@ -15,7 +15,5 @@ struct GeoRecordsWidgetBundle: WidgetBundle {
         SingleRecordWidget()
         RegionStatsWidget()
         RegionMapWidget()
-        GeoRecordsWidgetControl()
-        GeoRecordsWidgetLiveActivity()
     }
 }

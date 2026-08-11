@@ -20,7 +20,7 @@ struct SetupWizardView: View {
     @State private var showPermissionAlert = false
     @State private var showImportPreview = false
 
-    let totalSteps = 6
+    let totalSteps = 7  // TabView tags 0-6: Welcome, Units, Home, Notifications, Summaries, Photo Prompts, Photo Import
 
     // Check if Next button should be enabled
     private var isNextButtonEnabled: Bool {
@@ -197,6 +197,9 @@ struct SetupWizardView: View {
             Text("Please grant photo library access in Settings to import records from your photos.")
         }
         .fullScreenCover(isPresented: $showImportPreview, onDismiss: {
+            // Discard scan state after teardown (same as the Settings/ContentView
+            // presenters) so a cancelled setup scan can't leave stale wizard results
+            photoScanner.cancelAndReset()
             // When import is complete, dismiss wizard
             dismiss()
         }) {

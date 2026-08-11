@@ -12,10 +12,29 @@ struct ImportPreviewView: View {
     @State private var importedCountryCount = 0
     @State private var importedStateCount = 0
 
+    /// When true, show scan-range options before starting (manual import entry points).
+    /// The setup wizard starts its own full scan and never shows this.
+    var allowScanOptions: Bool = false
+    @State private var hasStartedScan = false
+
+    private func startScan(from startDate: Date?, includeRecords: Bool, includeRegions: Bool) {
+        hasStartedScan = true
+        Task {
+            await scanner.scanPhotoLibrary(
+                homeCoordinate: settings.homeCoordinate,
+                startDate: startDate,
+                includeRecords: includeRecords,
+                includeRegions: includeRegions
+            )
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if scanner.isScanning {
+                if allowScanOptions && !hasStartedScan && !scanner.isScanning && !scanner.isProcessing && !scanner.hasWizardRecords {
+                    ScanOptionsForm(onStart: startScan)
+                } else if scanner.isScanning {
                     // Scanning progress
                     VStack(spacing: 20) {
                         ProgressView(value: scanner.progress) {
@@ -74,6 +93,16 @@ struct ImportPreviewView: View {
                             .font(.headline)
                             .multilineTextAlignment(.center)
 
+                        if allowScanOptions {
+                            Button("Scan Again") {
+                                // Safe to reset here: this branch mounts no views that
+                                // index into the scanner's candidate arrays
+                                scanner.cancelAndReset()
+                                hasStartedScan = false
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+
                         Button("Close") {
                             dismiss()
                         }
@@ -95,6 +124,14 @@ struct ImportPreviewView: View {
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
+
+                        if allowScanOptions {
+                            Button("Scan Again") {
+                                scanner.cancelAndReset()
+                                hasStartedScan = false
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
 
                         Button("Close") {
                             dismiss()
@@ -161,6 +198,9 @@ struct ImportPreviewView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     if !scanner.isWizardMode || !scanner.isImporting {
                         Button("Cancel") {
+                            // State reset happens in the presenter's onDismiss — clearing
+                            // wizard arrays while this hierarchy is still mounted lets
+                            // SwiftUI re-render views whose selections index cleared arrays
                             dismiss()
                         }
                     }
@@ -219,6 +259,86 @@ struct ImportPreviewView: View {
                 showSuccess = true
                 // Suppression is now handled inside importSelectedRecords() after all records are imported
             }
+        }
+    }
+}
+
+// MARK: - Scan Options
+
+/// Pre-scan options for manual photo imports: entire library, or only photos
+/// taken after a user-chosen date (useful for filling a known gap quickly)
+private struct ScanOptionsForm: View {
+    let onStart: (Date?, _ includeRecords: Bool, _ includeRegions: Bool) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var limitByDate = false
+    @State private var startDate = Calendar.current.date(byAdding: .month, value: -3, to: Date()) ?? Date()
+    @State private var includeRecords = true
+    @State private var includeRegions = true
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 60))
+                .foregroundColor(.blue)
+
+            Text("Scan Your Photo Library")
+                .font(.title2)
+                .fontWeight(.bold)
+
+            Text("GeoRecords will look through your geotagged photos for records and visited regions.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+
+            VStack(spacing: 12) {
+                Toggle("Only scan photos after a date", isOn: $limitByDate.animation())
+
+                if limitByDate {
+                    DatePicker(
+                        "Start date",
+                        selection: $startDate,
+                        in: ...Date(),
+                        displayedComponents: .date
+                    )
+                }
+
+                Divider()
+
+                // "Stats" and "history" are derived from records, so these two toggles
+                // cover everything the scan can produce
+                Toggle("Records", isOn: $includeRecords)
+                Toggle("Regions (states & countries)", isOn: $includeRegions)
+            }
+            .padding()
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(UIColor.secondarySystemBackground))
+            )
+            .padding(.horizontal)
+
+            Button {
+                onStart(limitByDate ? startDate : nil, includeRecords, includeRegions)
+            } label: {
+                Text(limitByDate ? "Scan Photos Since \(startDate.formatted(date: .abbreviated, time: .omitted))" : "Scan Entire Library")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(includeRecords || includeRegions ? Color.blue : Color.gray.opacity(0.4))
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+            }
+            .disabled(!includeRecords && !includeRegions)
+            .padding(.horizontal)
+
+            Button("Cancel") {
+                dismiss()
+            }
+            .foregroundColor(.secondary)
+
+            Spacer()
         }
     }
 }

@@ -127,6 +127,11 @@ struct ContentView: View {
         .onAppear(perform: handleOnAppear)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             locationManager.updateHealthStatus()
+            // Catch up on photos taken while the app was backgrounded/quit
+            // (internally debounced, so rapid app switches don't rescan)
+            Task {
+                await PhotoLocationMonitor.shared.performCatchUpScan()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             Task { @MainActor in
@@ -151,6 +156,12 @@ struct ContentView: View {
                 // RecordsView will handle the timeframe selection
             }
         }
+        .onChange(of: deepLinkManager.navigateToRecordsTab) { _, shouldNavigate in
+            if shouldNavigate {
+                selectedTab = 0  // Records tab, current timeframe unchanged
+                deepLinkManager.navigateToRecordsTab = false
+            }
+        }
         .onChange(of: deepLinkManager.pendingBackupURL) { _, url in
             guard let url = url else { return }
             handleIncomingBackupFile(url)
@@ -162,19 +173,16 @@ struct ContentView: View {
         .sheet(isPresented: $recordManager.showPhotoPrompt) {
             photoPromptSheet
         }
-        .sheet(isPresented: $showPhotoImportWizard) {
-            ImportPreviewView()
+        .sheet(isPresented: $showPhotoImportWizard, onDismiss: {
+            // Discard results AFTER teardown (see SettingsView) so the next
+            // Import Photos starts fresh at the options screen
+            photoScanner.cancelAndReset()
+        }) {
+            // Scan starts from the options screen (entire library or since a chosen date)
+            ImportPreviewView(allowScanOptions: true)
                 .environmentObject(photoScanner)
                 .environmentObject(settings)
                 .interactiveDismissDisabled()
-                .onAppear {
-                    // Start scan if not already scanning
-                    if !photoScanner.isScanning && !photoScanner.hasWizardRecords {
-                        Task {
-                            await photoScanner.scanPhotoLibrary(homeCoordinate: settings.homeCoordinate)
-                        }
-                    }
-                }
         }
         .sheet(isPresented: $showNoRecordsView) {
             NoRecordsView(onScanPhotos: {
@@ -441,6 +449,9 @@ struct ContentView: View {
 
         // Destroy the local database completely - this forces a fresh sync from iCloud
         Task {
+            // Safety net: automatic local snapshot before destroying the local store
+            await BackupManager.shared.writeSafetySnapshot(reason: "icloud-restore")
+
             let cleared = await RecordHistoryManager.shared.clearLocalOnly()
             debugLog("☁️ Local database cleared: \(cleared)")
 
@@ -470,12 +481,23 @@ struct ContentView: View {
     private func startFresh() {
         debugLog("🆕 User chose to start fresh - clearing any synced data")
 
-        // Clear all local data including any that synced from iCloud
-        recordManager.resetRecords()
-        RecordHistoryManager.shared.clearHistory()
-        RegionTrackingManager.shared.loadVisitedRegions()  // Reload empty state
+        Task { @MainActor in
+            // Safety net: data that synced from iCloud is wiped here — keep a snapshot
+            // in case "start fresh" was picked by mistake on an account with history
+            await BackupManager.shared.writeSafetySnapshot(reason: "start-fresh")
 
-        setupFlowState = .showingSetupWizard
+            // Clear all local data including any that synced from iCloud.
+            // If the clear fails, stay on the choice screen (clearHistory shows its own
+            // error alert) rather than starting the wizard over surviving data.
+            guard RecordHistoryManager.shared.clearHistory() else {
+                debugLog("❌ Start fresh aborted: could not clear existing data")
+                return
+            }
+            recordManager.resetRecords()
+            RegionTrackingManager.shared.loadVisitedRegions()  // Reload empty state
+
+            setupFlowState = .showingSetupWizard
+        }
     }
 
     private func monitorSyncCompletion() async {
@@ -581,18 +603,7 @@ struct ContentView: View {
             if let result = await BackupManager.shared.importBackup(from: url) {
                 await MainActor.run {
                     isImportingBackup = false
-                    var parts: [String] = []
-                    if result.records > 0 {
-                        parts.append("\(result.records) record\(result.records == 1 ? "" : "s")")
-                    }
-                    if result.regions > 0 {
-                        parts.append("\(result.regions) visited region\(result.regions == 1 ? "" : "s")")
-                    }
-                    if result.cache > 0 {
-                        parts.append("\(result.cache) photo cache entr\(result.cache == 1 ? "y" : "ies")")
-                    }
-                    let summary = parts.isEmpty ? "backup data" : parts.joined(separator: ", ")
-                    backupImportResultMessage = "Successfully imported \(summary) from backup."
+                    backupImportResultMessage = BackupManager.importResultMessage(for: result)
                     showBackupImportResult = true
                     backupImportURL = nil
                     backupInfo = nil

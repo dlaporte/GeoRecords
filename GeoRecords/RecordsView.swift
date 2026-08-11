@@ -17,6 +17,24 @@ extension Notification.Name {
 private let mapHeightRatio: CGFloat = 0.5
 private let cardHeightOffset: CGFloat = 100
 
+// MARK: - Month Selection
+
+/// A specific past month selectable in the Records timeframe picker
+struct MonthSelection: Hashable {
+    let year: Int
+    let month: Int
+
+    var startDate: Date? {
+        Calendar.current.date(from: DateComponents(year: year, month: month, day: 1))
+    }
+
+    /// e.g. "Jul 2026"
+    var displayName: String {
+        guard let date = startDate else { return "\(year)-\(month)" }
+        return date.formatted(.dateTime.month(.abbreviated).year())
+    }
+}
+
 struct RecordsView: View {
     @EnvironmentObject var recordManager: RecordManager
     @EnvironmentObject var settings: SettingsManager
@@ -27,20 +45,27 @@ struct RecordsView: View {
     @State private var selectedRecordIndex: Int = 0
     @State private var currentRecordIndex = 0
     @State private var mapPosition: MapCameraPosition = .automatic
+    @State private var selectedMarkerRecordId: UUID?
     @State private var selectedTimeFrame: TimeFrame = .allTime
     @State private var selectedYear: Int?
     @State private var availableYears: [Int] = []
-    @State private var refreshTrigger = UUID()  // Forces view to recompute
+    @State private var selectedMonth: MonthSelection?
+    @State private var availableMonths: [MonthSelection] = []
 
     // Computed property to get all non-nil records in order for the selected timeframe
     // Only includes geographic extreme records (N/S/E/W/Up/FromHome), not region records
+    // (recomputes via recordManager's objectWillChange - no manual invalidation needed)
     private var allRecords: [RecordDetail] {
-        // Reference refreshTrigger to force recomputation when it changes
-        _ = refreshTrigger
-
         // For Year mode with a specific year selected, fetch best records from that year
         if selectedTimeFrame == .year, let year = selectedYear {
             return fetchRecordsForYear(year).filter { record in
+                RecordType.from(string: record.recordType)?.isGeographicExtreme ?? false
+            }
+        }
+
+        // For Month mode with a specific past month selected, fetch that month's records
+        if selectedTimeFrame == .month, let month = selectedMonth {
+            return fetchRecordsForMonth(month).filter { record in
                 RecordType.from(string: record.recordType)?.isGeographicExtreme ?? false
             }
         }
@@ -60,7 +85,9 @@ struct RecordsView: View {
                 TimeFramePickerWithBadges(
                     selectedTimeFrame: $selectedTimeFrame,
                     selectedYear: $selectedYear,
+                    selectedMonth: $selectedMonth,
                     availableYears: availableYears,
+                    availableMonths: availableMonths,
                     timeFrameLabel: { timeFrame in
                         switch timeFrame {
                         case .daily: return "Daily"
@@ -70,7 +97,11 @@ struct RecordsView: View {
                                 return String(format: "%d", year)
                             }
                             return "This Year"
-                        case .month: return "This Month"
+                        case .month:
+                            if let month = selectedMonth {
+                                return month.displayName
+                            }
+                            return "This Month"
                         }
                     },
                     yearString: { year in
@@ -110,14 +141,23 @@ struct RecordsView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    // Map in upper portion
-                    Map(position: $mapPosition) {
+                    // Map in upper portion; tapping a marker swipes the carousel to that record
+                    Map(position: $mapPosition, selection: $selectedMarkerRecordId) {
                         ForEach(allRecords, id: \.id) { record in
                             Marker(record.recordType, coordinate: record.coordinate)
                                 .tint(FormatUtils.colorForRecordType(record.recordType))
+                                .tag(record.id)
                         }
                     }
                     .frame(maxWidth: .infinity)
+                    .onChange(of: selectedMarkerRecordId) { _, newId in
+                        guard let newId = newId,
+                              let index = allRecords.firstIndex(where: { $0.id == newId }),
+                              index != currentRecordIndex else { return }
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            currentRecordIndex = index
+                        }
+                    }
 
                     // Swipeable cards in lower portion
                     TabView(selection: $currentRecordIndex) {
@@ -137,8 +177,11 @@ struct RecordsView: View {
                     .frame(height: cardTabViewHeight)
                     .padding(.vertical, 10)
                     .onChange(of: currentRecordIndex) { _, newIndex in
-                        // Update map when swiping to new record
+                        // Update map when swiping to new record, and keep the matching
+                        // marker highlighted (no loop: marker-tap and swipe both converge
+                        // on the same id/index, so the mirrored onChange sees no change)
                         if let record = allRecords[safe: newIndex] {
+                            selectedMarkerRecordId = record.id
                             withAnimation {
                                 mapPosition = .centered(on: record.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                             }
@@ -161,9 +204,12 @@ struct RecordsView: View {
                 }
             }
             .onChange(of: selectedTimeFrame) { _, newValue in
-                // Reset year selection when switching away from This Year
+                // Reset historical selections when switching away from their timeframe
                 if newValue != .year {
                     selectedYear = nil
+                }
+                if newValue != .month {
+                    selectedMonth = nil
                 }
 
                 // Clear badge for this timeframe since user is viewing it
@@ -177,19 +223,17 @@ struct RecordsView: View {
                 }
             }
             .onChange(of: selectedYear) { _, _ in
-                // Update map when year changes
-                currentRecordIndex = 0
-                if let record = allRecords.first {
-                    withAnimation {
-                        mapPosition = .centered(on: record.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
-                    }
-                }
+                resetToFirstRecord()
+            }
+            .onChange(of: selectedMonth) { _, _ in
+                resetToFirstRecord()
             }
             .navigationDestination(isPresented: $navigateToDetail) {
                 RecordDetailPager(records: allRecords, initialIndex: selectedRecordIndex)
             }
             .onAppear {
                 loadAvailableYears()
+                loadAvailableMonths()
                 handleDeepLink()
                 // Clear badge for the currently selected timeframe
                 recordManager.clearBadge(for: selectedTimeFrame)
@@ -216,15 +260,12 @@ struct RecordsView: View {
                     debugLog("☁️ RecordsView: iCloud import detected, reloading records")
                     recordManager.loadRecordsFromHistory()
                     loadAvailableYears()
-                    // Force view to recompute allRecords
-                    refreshTrigger = UUID()
-                    // Update map position if we have records
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: briefPauseNanos)
-                        if let firstRecord = allRecords.first {
-                            withAnimation {
-                                mapPosition = .centered(on: firstRecord.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
-                            }
+                    loadAvailableMonths()
+                    // loadRecordsFromHistory is synchronous and publishes the change,
+                    // so allRecords is already fresh here
+                    if let firstRecord = allRecords.first {
+                        withAnimation {
+                            mapPosition = .centered(on: firstRecord.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
                         }
                     }
                 }
@@ -236,6 +277,11 @@ struct RecordsView: View {
         // Handle timeframe deep link from widgets and notifications
         if let timeFrame = deepLinkManager.navigateToRecordsTimeFrame {
             selectedTimeFrame = timeFrame
+            // Also reset any historical year/month browsing: a deep link targets the
+            // CURRENT period, and if selectedTimeFrame doesn't change (e.g., already
+            // on .month browsing July), onChange won't fire to clear these
+            selectedYear = nil
+            selectedMonth = nil
             deepLinkManager.navigateToRecordsTimeFrame = nil
         }
 
@@ -247,6 +293,37 @@ struct RecordsView: View {
             selectedRecordIndex = index
             navigateToDetail = true
             deepLinkManager.recordType = nil
+        }
+    }
+
+    /// Jump the carousel and map back to the first record (used when the year/month changes)
+    private func resetToFirstRecord() {
+        currentRecordIndex = 0
+        if let record = allRecords.first {
+            withAnimation {
+                mapPosition = .centered(on: record.coordinate, latitudeDelta: wideMapLatDelta, longitudeDelta: wideMapLonDelta)
+            }
+        }
+    }
+
+    /// Load the distinct year-months that have Monthly records, newest first
+    private func loadAvailableMonths() {
+        let context = PersistenceController.shared.container.viewContext
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "timeFrame == %@", TimeFrame.month.rawValue)
+
+        do {
+            let entries = try context.fetch(request)
+            let calendar = Calendar.current
+            let months = Set(entries.compactMap { entry -> MonthSelection? in
+                guard let timestamp = entry.timestamp else { return nil }
+                let components = calendar.dateComponents([.year, .month], from: timestamp)
+                guard let year = components.year, let month = components.month else { return nil }
+                return MonthSelection(year: year, month: month)
+            })
+            availableMonths = months.sorted { ($0.year, $0.month) > ($1.year, $1.month) }
+        } catch {
+            debugLog("Failed to load available months: \(error.localizedDescription)")
         }
     }
 
@@ -272,6 +349,57 @@ struct RecordsView: View {
         return String(format: "%d", year)
     }
 
+    /// Fetch the best records for a specific past month from Core Data history
+    private func fetchRecordsForMonth(_ selection: MonthSelection) -> [RecordDetail] {
+        let context = PersistenceController.shared.container.viewContext
+        let calendar = Calendar.current
+
+        guard let startOfMonth = selection.startDate,
+              let endOfMonth = calendar.date(byAdding: .month, value: 1, to: startOfMonth) else {
+            return []
+        }
+
+        // Prepare home location filter if available
+        let homeLocation: CLLocation? = settings.homeCoordinate.map {
+            CLLocation(latitude: $0.latitude, longitude: $0.longitude)
+        }
+
+        var monthRecords: [RecordDetail] = []
+
+        for recordType in RecordType.allCases {
+            let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@ AND timeFrame == %@",
+                recordType.rawValue,
+                startOfMonth as NSDate,
+                endOfMonth as NSDate,
+                TimeFrame.month.rawValue
+            )
+
+            do {
+                var entries = try context.fetch(request)
+
+                // Filter out records at home
+                if let home = homeLocation {
+                    entries = entries.filter { entry in
+                        let entryLocation = CLLocation(latitude: entry.latitude, longitude: entry.longitude)
+                        return entryLocation.distance(from: home) > atHomeRadiusMeters
+                    }
+                }
+
+                if let entry = recordType.displayRecord(of: entries, slotTimeFrame: .month),
+                   var record = RecordDetail(from: entry) {
+                    record.timeFrame = .allTime  // Display as plain records (no timeframe chip)
+                    monthRecords.append(record)
+                }
+            } catch {
+                debugLog("Failed to fetch record for \(recordType.rawValue) in \(selection.displayName): \(error.localizedDescription)")
+            }
+        }
+
+        return monthRecords
+    }
+
     /// Fetch the best records for a specific year from Core Data history
     private func fetchRecordsForYear(_ year: Int) -> [RecordDetail] {
         let context = PersistenceController.shared.container.viewContext
@@ -290,22 +418,19 @@ struct RecordsView: View {
 
         var yearRecords: [RecordDetail] = []
 
-        // For each record type, find the Yearly record from that year
-        // Only consider records with timeFrame == "Yearly" to respect wizard selections
+        // For each record type, find the best record from that year.
+        // Include Monthly rows alongside Yearly ones so this matches the "This Year"
+        // semantics in RecordManager.loadRecordsFromHistory (a January monthly record
+        // is part of that year even if no separate Yearly row exists).
         for recordType in RecordType.allCases {
             let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
             request.predicate = NSPredicate(
-                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@ AND timeFrame == %@",
+                format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@ AND timeFrame IN %@",
                 recordType.rawValue,
                 startOfYear as NSDate,
                 endOfYear as NSDate,
-                "Yearly"
+                [TimeFrame.year.rawValue, TimeFrame.month.rawValue]
             )
-
-            // Sort to get the most extreme
-            let ascending = !recordType.isAscending
-            request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
-            // Don't use fetchLimit - we need to filter out home records first
 
             do {
                 var entries = try context.fetch(request)
@@ -318,8 +443,8 @@ struct RecordsView: View {
                     }
                 }
 
-                // Take the first (most extreme) after filtering
-                if let entry = entries.first,
+                // Same slot-selection rule as "This Year" (wizard choice, else extreme)
+                if let entry = recordType.displayRecord(of: entries, slotTimeFrame: .year),
                    var record = RecordDetail(from: entry) {
                     record.timeFrame = .allTime  // Display as all-time records
                     yearRecords.append(record)
@@ -446,7 +571,9 @@ struct RecordCardView: View {
 private struct TimeFramePickerWithBadges: View {
     @Binding var selectedTimeFrame: TimeFrame
     @Binding var selectedYear: Int?
+    @Binding var selectedMonth: MonthSelection?
     let availableYears: [Int]
+    let availableMonths: [MonthSelection]
     let timeFrameLabel: (TimeFrame) -> String
     let yearString: (Int) -> String
 
@@ -455,36 +582,80 @@ private struct TimeFramePickerWithBadges: View {
     var body: some View {
         HStack(spacing: 0) {
             ForEach([TimeFrame.allTime, .year, .month], id: \.self) { timeFrame in
-                TimeFrameSegment(
-                    timeFrame: timeFrame,
-                    isSelected: selectedTimeFrame == timeFrame,
-                    label: timeFrameLabel(timeFrame),
-                    badgeCount: badgeCount(for: timeFrame)
-                ) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        selectedTimeFrame = timeFrame
+                // The selected Year/Month segment becomes a visible pulldown for browsing
+                // history (the old long-press context menu was nearly undiscoverable).
+                // First tap selects the timeframe; tapping the selected segment opens the menu.
+                if selectedTimeFrame == timeFrame && hasHistoryMenu(for: timeFrame) {
+                    Menu {
+                        historyMenu(for: timeFrame)
+                    } label: {
+                        TimeFrameSegmentLabel(
+                            isSelected: true,
+                            label: timeFrameLabel(timeFrame),
+                            badgeCount: badgeCount(for: timeFrame),
+                            showsChevron: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    TimeFrameSegment(
+                        timeFrame: timeFrame,
+                        isSelected: selectedTimeFrame == timeFrame,
+                        label: timeFrameLabel(timeFrame),
+                        badgeCount: badgeCount(for: timeFrame)
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            selectedTimeFrame = timeFrame
+                        }
                     }
                 }
             }
         }
         .background(Color(UIColor.systemGray5))
         .cornerRadius(8)
-        .contextMenu {
-            if selectedTimeFrame == .year && !availableYears.isEmpty {
+    }
+
+    private func hasHistoryMenu(for timeFrame: TimeFrame) -> Bool {
+        switch timeFrame {
+        case .year: return !availableYears.isEmpty
+        case .month: return !availableMonths.isEmpty
+        default: return false
+        }
+    }
+
+    @ViewBuilder
+    private func historyMenu(for timeFrame: TimeFrame) -> some View {
+        switch timeFrame {
+        case .year:
+            Button {
+                selectedYear = nil
+            } label: {
+                Label("This Year", systemImage: selectedYear == nil ? "checkmark" : "calendar")
+            }
+            Divider()
+            ForEach(availableYears, id: \.self) { year in
                 Button {
-                    selectedYear = nil
+                    selectedYear = year
                 } label: {
-                    Label("This Year", systemImage: selectedYear == nil ? "checkmark" : "calendar")
-                }
-                Divider()
-                ForEach(availableYears, id: \.self) { year in
-                    Button {
-                        selectedYear = year
-                    } label: {
-                        Label(yearString(year), systemImage: selectedYear == year ? "checkmark" : "calendar")
-                    }
+                    Label(yearString(year), systemImage: selectedYear == year ? "checkmark" : "calendar")
                 }
             }
+        case .month:
+            Button {
+                selectedMonth = nil
+            } label: {
+                Label("This Month", systemImage: selectedMonth == nil ? "checkmark" : "calendar")
+            }
+            Divider()
+            ForEach(availableMonths, id: \.self) { month in
+                Button {
+                    selectedMonth = month
+                } label: {
+                    Label(month.displayName, systemImage: selectedMonth == month ? "checkmark" : "calendar")
+                }
+            }
+        default:
+            EmptyView()
         }
     }
 
@@ -502,6 +673,45 @@ private struct TimeFramePickerWithBadges: View {
     }
 }
 
+/// Shared segment content used by both plain segments and the pulldown segment
+private struct TimeFrameSegmentLabel: View {
+    let isSelected: Bool
+    let label: String
+    let badgeCount: Int
+    var showsChevron: Bool = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            HStack(spacing: 3) {
+                Text(label)
+                    .font(.subheadline)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                if showsChevron {
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .foregroundColor(isSelected ? .primary : .secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(
+                isSelected ? Color(UIColor.systemBackground) : Color.clear
+            )
+            .cornerRadius(6)
+            .padding(2)
+
+            // Badge indicator
+            if badgeCount > 0 {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 8, height: 8)
+                    .offset(x: -4, y: 4)
+            }
+        }
+    }
+}
+
 private struct TimeFrameSegment: View {
     let timeFrame: TimeFrame
     let isSelected: Bool
@@ -511,27 +721,7 @@ private struct TimeFrameSegment: View {
 
     var body: some View {
         Button(action: action) {
-            ZStack(alignment: .topTrailing) {
-                Text(label)
-                    .font(.subheadline)
-                    .fontWeight(isSelected ? .semibold : .regular)
-                    .foregroundColor(isSelected ? .primary : .secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .background(
-                        isSelected ? Color(UIColor.systemBackground) : Color.clear
-                    )
-                    .cornerRadius(6)
-                    .padding(2)
-
-                // Badge indicator
-                if badgeCount > 0 {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 8, height: 8)
-                        .offset(x: -4, y: 4)
-                }
-            }
+            TimeFrameSegmentLabel(isSelected: isSelected, label: label, badgeCount: badgeCount)
         }
         .buttonStyle(.plain)
     }

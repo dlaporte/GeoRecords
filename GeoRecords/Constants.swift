@@ -10,32 +10,6 @@ enum UnitSystem: String, Codable {
     case metric
     case imperial
 
-    /// Format a distance value (in meters) for display
-    /// - Parameters:
-    ///   - meters: Distance in meters
-    ///   - decimals: Number of decimal places (default: 0)
-    /// - Returns: Formatted string with appropriate unit suffix
-    func formatDistance(_ meters: Double, decimals: Int = 0) -> String {
-        switch self {
-        case .imperial:
-            return FormatUtils.formatMiles(meters / metersPerMile, decimals: decimals)
-        case .metric:
-            return FormatUtils.formatKilometers(meters / metersPerKm, decimals: decimals)
-        }
-    }
-
-    /// Format an elevation value (in meters) for display
-    /// - Parameter meters: Elevation in meters
-    /// - Returns: Formatted string with appropriate unit suffix
-    func formatElevation(_ meters: Double) -> String {
-        switch self {
-        case .imperial:
-            return FormatUtils.formatFeet(meters * metersToFeet)
-        case .metric:
-            return FormatUtils.formatMeters(meters)
-        }
-    }
-
     /// The distance unit name for this system
     var distanceUnit: String {
         self == .imperial ? "mi" : "km"
@@ -94,16 +68,6 @@ enum TimeFrame: String, CaseIterable {
         }
     }
 
-    /// Display name for picker UI (e.g., "This Month" instead of "Monthly")
-    var displayName: String {
-        switch self {
-        case .daily: return "Daily"  // Not shown in UI
-        case .month: return "This Month"
-        case .year: return "This Year"
-        case .allTime: return "Lifetime"
-        }
-    }
-
     /// Label for record detail views (e.g., "Monthly Record")
     var recordLabel: String {
         "\(rawValue) Record"
@@ -150,6 +114,13 @@ enum TimeFrame: String, CaseIterable {
     /// User-visible timeframes for pickers
     static var userVisibleCases: [TimeFrame] {
         return allCases.filter { $0.isUserVisible }
+    }
+
+    /// The most significant timeframe in a set (lifetime > yearly > monthly > daily).
+    /// Used to pick the single "biggest achievement" notification when one location
+    /// event beats records in several timeframes at once.
+    static func mostSignificant(of timeFrames: Set<TimeFrame>) -> TimeFrame? {
+        return timeFrames.max { $0.sortOrder < $1.sortOrder }
     }
 }
 
@@ -216,13 +187,6 @@ enum RegionType: String, CaseIterable, Codable {
     case state = "state"
     case country = "country"
 
-    var displayName: String {
-        switch self {
-        case .state: return "State"
-        case .country: return "Country"
-        }
-    }
-
     var pluralName: String {
         switch self {
         case .state: return "States"
@@ -240,9 +204,6 @@ enum Continent: String, CaseIterable {
     case northAmerica = "North America"
     case oceania = "Australia / Oceania"
     case southAmerica = "South America"
-
-    /// Total number of continents
-    static var totalCount: Int { 7 }
 }
 
 /// Source for tracking how a record was added
@@ -251,6 +212,7 @@ enum RecordSource: String, Codable {
     case location = "location"
     case home = "home"
     case manual = "manual"
+    case wizard = "wizard"  // Explicitly chosen by the user in the import wizard
 
     /// User-friendly display name for the source
     var displayName: String {
@@ -263,6 +225,8 @@ enum RecordSource: String, Codable {
             return "Home Location"
         case .manual:
             return "Manual Entry"
+        case .wizard:
+            return "Photo Import"
         }
     }
 }
@@ -334,6 +298,9 @@ enum UserDefaultsKey: String {
     case skippedWizardRecords  // Set of record keys that user chose to skip
 
     // Widget map regions (user-defined framing for widget maps)
+    // NOTE: these cases look unreferenced, but their raw values ARE the live keys —
+    // SettingsManager builds them by string interpolation ("\(prefix)Lat" etc. in
+    // saveWidgetRegion/loadWidgetRegion). Do not delete as dead code.
     case widgetMapStatesLat
     case widgetMapStatesLon
     case widgetMapStatesLatDelta
@@ -422,6 +389,45 @@ let fipsToPostalCode: [String: String] = [
     "60": "AS", "66": "GU", "69": "MP", "72": "PR", "78": "VI"
 ]
 
+// MARK: - Record Selection
+
+extension RecordType {
+    /// The most extreme entry for this record type; ties broken by newest dateAdded.
+    func mostExtreme(of entries: [RecordHistoryEntry]) -> RecordHistoryEntry? {
+        return entries.sorted { entry1, entry2 in
+            if entry1.value != entry2.value {
+                return shouldReplace(newValue: entry1.value, oldValue: entry2.value)
+            }
+            let date1 = entry1.dateAdded ?? entry1.timestamp ?? Date.distantPast
+            let date2 = entry2.dateAdded ?? entry2.timestamp ?? Date.distantPast
+            return date1 > date2
+        }.first
+    }
+
+    /// The record to DISPLAY for a slot. This is THE selection rule shared by the
+    /// Records tab, past-period browsing, and Stats — they must agree or different
+    /// tabs show different "records" for the same data.
+    ///
+    /// Rule (per user decision): a record the user explicitly chose in the import
+    /// wizard FOR THIS SLOT'S TIMEFRAME outranks raw extremeness (newest choice wins
+    /// among several); with no wizard choice, the most extreme entry wins. The
+    /// timeframe match matters: monthly rows folded into a year slot are period
+    /// fillers, not an explicit yearly choice.
+    func displayRecord(of entries: [RecordHistoryEntry], slotTimeFrame: TimeFrame) -> RecordHistoryEntry? {
+        let wizardChosen = entries.filter {
+            $0.source == RecordSource.wizard.rawValue && $0.timeFrame == slotTimeFrame.rawValue
+        }
+        if !wizardChosen.isEmpty {
+            return wizardChosen.max { entry1, entry2 in
+                let date1 = entry1.dateAdded ?? entry1.timestamp ?? Date.distantPast
+                let date2 = entry2.dateAdded ?? entry2.timestamp ?? Date.distantPast
+                return date1 < date2
+            }
+        }
+        return mostExtreme(of: entries)
+    }
+}
+
 // MARK: - TimeFrame String Variations
 
 /// Historical variations of the "Lifetime" timeframe string stored in Core Data
@@ -506,12 +512,6 @@ func flagCodeForRegion(_ regionCode: String) -> String? {
 /// Meters to feet conversion factor
 let metersToFeet = 3.28084
 
-/// Feet to meters conversion factor
-let feetToMeters = 0.3048
-
-/// Feet per mile
-let feetPerMile = 5280.0
-
 /// Meters per mile
 let metersPerMile = 1609.344
 
@@ -559,34 +559,6 @@ func northSouthDistance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D
     let distance = distanceBetween(from: from, to: sameLogitude)
     // Return positive if north, negative if south
     return to.latitude >= from.latitude ? distance : -distance
-}
-
-/// Calculates the east-west great-circle distance component in meters
-/// Positive = destination is east of origin, Negative = destination is west
-/// Uses the shorter path around the globe (handles antimeridian correctly)
-/// Distance is calculated at the ORIGIN's latitude (consistent with N/S using origin's longitude)
-/// - Parameters:
-///   - from: Origin coordinate (typically home)
-///   - to: Destination coordinate
-/// - Returns: Signed distance in meters (positive = east, negative = west)
-func eastWestDistance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
-    // Calculate distance along the parallel at the ORIGIN's latitude
-    // This is consistent with N/S which uses the origin's longitude
-    // Answers: "How far east/west would I travel along my home parallel to reach this longitude?"
-    let destAtOriginLat = CLLocationCoordinate2D(latitude: from.latitude, longitude: to.longitude)
-    let distance = distanceBetween(from: from, to: destAtOriginLat)
-
-    // Determine direction (east or west) using the shorter path
-    var lonDiff = to.longitude - from.longitude
-    // Normalize to -180 to 180 range (handles antimeridian crossing)
-    if lonDiff > 180 {
-        lonDiff -= 360
-    } else if lonDiff < -180 {
-        lonDiff += 360
-    }
-
-    // Return positive if east, negative if west
-    return lonDiff >= 0 ? distance : -distance
 }
 
 // MARK: - Geocoding Utilities
@@ -694,16 +666,10 @@ let unknownLocationString = "Unknown Location"
 
 // MARK: - Threshold Constants
 
-/// Batch save threshold for daily record operations
-let dailyRecordBatchThreshold = 100
-
 /// Geocoding throttle interval in seconds
 let geocodingThrottleInterval: TimeInterval = 60
 
 // MARK: - Time Constants
-
-/// Seconds in one day
-let secondsPerDay: TimeInterval = 86400
 
 /// Seconds until end of day (used for date range calculations)
 let secondsUntilEndOfDay: TimeInterval = 86399
@@ -726,9 +692,6 @@ let wizardMaxCandidatesPerType = 50
 
 /// Duration to suppress notifications after photo import (in seconds)
 let postImportNotificationSuppressionSeconds: TimeInterval = 180
-
-/// Same value in nanoseconds for Task.sleep
-let postImportNotificationSuppressionNanoseconds: UInt64 = 180_000_000_000
 
 // MARK: - Timing Constants
 
@@ -764,11 +727,15 @@ let widgetMapAspectRatio: CGFloat = 680.0 / 600.0
 enum NotificationIdentifier {
     static let monthlySummary = "monthly-summary"
     static let yearlySummary = "yearly-summary"
-    static let inactivity = "inactivity"
-    static let funFact = "fun-fact"
+    static let monthlySummaryFallback = "monthly-summary-fallback"
+    static let yearlySummaryFallback = "yearly-summary-fallback"
+    static let photoCatchUpDigest = "photo-catchup-digest"
 
-    /// Creates a notification identifier for a new record notification
-    /// Using a consistent ID per record type allows deduplication
+    /// Creates a notification identifier for a new record notification.
+    /// One identifier per record type: only ONE notification is ever posted per type per
+    /// location event (the most significant timeframe beaten — see
+    /// RecordManager.updateRecords), so a later event's notification correctly replaces
+    /// an earlier one for the same type instead of stacking up during a long drive.
     /// - Parameter recordType: The RecordType enum case
     /// - Returns: A kebab-case identifier for the notification
     static func newRecord(for recordType: RecordType) -> String {
@@ -788,21 +755,6 @@ enum NotificationIdentifier {
 }
 
 // MARK: - Date Formatters
-
-/// Shared date formatter for detailed date display
-let detailDateFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateStyle = .medium
-    formatter.timeStyle = .medium
-    return formatter
-}()
-
-/// Shared compact date formatter for history list
-let compactDateFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "MM/dd/yy HH:mm"
-    return formatter
-}()
 
 /// Shared medium date formatter (date only, no time)
 let mediumDateFormatter: DateFormatter = {
@@ -846,27 +798,6 @@ let time12Formatter: DateFormatter = {
     return formatter
 }()
 
-/// Date added formatter (e.g., "Jan 15, 2025 at 3:45 PM") for showing when records were added
-let dateAddedFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "MMM d, yyyy 'at' h:mm a"
-    return formatter
-}()
-
-/// Month name formatter (e.g., "January") for statistics
-let monthNameFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "MMMM"
-    return formatter
-}()
-
-/// Short month-year formatter (e.g., "Jan 2025") for chart labels
-let shortMonthYearFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "MMM yyyy"
-    return formatter
-}()
-
 /// EXIF date formatter for parsing photo metadata (format: "yyyy:MM:dd HH:mm:ss")
 let exifDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
@@ -886,27 +817,6 @@ extension Date {
         return (startOfMonth, startOfYear)
     }
 
-    /// Returns the start date of the previous month or year (for summary calculations)
-    /// - Parameter timeFrame: The time frame to get the previous period for
-    /// - Returns: The start date of the previous period
-    static func startOfPreviousPeriod(for timeFrame: TimeFrame) -> Date {
-        let calendar = Calendar.current
-        let now = Date()
-
-        switch timeFrame {
-        case .daily:
-            let yesterday = calendar.date(byAdding: .day, value: -1, to: now) ?? now
-            return calendar.startOfDay(for: yesterday)
-        case .month:
-            let lastMonth = calendar.date(byAdding: .month, value: -1, to: now) ?? now
-            return calendar.dateInterval(of: .month, for: lastMonth)?.start ?? now
-        case .year:
-            let lastYear = calendar.date(byAdding: .year, value: -1, to: now) ?? now
-            return calendar.dateInterval(of: .year, for: lastYear)?.start ?? now
-        case .allTime:
-            return Date.distantPast
-        }
-    }
 }
 
 // MARK: - Array Extensions

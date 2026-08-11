@@ -27,6 +27,13 @@ struct MapsTabView: View {
                 )
                 .padding()
 
+                // Regions found by the automatic photo catch-up, awaiting confirmation
+                if !regionManager.pendingRegions.isEmpty {
+                    PendingRegionsBanner(regionManager: regionManager)
+                        .padding(.horizontal)
+                        .padding(.bottom, 8)
+                }
+
                 // Map content
                 switch selectedMapType {
                 case .states:
@@ -60,6 +67,64 @@ struct MapsTabView: View {
             break
         }
         deepLinkManager.navigateToRegions = nil
+    }
+}
+
+// MARK: - Pending Regions Banner
+
+/// Compact confirmation list for regions discovered by the automatic photo catch-up.
+/// Confirming records the visit through the normal path; dismissing forgets it.
+private struct PendingRegionsBanner: View {
+    @ObservedObject var regionManager: RegionTrackingManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("New places found in your photos", systemImage: "sparkles")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+
+            ForEach(regionManager.pendingRegions) { pending in
+                HStack(spacing: 8) {
+                    if let flag = FormatUtils.flagEmoji(for: pending.code, recordType: pending.regionType == RegionType.state.rawValue ? RecordType.state.rawValue : RecordType.country.rawValue) {
+                        Text(flag)
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(pending.name)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                        Text(pending.date, style: .date)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        withAnimation {
+                            regionManager.confirmPendingRegion(code: pending.code)
+                        }
+                    } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .foregroundColor(.green)
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        withAnimation {
+                            regionManager.dismissPendingRegion(code: pending.code)
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .font(.title3)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(UIColor.secondarySystemBackground))
+        )
     }
 }
 
@@ -171,68 +236,64 @@ struct VisitedRegionCard: View {
 
 }
 
-// MARK: - States Map View
+// MARK: - Shared Region Cards + Map Layout
 
-/// Shows visited US states as cards
-struct StatesMapView: View {
-    @StateObject private var regionManager = RegionTrackingManager.shared
+/// Shared layout for the three region tabs (states/countries/continents):
+/// a map with a stats-header overlay and widget button, above swipeable region cards.
+/// The tab-specific pieces (map view, region math, sheet, empty state) come in as
+/// closures; everything else previously existed as three ~105-line verbatim copies.
+private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View {
+    let regions: [RecordDetail]
+    let statsIcon: String
+    let statsIconColor: Color
+    let statsText: String
+    let widgetButtonHighlighted: Bool
+    /// Maps a tapped map coordinate to the index of the matching card (nil = no card)
+    let cardIndex: (CLLocationCoordinate2D) -> Int?
+    @ViewBuilder let mapView: (RecordDetail?, _ onTap: @escaping (CLLocationCoordinate2D) -> Void) -> MapV
+    @ViewBuilder let widgetSheet: () -> SheetV
+    @ViewBuilder let emptyState: () -> EmptyV
+
     @State private var currentCardIndex = 0
     @State private var selectedDetail: RecordDetail?
     @State private var navigateToDetail = false
     @State private var showWidgetViewSetter = false
 
-    // Sorted states alphabetically by name
-    private var sortedStates: [RecordDetail] {
-        regionManager.visitedStates.sorted { ($0.locationName ?? "") < ($1.locationName ?? "") }
-    }
-
     // Current region to display on map
     private var currentRegion: RecordDetail? {
-        guard !sortedStates.isEmpty,
-              currentCardIndex < sortedStates.count else {
+        guard !regions.isEmpty, currentCardIndex < regions.count else {
             return nil
         }
-        return sortedStates[currentCardIndex]
+        return regions[currentCardIndex]
     }
 
-    // Map region for current card (center and span)
-    private var mapRegion: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
-        let defaultRegion = MKCoordinateRegion(center: defaultUSMapCenter, span: defaultUSStateSpan)
-
-        guard let region = currentRegion, let code = region.regionCode else {
-            return (defaultRegion.center, defaultRegion.span)
+    // Tapping a visited region on the map swipes the card carousel to it
+    private func selectCard(at coordinate: CLLocationCoordinate2D) {
+        guard let index = cardIndex(coordinate) else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            currentCardIndex = index
         }
-
-        let polygonArrays = RegionLookupService.shared.polygons(for: code)
-        let calculatedRegion = calculateMapRegion(for: polygonArrays, defaultRegion: defaultRegion)
-        return (calculatedRegion.center, calculatedRegion.span)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Map showing current state with overlaid stats
+            // Map showing current region with overlaid stats
             ZStack(alignment: .top) {
-                RegionMapView(
-                    regionType: .state,
-                    visitedRegions: sortedStates,
-                    currentRegion: currentRegion,
-                    centerCoordinate: mapRegion.center,
-                    span: mapRegion.span
-                )
-                .frame(maxWidth: .infinity)
+                mapView(currentRegion, selectCard)
+                    .frame(maxWidth: .infinity)
 
                 // Stats header overlaid on map
                 HStack {
-                    Image(systemName: "flag.fill")
-                        .foregroundColor(.orange)
-                    Text("\(regionManager.stateCount) of 50 states visited")
+                    Image(systemName: statsIcon)
+                        .foregroundColor(statsIconColor)
+                    Text(statsText)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     Spacer()
                     Button {
                         showWidgetViewSetter = true
                     } label: {
-                        Image(systemName: SettingsManager.shared.widgetMapStatesRegion != nil ? "widget.small.badge.plus" : "widget.small")
+                        Image(systemName: widgetButtonHighlighted ? "widget.small.badge.plus" : "widget.small")
                             .font(.system(size: 16))
                             .foregroundColor(.blue)
                     }
@@ -245,17 +306,17 @@ struct StatesMapView: View {
                 .padding(.horizontal, 12)
             }
             .sheet(isPresented: $showWidgetViewSetter) {
-                WidgetViewSetterSheet(mapType: "states", regionType: .state, visitedRegions: sortedStates)
+                widgetSheet()
             }
 
             // Cards
-            if sortedStates.isEmpty {
+            if regions.isEmpty {
                 Spacer()
-                EmptyRegionStateView(regionType: .state)
+                emptyState()
                 Spacer()
             } else {
                 TabView(selection: $currentCardIndex) {
-                    ForEach(Array(sortedStates.enumerated()), id: \.element.id) { index, detail in
+                    ForEach(Array(regions.enumerated()), id: \.element.id) { index, detail in
                         VisitedRegionCard(detail: detail)
                             .tag(index)
                             .onTapGesture {
@@ -277,6 +338,62 @@ struct StatesMapView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - States Map View
+
+/// Shows visited US states as cards
+struct StatesMapView: View {
+    @StateObject private var regionManager = RegionTrackingManager.shared
+
+    // Sorted states alphabetically by name
+    private var sortedStates: [RecordDetail] {
+        regionManager.visitedStates.sorted { ($0.locationName ?? "") < ($1.locationName ?? "") }
+    }
+
+    // Map region for a card (center and span; cached per region code)
+    private func mapRegion(for region: RecordDetail?) -> (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
+        let defaultRegion = MKCoordinateRegion(center: defaultUSMapCenter, span: defaultUSStateSpan)
+
+        guard let region = region, let code = region.regionCode else {
+            return (defaultRegion.center, defaultRegion.span)
+        }
+
+        let calculatedRegion = RegionOverlayCache.shared.cameraRegion(for: code, defaultRegion: defaultRegion)
+        return (calculatedRegion.center, calculatedRegion.span)
+    }
+
+    var body: some View {
+        RegionCardsMapView(
+            regions: sortedStates,
+            statsIcon: "flag.fill",
+            statsIconColor: .orange,
+            statsText: "\(regionManager.stateCount) of 50 states visited",
+            widgetButtonHighlighted: SettingsManager.shared.widgetMapStatesRegion != nil,
+            cardIndex: { coordinate in
+                guard let info = RegionLookupService.shared.region(for: coordinate),
+                      info.type == .state else { return nil }
+                return sortedStates.firstIndex { $0.regionCode == info.code }
+            },
+            mapView: { current, onTap in
+                let region = mapRegion(for: current)
+                RegionMapView(
+                    regionType: .state,
+                    visitedRegions: sortedStates,
+                    currentRegion: current,
+                    centerCoordinate: region.center,
+                    span: region.span,
+                    onTap: onTap
+                )
+            },
+            widgetSheet: {
+                WidgetViewSetterSheet(mapType: "states", visitedRegions: sortedStates)
+            },
+            emptyState: {
+                EmptyRegionStateView(regionType: .state)
+            }
+        )
     }
 }
 
@@ -285,107 +402,55 @@ struct StatesMapView: View {
 /// Shows visited countries as cards
 struct CountriesMapView: View {
     @StateObject private var regionManager = RegionTrackingManager.shared
-    @State private var currentCardIndex = 0
-    @State private var selectedDetail: RecordDetail?
-    @State private var navigateToDetail = false
-    @State private var showWidgetViewSetter = false
 
     // Sorted countries alphabetically by name
     private var sortedCountries: [RecordDetail] {
         regionManager.visitedCountries.sorted { ($0.locationName ?? "") < ($1.locationName ?? "") }
     }
 
-    // Current region to display on map
-    private var currentRegion: RecordDetail? {
-        guard !sortedCountries.isEmpty,
-              currentCardIndex < sortedCountries.count else {
-            return nil
-        }
-        return sortedCountries[currentCardIndex]
-    }
-
-    // Map region for current card (center and span)
-    private var mapRegion: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
+    // Map region for a card (center and span; cached per region code)
+    private func mapRegion(for region: RecordDetail?) -> (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
         let defaultRegion = MKCoordinateRegion(center: defaultWorldMapCenter, span: defaultCountrySpan)
 
-        guard let region = currentRegion, let code = region.regionCode else {
+        guard let region = region, let code = region.regionCode else {
             return (defaultRegion.center, defaultRegion.span)
         }
 
-        let polygonArrays = RegionLookupService.shared.polygons(for: code)
-        let calculatedRegion = calculateMapRegion(for: polygonArrays, defaultRegion: defaultRegion)
+        let calculatedRegion = RegionOverlayCache.shared.cameraRegion(for: code, defaultRegion: defaultRegion)
         return (calculatedRegion.center, calculatedRegion.span)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Map showing current country with overlaid stats
-            ZStack(alignment: .top) {
+        RegionCardsMapView(
+            regions: sortedCountries,
+            statsIcon: "globe.americas.fill",
+            statsIconColor: .blue,
+            statsText: "\(regionManager.countryCount) of 195 countries visited",
+            widgetButtonHighlighted: SettingsManager.shared.widgetMapCountriesRegion != nil,
+            cardIndex: { coordinate in
+                guard let info = RegionLookupService.shared.region(for: coordinate) else { return nil }
+                // A tap on a US state should select the United States card
+                let countryCode = info.type == .state ? "US" : info.code
+                return sortedCountries.firstIndex { $0.regionCode == countryCode }
+            },
+            mapView: { current, onTap in
+                let region = mapRegion(for: current)
                 RegionMapView(
                     regionType: .country,
                     visitedRegions: sortedCountries,
-                    currentRegion: currentRegion,
-                    centerCoordinate: mapRegion.center,
-                    span: mapRegion.span
+                    currentRegion: current,
+                    centerCoordinate: region.center,
+                    span: region.span,
+                    onTap: onTap
                 )
-                .frame(maxWidth: .infinity)
-
-                // Stats header overlaid on map
-                HStack {
-                    Image(systemName: "globe.americas.fill")
-                        .foregroundColor(.blue)
-                    Text("\(regionManager.countryCount) of 195 countries visited")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Button {
-                        showWidgetViewSetter = true
-                    } label: {
-                        Image(systemName: SettingsManager.shared.widgetMapCountriesRegion != nil ? "widget.small.badge.plus" : "widget.small")
-                            .font(.system(size: 16))
-                            .foregroundColor(.blue)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(UIColor.systemBackground).opacity(0.9))
-                .cornerRadius(8)
-                .padding(.top, 12)
-                .padding(.horizontal, 12)
-            }
-            .sheet(isPresented: $showWidgetViewSetter) {
-                WidgetViewSetterSheet(mapType: "countries", regionType: .country, visitedRegions: sortedCountries)
-            }
-
-            // Cards
-            if sortedCountries.isEmpty {
-                Spacer()
+            },
+            widgetSheet: {
+                WidgetViewSetterSheet(mapType: "countries", visitedRegions: sortedCountries)
+            },
+            emptyState: {
                 EmptyRegionStateView(regionType: .country)
-                Spacer()
-            } else {
-                TabView(selection: $currentCardIndex) {
-                    ForEach(Array(sortedCountries.enumerated()), id: \.element.id) { index, detail in
-                        VisitedRegionCard(detail: detail)
-                            .tag(index)
-                            .onTapGesture {
-                                selectedDetail = detail
-                                navigateToDetail = true
-                            }
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .always))
-                .indexViewStyle(.page(backgroundDisplayMode: .never))
-                .contentMargins(0, for: .scrollContent)
-                .frame(maxWidth: .infinity)
-                .frame(height: cardTabViewHeight)
-                .padding(.vertical, 10)
-                .navigationDestination(isPresented: $navigateToDetail) {
-                    if let detail = selectedDetail {
-                        RecordDetailView(record: detail)
-                    }
-                }
             }
-        }
+        )
     }
 }
 
@@ -394,116 +459,57 @@ struct CountriesMapView: View {
 /// Shows visited continents as cards
 struct ContinentsMapView: View {
     @StateObject private var regionManager = RegionTrackingManager.shared
-    @State private var currentCardIndex = 0
-    @State private var selectedDetail: RecordDetail?
-    @State private var navigateToDetail = false
-    @State private var showWidgetViewSetter = false
 
     // Sorted continents alphabetically by name
     private var sortedContinents: [RecordDetail] {
         regionManager.visitedContinents.sorted { ($0.locationName ?? "") < ($1.locationName ?? "") }
     }
 
-    // Current region to display on map
-    private var currentRegion: RecordDetail? {
-        guard !sortedContinents.isEmpty,
-              currentCardIndex < sortedContinents.count else {
-            return nil
-        }
-        return sortedContinents[currentCardIndex]
-    }
-
-    // Map region for current card (center and span based on continent bounds)
-    private var mapRegion: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
-        let defaultRegion = MKCoordinateRegion(center: defaultWorldMapCenter, span: defaultContinentSpan)
-
-        guard let region = currentRegion,
-              let continent = Continent(rawValue: region.locationName ?? "") else {
-            return (defaultRegion.center, defaultRegion.span)
-        }
-
-        let polygonArrays = RegionLookupService.shared.continentPolygons(for: continent)
-        let calculatedRegion = calculateMapRegion(
-            for: polygonArrays,
-            padding: 1.3,  // 30% padding for continents
-            minSpan: 5.0,  // Larger minimum span for continents
-            defaultRegion: defaultRegion
-        )
-        return (calculatedRegion.center, calculatedRegion.span)
-    }
-
     private var visitedContinentsSet: Set<Continent> {
         Set(sortedContinents.compactMap { Continent(rawValue: $0.locationName ?? "") })
     }
 
+    // Map region for a card (center and span based on continent bounds; cached per continent)
+    private func mapRegion(for region: RecordDetail?) -> (center: CLLocationCoordinate2D, span: MKCoordinateSpan) {
+        let defaultRegion = MKCoordinateRegion(center: defaultWorldMapCenter, span: defaultContinentSpan)
+
+        guard let region = region,
+              let continent = Continent(rawValue: region.locationName ?? "") else {
+            return (defaultRegion.center, defaultRegion.span)
+        }
+
+        let calculatedRegion = RegionOverlayCache.shared.cameraRegion(for: continent, defaultRegion: defaultRegion)
+        return (calculatedRegion.center, calculatedRegion.span)
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            // Map showing current continent with overlaid stats
-            ZStack(alignment: .top) {
+        RegionCardsMapView(
+            regions: sortedContinents,
+            statsIcon: "globe",
+            statsIconColor: .purple,
+            statsText: "\(regionManager.continentCount) of 7 continents visited",
+            widgetButtonHighlighted: SettingsManager.shared.widgetMapContinentsRegion != nil,
+            cardIndex: { coordinate in
+                guard let continent = RegionLookupService.shared.region(for: coordinate)?.continent else { return nil }
+                return sortedContinents.firstIndex { Continent(rawValue: $0.locationName ?? "") == continent }
+            },
+            mapView: { current, onTap in
+                let region = mapRegion(for: current)
                 ContinentMapView(
                     visitedContinents: visitedContinentsSet,
-                    currentContinent: currentRegion.flatMap { Continent(rawValue: $0.locationName ?? "") },
-                    centerCoordinate: mapRegion.center,
-                    span: mapRegion.span
+                    currentContinent: current.flatMap { Continent(rawValue: $0.locationName ?? "") },
+                    centerCoordinate: region.center,
+                    span: region.span,
+                    onTap: onTap
                 )
-                .frame(maxWidth: .infinity)
-
-                // Stats header overlaid on map
-                HStack {
-                    Image(systemName: "globe")
-                        .foregroundColor(.purple)
-                    Text("\(regionManager.continentCount) of 7 continents visited")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Button {
-                        showWidgetViewSetter = true
-                    } label: {
-                        Image(systemName: SettingsManager.shared.widgetMapContinentsRegion != nil ? "widget.small.badge.plus" : "widget.small")
-                            .font(.system(size: 16))
-                            .foregroundColor(.blue)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(UIColor.systemBackground).opacity(0.9))
-                .cornerRadius(8)
-                .padding(.top, 12)
-                .padding(.horizontal, 12)
-            }
-            .sheet(isPresented: $showWidgetViewSetter) {
-                WidgetViewSetterSheet(mapType: "continents", regionType: .country, visitedRegions: sortedContinents, visitedContinents: visitedContinentsSet)
-            }
-
-            // Cards
-            if sortedContinents.isEmpty {
-                Spacer()
+            },
+            widgetSheet: {
+                WidgetViewSetterSheet(mapType: "continents", visitedRegions: sortedContinents, visitedContinents: visitedContinentsSet)
+            },
+            emptyState: {
                 EmptyRegionStateView(forContinents: true)
-                Spacer()
-            } else {
-                TabView(selection: $currentCardIndex) {
-                    ForEach(Array(sortedContinents.enumerated()), id: \.element.id) { index, detail in
-                        VisitedRegionCard(detail: detail)
-                            .tag(index)
-                            .onTapGesture {
-                                selectedDetail = detail
-                                navigateToDetail = true
-                            }
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .always))
-                .indexViewStyle(.page(backgroundDisplayMode: .never))
-                .contentMargins(0, for: .scrollContent)
-                .frame(maxWidth: .infinity)
-                .frame(height: cardTabViewHeight)
-                .padding(.vertical, 10)
-                .navigationDestination(isPresented: $navigateToDetail) {
-                    if let detail = selectedDetail {
-                        RecordDetailView(record: detail)
-                    }
-                }
             }
-        }
+        )
     }
 }
 
@@ -515,37 +521,60 @@ struct ContinentMapView: UIViewRepresentable {
     let currentContinent: Continent?
     let centerCoordinate: CLLocationCoordinate2D
     let span: MKCoordinateSpan
+    var onTap: ((CLLocationCoordinate2D) -> Void)? = nil
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
         mapView.delegate = context.coordinator
         mapView.region = MKCoordinateRegion(center: centerCoordinate, span: span)
+        let tapRecognizer = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+        mapView.addGestureRecognizer(tapRecognizer)
         return mapView
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
-        // Update coordinator with current continent
-        context.coordinator.currentContinent = currentContinent
+        let coordinator = context.coordinator
+        coordinator.onTap = onTap
 
-        // Remove existing overlays
-        mapView.removeOverlays(mapView.overlays)
+        // Set the current continent BEFORE any rebuild so lazily-created renderers style correctly
+        let previousContinent = coordinator.currentContinent
+        coordinator.currentContinent = currentContinent
 
-        // Add polygon overlays for visited continents
-        for continent in visitedContinents {
-            let polygonArrays = RegionLookupService.shared.continentPolygons(for: continent)
-            for polygonGroup in polygonArrays {
-                for coordinates in polygonGroup {
-                    guard coordinates.count > 2 else { continue }
-                    var coords = coordinates
-                    let polygon = MKPolygon(coordinates: &coords, count: coords.count)
-                    polygon.title = continent.rawValue
-                    mapView.addOverlay(polygon)
+        // Rebuild only when the SET of visited continents changes; highlight changes
+        // restyle the affected renderers in place (see RegionMapView for rationale)
+        if coordinator.renderedContinents != visitedContinents {
+            rebuildOverlays(on: mapView, coordinator: coordinator)
+        } else if previousContinent != currentContinent {
+            for continent in [previousContinent, currentContinent].compactMap({ $0 }) {
+                for polygon in coordinator.polygonsByContinent[continent] ?? [] {
+                    if let renderer = mapView.renderer(for: polygon) as? MKPolygonRenderer {
+                        Coordinator.applyStyle(to: renderer, isCurrent: continent == currentContinent)
+                        renderer.setNeedsDisplay()
+                    }
                 }
             }
         }
 
-        // Update map region to center on current coordinate
-        mapView.setRegion(MKCoordinateRegion(center: centerCoordinate, span: span), animated: true)
+        // Only move the camera when the target actually changed
+        let target = MKCoordinateRegion(center: centerCoordinate, span: span)
+        if !coordinator.isSameCameraTarget(target) {
+            coordinator.lastCameraTarget = target
+            mapView.setRegion(target, animated: true)
+        }
+    }
+
+    private func rebuildOverlays(on mapView: MKMapView, coordinator: Coordinator) {
+        mapView.removeOverlays(mapView.overlays)
+        coordinator.polygonsByContinent = [:]
+        coordinator.renderedContinents = visitedContinents
+
+        for continent in visitedContinents {
+            let polygons = RegionOverlayCache.shared.polygons(for: continent)
+            coordinator.polygonsByContinent[continent] = polygons
+            for polygon in polygons {
+                mapView.addOverlay(polygon)
+            }
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -555,30 +584,51 @@ struct ContinentMapView: UIViewRepresentable {
     class Coordinator: NSObject, MKMapViewDelegate {
         var parent: ContinentMapView
         var currentContinent: Continent?
+        var onTap: ((CLLocationCoordinate2D) -> Void)?
+
+        // Overlay bookkeeping for incremental updates (see updateUIView)
+        var renderedContinents: Set<Continent> = []
+        var polygonsByContinent: [Continent: [MKPolygon]] = [:]
+        var lastCameraTarget: MKCoordinateRegion?
 
         init(_ parent: ContinentMapView) {
             self.parent = parent
+            self.onTap = parent.onTap
+        }
+
+        func isSameCameraTarget(_ region: MKCoordinateRegion) -> Bool {
+            guard let last = lastCameraTarget else { return false }
+            return last.center.latitude == region.center.latitude &&
+                   last.center.longitude == region.center.longitude &&
+                   last.span.latitudeDelta == region.span.latitudeDelta &&
+                   last.span.longitudeDelta == region.span.longitudeDelta
+        }
+
+        /// Single source of styling truth: used at renderer creation AND for in-place restyles
+        static func applyStyle(to renderer: MKPolygonRenderer, isCurrent: Bool) {
+            if isCurrent {
+                // Current continent - red fill and stroke
+                renderer.fillColor = UIColor.systemRed.withAlphaComponent(0.4)
+                renderer.strokeColor = UIColor.systemRed
+                renderer.lineWidth = 2
+            } else {
+                // Other visited continents - orange fill and stroke
+                renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
+                renderer.strokeColor = UIColor.systemOrange
+                renderer.lineWidth = 1
+            }
+        }
+
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let mapView = gesture.view as? MKMapView else { return }
+            let coordinate = mapView.convert(gesture.location(in: mapView), toCoordinateFrom: mapView)
+            onTap?(coordinate)
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let polygon = overlay as? MKPolygon {
                 let renderer = MKPolygonRenderer(polygon: polygon)
-
-                // Check if this is the current continent
-                let isCurrent = polygon.title == currentContinent?.rawValue
-
-                if isCurrent {
-                    // Current continent - red fill and stroke
-                    renderer.fillColor = UIColor.systemRed.withAlphaComponent(0.4)
-                    renderer.strokeColor = UIColor.systemRed
-                    renderer.lineWidth = 2
-                } else {
-                    // Other visited continents - orange fill and stroke
-                    renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
-                    renderer.strokeColor = UIColor.systemOrange
-                    renderer.lineWidth = 1
-                }
-
+                Self.applyStyle(to: renderer, isCurrent: polygon.title == currentContinent?.rawValue)
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)
@@ -595,60 +645,80 @@ struct RegionMapView: UIViewRepresentable {
     let currentRegion: RecordDetail?
     let centerCoordinate: CLLocationCoordinate2D
     let span: MKCoordinateSpan
+    var onTap: ((CLLocationCoordinate2D) -> Void)? = nil
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
         mapView.delegate = context.coordinator
         mapView.region = MKCoordinateRegion(center: centerCoordinate, span: span)
+        let tapRecognizer = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+        mapView.addGestureRecognizer(tapRecognizer)
         return mapView
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
-        // Update coordinator with current region code
-        context.coordinator.currentRegionCode = currentRegion?.regionCode
+        let coordinator = context.coordinator
+        coordinator.onTap = onTap
 
-        // Remove existing overlays
+        // Set the current code BEFORE any rebuild so lazily-created renderers style correctly
+        let previousCode = coordinator.currentRegionCode
+        let newCode = currentRegion?.regionCode
+        coordinator.currentRegionCode = newCode
+
+        // Rebuild overlays only when the SET of visited regions changes. A change of
+        // highlighted region restyles two renderers in place instead of re-tessellating
+        // the entire overlay set (easily 100k+ vertices) on every tap or card swipe.
+        let visitedCodes = visitedRegions.compactMap { $0.regionCode }
+        if coordinator.renderedRegionCodes != visitedCodes {
+            rebuildOverlays(on: mapView, coordinator: coordinator, visitedCodes: visitedCodes)
+        } else if previousCode != newCode {
+            for code in [previousCode, newCode].compactMap({ $0 }) {
+                for polygon in coordinator.polygonsByCode[code] ?? [] {
+                    if let renderer = mapView.renderer(for: polygon) as? MKPolygonRenderer {
+                        Coordinator.applyStyle(to: renderer, isCurrent: code == newCode)
+                        renderer.setNeedsDisplay()
+                    }
+                }
+            }
+        }
+
+        // Only move the camera when the target actually changed: an unconditional
+        // setRegion queued competing animations on every update and fought pan gestures
+        let target = MKCoordinateRegion(center: centerCoordinate, span: span)
+        if !coordinator.isSameCameraTarget(target) {
+            coordinator.lastCameraTarget = target
+            mapView.setRegion(target, animated: true)
+        }
+    }
+
+    private func rebuildOverlays(on mapView: MKMapView, coordinator: Coordinator, visitedCodes: [String]) {
         mapView.removeOverlays(mapView.overlays)
+        coordinator.polygonsByCode = [:]
+        coordinator.renderedRegionCodes = visitedCodes
 
         // For states, add US outline first as base layer
         if regionType == .state {
-            let outlinePolylines = RegionLookupService.shared.getUSOutlinePolylines()
-            for coordinates in outlinePolylines {
-                guard coordinates.count > 1 else { continue }
-                var coords = coordinates
-                let polyline = MKPolyline(coordinates: &coords, count: coords.count)
-                polyline.title = "outline"
+            for polyline in RegionOverlayCache.shared.usOutlinePolylines() {
                 mapView.addOverlay(polyline, level: .aboveLabels)
             }
         }
 
-        // Add polygon overlays for visited regions
+        // Add polygon overlays for visited regions (cached MKPolygons, built once per code)
         for detail in visitedRegions {
             guard let code = detail.regionCode else {
                 debugLog("⚠️ RegionMapView: Missing regionCode for \(detail.locationName ?? "unknown")")
                 continue
             }
 
-            let polygonArrays = RegionLookupService.shared.polygons(for: code)
-            if polygonArrays.isEmpty {
+            let polygons = RegionOverlayCache.shared.polygons(for: code, title: detail.locationName)
+            if polygons.isEmpty {
                 debugLog("⚠️ RegionMapView: No polygons found for code '\(code)' (\(detail.locationName ?? "unknown"))")
-            } else {
-                debugLog("📍 RegionMapView: Adding \(polygonArrays.count) polygon groups for '\(code)' (\(detail.locationName ?? "unknown"))")
             }
-            for polygonGroup in polygonArrays {
-                for coordinates in polygonGroup {
-                    guard coordinates.count > 2 else { continue }
-                    var coords = coordinates
-                    let polygon = MKPolygon(coordinates: &coords, count: coords.count)
-                    polygon.title = detail.locationName
-                    polygon.subtitle = code
-                    mapView.addOverlay(polygon, level: .aboveLabels)
-                }
+            coordinator.polygonsByCode[code] = polygons
+            for polygon in polygons {
+                mapView.addOverlay(polygon, level: .aboveLabels)
             }
         }
-
-        // Update map region to center on current coordinate
-        mapView.setRegion(MKCoordinateRegion(center: centerCoordinate, span: span), animated: true)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -658,9 +728,45 @@ struct RegionMapView: UIViewRepresentable {
     class Coordinator: NSObject, MKMapViewDelegate {
         var parent: RegionMapView
         var currentRegionCode: String?
+        var onTap: ((CLLocationCoordinate2D) -> Void)?
+
+        // Overlay bookkeeping for incremental updates (see updateUIView)
+        var renderedRegionCodes: [String] = []
+        var polygonsByCode: [String: [MKPolygon]] = [:]
+        var lastCameraTarget: MKCoordinateRegion?
 
         init(_ parent: RegionMapView) {
             self.parent = parent
+            self.onTap = parent.onTap
+        }
+
+        func isSameCameraTarget(_ region: MKCoordinateRegion) -> Bool {
+            guard let last = lastCameraTarget else { return false }
+            return last.center.latitude == region.center.latitude &&
+                   last.center.longitude == region.center.longitude &&
+                   last.span.latitudeDelta == region.span.latitudeDelta &&
+                   last.span.longitudeDelta == region.span.longitudeDelta
+        }
+
+        /// Single source of styling truth: used at renderer creation AND for in-place restyles
+        static func applyStyle(to renderer: MKPolygonRenderer, isCurrent: Bool) {
+            if isCurrent {
+                // Current region - red fill and stroke
+                renderer.fillColor = UIColor.systemRed.withAlphaComponent(0.4)
+                renderer.strokeColor = UIColor.systemRed
+                renderer.lineWidth = 2
+            } else {
+                // Other visited regions - orange fill and stroke
+                renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
+                renderer.strokeColor = UIColor.systemOrange
+                renderer.lineWidth = 1
+            }
+        }
+
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let mapView = gesture.view as? MKMapView else { return }
+            let coordinate = mapView.convert(gesture.location(in: mapView), toCoordinateFrom: mapView)
+            onTap?(coordinate)
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
@@ -673,22 +779,7 @@ struct RegionMapView: UIViewRepresentable {
             }
             if let polygon = overlay as? MKPolygon {
                 let renderer = MKPolygonRenderer(polygon: polygon)
-
-                // Check if this is the current region
-                let isCurrent = polygon.subtitle == currentRegionCode
-
-                if isCurrent {
-                    // Current region - red fill and stroke
-                    renderer.fillColor = UIColor.systemRed.withAlphaComponent(0.4)
-                    renderer.strokeColor = UIColor.systemRed
-                    renderer.lineWidth = 2
-                } else {
-                    // Other visited regions - orange fill and stroke
-                    renderer.fillColor = UIColor.systemOrange.withAlphaComponent(0.3)
-                    renderer.strokeColor = UIColor.systemOrange
-                    renderer.lineWidth = 1
-                }
-
+                Self.applyStyle(to: renderer, isCurrent: polygon.subtitle == currentRegionCode)
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)
@@ -737,7 +828,6 @@ private struct StyledSegmentedPicker<T: Hashable>: View {
 /// Sheet for setting the widget map view by panning/zooming
 struct WidgetViewSetterSheet: View {
     let mapType: String  // "states", "countries", or "continents"
-    let regionType: RegionType
     let visitedRegions: [RecordDetail]
     var visitedContinents: Set<Continent>? = nil
 
@@ -745,9 +835,8 @@ struct WidgetViewSetterSheet: View {
     @State private var mapRegion: MKCoordinateRegion
     @State private var showingSavedConfirmation = false
 
-    init(mapType: String, regionType: RegionType, visitedRegions: [RecordDetail], visitedContinents: Set<Continent>? = nil) {
+    init(mapType: String, visitedRegions: [RecordDetail], visitedContinents: Set<Continent>? = nil) {
         self.mapType = mapType
-        self.regionType = regionType
         self.visitedRegions = visitedRegions
         self.visitedContinents = visitedContinents
 
@@ -798,7 +887,6 @@ struct WidgetViewSetterSheet: View {
                 // Interactive map with aspect ratio matching widget
                 InteractiveWidgetMapView(
                     mapType: mapType,
-                    regionType: regionType,
                     visitedRegions: visitedRegions,
                     visitedContinents: visitedContinents,
                     region: $mapRegion
@@ -923,7 +1011,6 @@ struct WidgetViewSetterSheet: View {
 /// Map view that allows user interaction for setting widget view
 struct InteractiveWidgetMapView: UIViewRepresentable {
     let mapType: String
-    let regionType: RegionType
     let visitedRegions: [RecordDetail]
     let visitedContinents: Set<Continent>?
     @Binding var region: MKCoordinateRegion

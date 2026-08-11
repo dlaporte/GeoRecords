@@ -247,14 +247,6 @@ struct SettingsView: View {
                             }
                             settings.saveSettings()
                         }
-                } header: {
-                    Text("Record Alerts")
-                } footer: {
-                    Text("Get notified when you set a new geographical record or enter a new state/country.")
-                }
-
-                // MARK: - Reminders Section
-                Section {
                     Toggle("Summary Notifications", isOn: $settings.summaryNotificationsEnabled)
                         .onChange(of: settings.summaryNotificationsEnabled) { _, newValue in
                             if newValue {
@@ -285,9 +277,9 @@ struct SettingsView: View {
                             }
                         }
                 } header: {
-                    Text("Reminders")
+                    Text("Notifications")
                 } footer: {
-                    Text("Photo prompts appear when you set an all-time record. Summaries notify you of your records at month/year end. Inactivity reminder fires after 3 days without tracking.")
+                    Text("Record alerts fire when you set a new record or enter a new region (one alert per record, for the biggest achievement). Photo prompts appear when you set an all-time record. Summaries arrive at month/year end. The inactivity reminder fires after days without tracking.")
                 }
 
                 // MARK: - iCloud Sync Section
@@ -331,6 +323,24 @@ struct SettingsView: View {
                             .foregroundColor(.orange)
                     }
 
+                    // Export freshness: the signal that matters before deleting the app
+                    // or resetting local data
+                    HStack {
+                        Image(systemName: "arrow.up.to.line")
+                            .foregroundColor(.blue)
+                        Text("Last synced")
+                        Spacer()
+                        if let exported = persistenceController.lastExportTime {
+                            Text(exported.formatted(.relative(presentation: .named)))
+                                .foregroundColor(.secondary)
+                                .font(.subheadline)
+                        } else {
+                            Text("Not yet this session")
+                                .foregroundColor(.secondary)
+                                .font(.subheadline)
+                        }
+                    }
+
                     Text("Your records automatically sync across all devices signed into the same iCloud account.")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -338,6 +348,18 @@ struct SettingsView: View {
 
                 // MARK: - Import Records Section
                 Section {
+                    Button(action: {
+                        showManualImport = true
+                    }) {
+                        HStack {
+                            Label("Add Location", systemImage: "plus.circle")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
                     Button(action: {
                         requestPhotoAccess()
                     }) {
@@ -361,26 +383,6 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-
-                    Button(action: {
-                        showManualImport = true
-                    }) {
-                        HStack {
-                            Label("Add Location", systemImage: "plus.circle")
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                } header: {
-                    Text("Import Records")
-                } footer: {
-                    Text("Import records from your photo library, a backup file, or add them manually.")
-                }
-
-                // MARK: - Export Section
-                Section {
                     Button(action: {
                         Task {
                             isExporting = true
@@ -408,12 +410,13 @@ struct SettingsView: View {
                     }
                     .disabled(isExporting)
                 } header: {
-                    Text("Export Records")
+                    Text("Backup & Data")
                 } footer: {
-                    Text("Save your records to a backup file. Photos are stored as references to your Photos library.")
+                    Text("Import records from your photo library, a backup file, or add them manually. Exports save to a backup file; photos are stored as references to your Photos library. A safety backup is also saved automatically before any destructive operation.")
                 }
 
-                // MARK: - Data Management Section
+                // MARK: - Danger Zone (kept as its own section so the destructive
+                // action never sits next to routine backup buttons)
                 Section {
                     Button(role: .destructive) {
                         deleteFromiCloud = false  // Reset to default
@@ -422,8 +425,6 @@ struct SettingsView: View {
                         Label("Delete All Records", systemImage: "trash")
                             .foregroundColor(.red)
                     }
-                } header: {
-                    Text("Data Management")
                 } footer: {
                     Text("Permanently delete all records from this device and optionally from iCloud.")
                 }
@@ -481,19 +482,17 @@ struct SettingsView: View {
             } message: {
                 Text("Please grant photo library access in Settings to import records from your photos.")
             }
-            .sheet(isPresented: $showImportView) {
-                ImportPreviewView()
+            .sheet(isPresented: $showImportView, onDismiss: {
+                // Discard results AFTER the sheet is torn down (never while the wizard is
+                // mounted — views whose selections index the cleared arrays would crash),
+                // so the next Import Photos starts fresh at the options screen
+                photoScanner.cancelAndReset()
+            }) {
+                // Scan starts from the options screen (entire library or since a chosen date)
+                ImportPreviewView(allowScanOptions: true)
                     .environmentObject(photoScanner)
                     .environmentObject(settings)
                     .interactiveDismissDisabled()  // Prevent accidental swipe-down dismissal
-                    .onAppear {
-                        // Start scan if not already scanning (may have been triggered by requestPhotoAccess)
-                        if !photoScanner.isScanning && !photoScanner.hasWizardRecords {
-                            Task {
-                                await photoScanner.scanPhotoLibrary(homeCoordinate: settings.homeCoordinate)
-                            }
-                        }
-                    }
             }
             .sheet(isPresented: $showManualImport) {
                 ManualRecordImportView()
@@ -532,18 +531,7 @@ struct SettingsView: View {
 
                     Task {
                         if let result = await BackupManager.shared.importBackup(from: url) {
-                            var parts: [String] = []
-                            if result.records > 0 {
-                                parts.append("\(result.records) record\(result.records == 1 ? "" : "s")")
-                            }
-                            if result.regions > 0 {
-                                parts.append("\(result.regions) visited region\(result.regions == 1 ? "" : "s")")
-                            }
-                            if result.cache > 0 {
-                                parts.append("\(result.cache) photo cache entr\(result.cache == 1 ? "y" : "ies")")
-                            }
-                            let summary = parts.isEmpty ? "backup data" : parts.joined(separator: ", ")
-                            importResultMessage = "Successfully imported \(summary) from backup."
+                            importResultMessage = BackupManager.importResultMessage(for: result)
                         } else {
                             importResultMessage = "Failed to import backup. The file may be corrupted or incompatible."
                         }
@@ -570,10 +558,9 @@ struct SettingsView: View {
     private func requestPhotoAccess() {
         photoScanner.requestPhotoLibraryAccess { granted in
             if granted {
+                // Present the sheet only — the scan starts from the options screen
+                // (scan range and record/region toggles), never automatically here
                 showImportView = true
-                Task {
-                    await photoScanner.scanPhotoLibrary(homeCoordinate: settings.homeCoordinate)
-                }
             } else {
                 showPermissionAlert = true
             }
@@ -695,6 +682,14 @@ struct ClearRecordsSheet: View {
             Spacer()
 
             if !isDeleting {
+                if PersistenceController.shared.lastExportTime == nil {
+                    Label("Records haven't synced to iCloud this session. A safety backup is saved locally before deleting.", systemImage: "exclamationmark.icloud")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 4)
+                }
+
                 HStack(spacing: 12) {
                     Button("Cancel") {
                         onCancel()
@@ -740,10 +735,21 @@ struct ClearRecordsSheet: View {
             isDeleting = true
             statusMessage = "Deleting local records..."
 
-            // Perform the local deletion first
-            RecordHistoryManager.shared.clearHistory()
-
             Task {
+                // Safety net: automatic local snapshot before the wipe
+                await BackupManager.shared.writeSafetySnapshot(reason: "delete-all")
+
+                // Perform the local deletion first — and STOP if it failed. Destroying
+                // the CloudKit zone after a failed local clear would leave surviving
+                // local rows to re-sync into a fresh zone while reporting success.
+                guard RecordHistoryManager.shared.clearHistory() else {
+                    await MainActor.run {
+                        isDeleting = false
+                        statusMessage = "Couldn't delete local records — nothing was changed in iCloud. Please try again."
+                    }
+                    return
+                }
+
                 if deleteZone {
                     // Complete reset - delete the CloudKit zone entirely
                     await MainActor.run {
@@ -837,6 +843,9 @@ struct ClearRecordsSheet: View {
             statusMessage = "Deleting local records..."
 
             Task {
+                // Safety net: automatic local snapshot before destroying the local store
+                await BackupManager.shared.writeSafetySnapshot(reason: "local-reset")
+
                 let success = await RecordHistoryManager.shared.clearLocalOnly()
 
                 await MainActor.run {

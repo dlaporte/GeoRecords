@@ -172,7 +172,7 @@ struct RecordDetailPager: View {
                 }
             }
         } message: {
-            Text("Are you sure you want to delete this \(currentRecord?.recordType ?? "record")? This action cannot be undone.")
+            Text("Are you sure you want to delete this \(currentRecord?.recordType ?? "record")? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
         }
     }
 
@@ -205,7 +205,7 @@ private struct RecordDetailContent: View {
                 onDelete()
             }
         } message: {
-            Text("Are you sure you want to delete this \(record.recordType) record? This action cannot be undone.")
+            Text("Are you sure you want to delete this \(record.recordType) record? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
         }
     }
 
@@ -260,7 +260,7 @@ struct RecordDetailView: View {
                 deleteRecord()
             }
         } message: {
-            Text("Are you sure you want to delete this \(record.recordType) record? This action cannot be undone.")
+            Text("Are you sure you want to delete this \(record.recordType) record? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
         }
     }
 

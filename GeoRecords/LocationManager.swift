@@ -281,9 +281,10 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             RecordManager.shared.updateRecords(with: currentLocation)
 
             // Track visited region (background location update - auto-confirmed, no user intervention)
+            // Use the fix's own timestamp: deferred/queued delivery can lag the visit by minutes
             RegionTrackingManager.shared.recordVisit(
                 coordinate: currentLocation.coordinate,
-                date: Date(),
+                date: currentLocation.timestamp,
                 source: .location,
                 altitude: currentLocation.altitude
             )

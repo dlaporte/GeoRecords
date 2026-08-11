@@ -63,7 +63,7 @@ struct HistoryDetailPager: View {
                 deleteCurrentRecord()
             }
         } message: {
-            Text("Are you sure you want to delete this \(currentEntry.recordType ?? "record")? This action cannot be undone.")
+            Text("Are you sure you want to delete this \(currentEntry.recordType ?? "record")? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
         }
     }
 
@@ -168,7 +168,7 @@ struct HistoryDetailView: View {
                 deleteRecord()
             }
         } message: {
-            Text("Are you sure you want to delete this \(entry.recordType ?? "record")? This action cannot be undone.")
+            Text("Are you sure you want to delete this \(entry.recordType ?? "record")? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
         }
     }
 

@@ -133,14 +133,45 @@ class PhotoReferenceManager {
         timestamp: Date,
         coordinate: CLLocationCoordinate2D
     ) async -> UIImage? {
-        return await fetchPhotoWithFallback(
+        return await fetchThumbnailWithSource(
             identifier: identifier,
             cloudIdentifier: cloudIdentifier,
             timestamp: timestamp,
-            coordinate: coordinate,
+            coordinate: coordinate
+        )?.image
+    }
+
+    /// Fetch a thumbnail with fallback, also reporting WHICH asset the image came from.
+    /// The source identifier lets callers cache the thumbnail with provenance, so a
+    /// fallback-matched image (timestamp/location guess) can be detected as stale and
+    /// regenerated once the record's real asset becomes resolvable.
+    func fetchThumbnailWithSource(
+        identifier: String,
+        cloudIdentifier: String? = nil,
+        timestamp: Date,
+        coordinate: CLLocationCoordinate2D
+    ) async -> (image: UIImage, sourceIdentifier: String)? {
+        guard isPhotoAccessAuthorized else { return nil }
+
+        guard let asset = PhotoAssetFinder.findAsset(
+            localIdentifier: identifier,
+            cloudIdentifier: cloudIdentifier,
+            timestamp: timestamp,
+            coordinate: coordinate
+        ) else {
+            debugLog("📷 Photo not found even with all fallback methods")
+            return nil
+        }
+
+        guard let image = await fetchImage(
+            from: asset,
             targetSize: CGSize(width: 200, height: 200),
             contentMode: .aspectFill
-        )
+        ) else {
+            return nil
+        }
+
+        return (image, asset.localIdentifier)
     }
 
     /// Fetch a medium-sized photo (optimized for detail views)

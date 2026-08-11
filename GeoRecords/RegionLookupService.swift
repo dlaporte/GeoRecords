@@ -58,7 +58,15 @@ class RegionLookupService {
 
     // MARK: - Public API
 
-    /// Load boundary data from GeoJSON files (call once at startup or on first use)
+    /// Ensure boundary data is loaded (idempotent; safe to call from any thread).
+    ///
+    /// Every public accessor calls this unconditionally: the serial queue both
+    /// prevents a double load and gives the calling thread a memory barrier, so the
+    /// boundary arrays it reads afterwards are fully visible. (A bare `isLoaded`
+    /// fast-path outside the queue was a data race.) The ~36MB GeoJSON parse happens
+    /// on whichever thread first gets here — GeoRecords.swift warms it from a
+    /// background task at startup so first Maps view / photo scan doesn't pay it
+    /// on the main thread.
     func loadBoundaries() {
         loadQueue.sync {
             guard !isLoaded else { return }
@@ -77,9 +85,7 @@ class RegionLookupService {
     /// - Parameter coordinate: The location to look up
     /// - Returns: RegionInfo if found, nil if in international waters or unrecognized territory
     func region(for coordinate: CLLocationCoordinate2D) -> RegionInfo? {
-        if !isLoaded {
-            loadBoundaries()
-        }
+        loadBoundaries()
 
         let lat = coordinate.latitude
         let lon = coordinate.longitude
@@ -153,9 +159,7 @@ class RegionLookupService {
     /// - Parameter regionCode: The region code (e.g., "US-CA", "FR")
     /// - Returns: Array of polygon coordinate arrays
     func polygons(for regionCode: String) -> [[[CLLocationCoordinate2D]]] {
-        if !isLoaded {
-            loadBoundaries()
-        }
+        loadBoundaries()
 
         // Check if it's a US state (with "US-" prefix)
         if regionCode.hasPrefix("US-") {
@@ -240,13 +244,13 @@ class RegionLookupService {
 
     /// Get all loaded US states
     var allUSStates: [RegionInfo] {
-        if !isLoaded { loadBoundaries() }
+        loadBoundaries()
         return usStates.map { RegionInfo(code: "US-\($0.code)", name: $0.name, type: .state, continent: .northAmerica) }
     }
 
     /// Get all loaded countries
     var allCountries: [RegionInfo] {
-        if !isLoaded { loadBoundaries() }
+        loadBoundaries()
         return countries.map { RegionInfo(code: $0.code, name: $0.name, type: .country, continent: $0.continent) }
     }
 
@@ -254,9 +258,7 @@ class RegionLookupService {
     /// - Parameter continent: The continent enum value
     /// - Returns: Array of polygon coordinate arrays
     func continentPolygons(for continent: Continent) -> [[[CLLocationCoordinate2D]]] {
-        if !isLoaded {
-            loadBoundaries()
-        }
+        loadBoundaries()
 
         if let continentBoundary = continents.first(where: { $0.continent == continent }) {
             return convertToCoordinates(polygons: continentBoundary.polygons)
@@ -268,9 +270,7 @@ class RegionLookupService {
     /// Get US outline polylines (for map overlays)
     /// - Returns: Array of polyline coordinate arrays
     func getUSOutlinePolylines() -> [[CLLocationCoordinate2D]] {
-        if !isLoaded {
-            loadBoundaries()
-        }
+        loadBoundaries()
 
         return usOutlinePolylines.map { lineString in
             lineString.compactMap { point -> CLLocationCoordinate2D? in
@@ -617,6 +617,23 @@ class RegionLookupService {
         for territory in territories {
             if lat >= territory.minLat && lat <= territory.maxLat &&
                lon >= territory.minLon && lon <= territory.maxLon {
+                // A bounding box alone is too coarse for the larger territories:
+                // Greenland's box contains ALL of Iceland and much of northeastern
+                // Canada, so box-only matching attributed Iceland photos to Greenland.
+                // When real polygons are resolvable for the territory, require an
+                // actual polygon hit — with the same coastal tolerance the main country
+                // path uses, so a shoreline photo in the Azores doesn't fall through to
+                // mainland Portugal. Box-only matching remains only for territories
+                // with no usable polygons (small islands whose boxes are all ocean).
+                let polygons = rawTerritoryPolygons(for: territory.code)
+                if !polygons.isEmpty {
+                    let coastalTolerance = 0.01  // ~1.1km, matches the country lookup
+                    let inside = polygons.contains {
+                        pointInPolygon(latitude: lat, longitude: lon, polygon: $0) ||
+                        pointNearPolygon(latitude: lat, longitude: lon, polygon: $0, tolerance: coastalTolerance)
+                    }
+                    guard inside else { continue }
+                }
                 return RegionInfo(
                     code: territory.code,
                     name: territory.name,
@@ -627,6 +644,38 @@ class RegionLookupService {
         }
 
         return nil
+    }
+
+    /// Raw polygons for a territory code, resolved the same way polygons(for:) does:
+    /// the territory's own GeoJSON feature if present (by code, then by mapped name),
+    /// else the parent country's polygon parts inside the territory's bounding box.
+    /// Empty when nothing is resolvable.
+    private func rawTerritoryPolygons(for code: String) -> [[[Double]]] {
+        if let own = countries.first(where: { $0.code == code }) {
+            return own.polygons
+        }
+
+        if let geoJSONNames = Self.territoryToGeoJSONNames[code] {
+            for geoJSONName in geoJSONNames {
+                if let country = countries.first(where: { $0.name.lowercased() == geoJSONName }) {
+                    return country.polygons
+                }
+            }
+        }
+
+        if let parentCode = territoryToParentCountry[code],
+           let parentCountry = countries.first(where: { $0.code == parentCode }),
+           let bounds = getTerritoryBoundingBox(code) {
+            return parentCountry.polygons.filter { polygon in
+                polygon.contains { point in
+                    point.count >= 2 &&
+                    point[1] >= bounds.minLat && point[1] <= bounds.maxLat &&
+                    point[0] >= bounds.minLon && point[0] <= bounds.maxLon
+                }
+            }
+        }
+
+        return []
     }
 
     // MARK: - Point-in-Polygon Algorithm
@@ -771,9 +820,7 @@ class RegionLookupService {
 
     /// Look up state code by full name (e.g., "Colorado" -> "CO")
     func stateCodeForName(_ name: String) -> String? {
-        if !isLoaded {
-            loadBoundaries()
-        }
+        loadBoundaries()
 
         // Search through US states
         for boundary in usStates {
@@ -786,9 +833,7 @@ class RegionLookupService {
 
     /// Look up country ISO code by full name (e.g., "Poland" -> "PL")
     func countryCodeForName(_ name: String) -> String? {
-        if !isLoaded {
-            loadBoundaries()
-        }
+        loadBoundaries()
 
         // Search through countries
         for boundary in countries {

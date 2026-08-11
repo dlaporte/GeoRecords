@@ -209,19 +209,19 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         // Clear in-memory record
         setRecord(type: type, timeFrame: timeFrame, record: nil)
 
-        // Delete from Core Data history
+        // Delete from Core Data history (scoped to this timeframe's rows only)
         switch timeFrame {
         case .daily:
             break  // Daily records are managed separately
         case .allTime:
-            _ = RecordHistoryManager.shared.deleteAllRecords(type: type)
+            _ = RecordHistoryManager.shared.deleteLifetimeRecords(type: type)
         case .year:
             if let year = year {
-                _ = RecordHistoryManager.shared.deleteRecords(type: type, year: year)
+                _ = RecordHistoryManager.shared.deleteRecords(type: type, timeFrame: .year, year: year)
             }
         case .month:
             if let year = year, let month = month {
-                _ = RecordHistoryManager.shared.deleteRecords(type: type, year: year, month: month)
+                _ = RecordHistoryManager.shared.deleteRecords(type: type, timeFrame: .month, year: year, month: month)
             }
         }
     }
@@ -266,6 +266,12 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         updateState = .suppressingNotifications(until: suppressUntil)
     }
 
+    /// Public view of suppression for other notification senders (e.g., the live
+    /// photo monitor must also stay quiet during/after an import)
+    var isSuppressingNotifications: Bool {
+        return shouldSuppressNotifications
+    }
+
     private var shouldSuppressNotifications: Bool {
         switch updateState {
         case .blockingAlerts:
@@ -285,8 +291,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     
     // MARK: - Load Records from Core Data
     func loadRecordsFromHistory() {
-        // Remove any duplicate records before loading
-        RecordHistoryManager.shared.removeDuplicates()
+        // Duplicate cleanup belongs to performDataCleanup (startup, post-import,
+        // post-restore) — a full-table dedup sweep on every load was pure overhead
 
         let context = PersistenceController.shared.container.viewContext
         let settings = SettingsManager.shared
@@ -351,20 +357,11 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                 return lifetimeTimeFrameVariations.contains(tf)
             }
 
-            // Helper to find the best record from a group
-            // IMPORTANT: We sort by dateAdded (most recent first) to respect user's wizard selections
-            // The user explicitly chose a record in the wizard, so their most recent choice wins
-            // over any older "more extreme" records that might still be in the database
-            func findBestRecord(in entries: [RecordHistoryEntry]) -> RecordHistoryEntry? {
-                return entries.sorted { entry1, entry2 in
-                    // Sort by dateAdded descending (most recent first)
-                    let date1 = entry1.dateAdded ?? entry1.timestamp ?? Date.distantPast
-                    let date2 = entry2.dateAdded ?? entry2.timestamp ?? Date.distantPast
-                    return date1 > date2
-                }.first
-            }
-
-            // Helper to process records for a timeframe
+            // Helper to process records for a timeframe.
+            // Selection uses RecordType.displayRecord: an explicit wizard choice for the
+            // slot's timeframe wins; otherwise most extreme wins (never insertion order —
+            // dateAdded ordering made records "disappear" whenever a newer, less extreme
+            // row landed after a trip).
             func loadRecordsForTimeFrame(entries: [RecordHistoryEntry], timeFrame: TimeFrame) {
                 let grouped = Dictionary(grouping: entries) { entry -> String in
                     entry.recordType ?? unknownValueString
@@ -373,7 +370,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                 // Process each record type using RecordType enum
                 for recordType in RecordType.allCases {
                     if let typeEntries = grouped[recordType.rawValue],
-                       let entry = findBestRecord(in: typeEntries) {
+                       let entry = recordType.displayRecord(of: typeEntries, slotTimeFrame: timeFrame) {
                         if var record = makeRecordDetail(from: entry) {
                             record.timeFrame = timeFrame
                             setRecord(type: recordType.rawValue, timeFrame: timeFrame, record: record)
@@ -435,20 +432,22 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     }
 
     /// Check all record types for a given timeframe and return which ones were updated
+    /// and which qualify for a user notification (per that timeframe's settings)
     /// - Parameters:
     ///   - params: The location and threshold parameters
     ///   - timeFrame: The timeframe to check
     ///   - excludeTypes: Record types to skip (used in second pass)
     ///   - logSecondPass: Whether to log second pass updates
-    /// - Returns: Set of record type strings that were updated
+    /// - Returns: Sets of record type strings that were updated / are notifiable
     @discardableResult
     private func checkAllRecordTypes(
         params: RecordCheckParams,
         timeFrame: TimeFrame,
         excludeTypes: Set<String> = [],
         logSecondPass: Bool = false
-    ) -> Set<String> {
+    ) -> (updated: Set<String>, notifiable: Set<String>) {
         var updated: Set<String> = []
+        var notifiable: Set<String> = []
 
         // Define all record type checks
         var checks: [RecordTypeCheck] = [
@@ -473,7 +472,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         for check in checks {
             guard !excludeTypes.contains(check.type.rawValue) else { continue }
 
-            if checkAndUpdateRecord(
+            let outcome = checkAndUpdateRecord(
                 type: check.type.rawValue,
                 newValue: check.value,
                 threshold: check.threshold,
@@ -481,19 +480,26 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                 location: params.location,
                 reverseGeocodedName: params.reverseGeocodedName,
                 timeFrame: timeFrame
-            ) {
+            )
+            if outcome.updated {
                 updated.insert(check.type.rawValue)
                 if logSecondPass {
                     debugLog("📍 Second pass: Also set \(check.type.rawValue) record")
                 }
             }
+            if outcome.notifiable {
+                notifiable.insert(check.type.rawValue)
+            }
         }
 
-        return updated
+        return (updated, notifiable)
     }
 
-    /// Helper to check and update a record for a specific timeframe
-    /// - Returns: true if the record was updated, false otherwise
+    /// Helper to check and update a record for a specific timeframe.
+    /// Does NOT post notifications itself: updateRecords aggregates the notifiable
+    /// results and posts one "biggest achievement" notification per record type.
+    /// - Returns: whether the record was updated, and whether it qualifies for a
+    ///   notification per this timeframe's settings
     @discardableResult
     private func checkAndUpdateRecord(
         type: String,
@@ -503,9 +509,12 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         location: CLLocation,
         reverseGeocodedName: String?,
         timeFrame: TimeFrame
-    ) -> Bool {
+    ) -> (updated: Bool, notifiable: Bool) {
         let currentRecord = getRecord(type: type, timeFrame: timeFrame)
-        let now = Date()
+        // Stamp the record with the GPS fix's own timestamp, not processing time:
+        // deferred background delivery can process a fix minutes later, which matters
+        // at month/year boundaries
+        let recordTimestamp = location.timestamp
         let settings = SettingsManager.shared
 
         if let current = currentRecord {
@@ -515,7 +524,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             if delta > threshold {
                 let newRecord = RecordDetail(
                     value: newValue,
-                    timestamp: now,
+                    timestamp: recordTimestamp,
                     coordinate: location.coordinate,
                     altitude: location.altitude,
                     locationName: reverseGeocodedName,
@@ -551,22 +560,18 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                         shouldNotify = settings.notifyOnAllTimeRecords
                     }
 
-                    if shouldNotify && !shouldSuppressNotifications {
-                        sendRecordNotification(recordType: type, detail: newRecord)
-                    }
-
                     debugLog("NEW RECORD: \(type) (\(timeFrame.rawValue)) updated to \(newValue)")
-                    return true
+                    return (updated: true, notifiable: shouldNotify)
                 } else {
                     debugLog("❌ Failed to persist record to Core Data - in-memory state NOT updated")
-                    return false
+                    return (updated: false, notifiable: false)
                 }
             }
         } else {
             // Set initial record for this timeframe
             let newRecord = RecordDetail(
                 value: newValue,
-                timestamp: now,
+                timestamp: recordTimestamp,
                 coordinate: location.coordinate,
                 altitude: location.altitude,
                 locationName: reverseGeocodedName,
@@ -586,8 +591,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                     promptForPhoto(recordType: type, detail: newRecord)
                 }
 
-                // Send notification for initial monthly/yearly records (they're meaningful milestones)
-                // but not for all-time (first-time setup isn't noteworthy)
+                // Initial monthly/yearly records are meaningful milestones (notifiable),
+                // but not initial all-time (first-time setup isn't noteworthy)
                 let shouldNotify: Bool
                 switch timeFrame {
                 case .daily:
@@ -600,17 +605,13 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                     shouldNotify = false  // Don't notify for initial all-time records
                 }
 
-                if shouldNotify && !shouldSuppressNotifications {
-                    sendRecordNotification(recordType: type, detail: newRecord)
-                }
-
-                return true
+                return (updated: true, notifiable: shouldNotify)
             } else {
                 debugLog("❌ Failed to persist initial record to Core Data - in-memory state NOT updated")
-                return false
+                return (updated: false, notifiable: false)
             }
         }
-        return false
+        return (updated: false, notifiable: false)
     }
 
     // MARK: - Geocoding Helper
@@ -741,14 +742,18 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             break
         }
 
-        // Validate location before processing
+        // Validate location before processing.
+        // An unrealistic altitude (airplane fix) still carries valid lat/lon — exactly the
+        // fixes that set the big N/S/E/W and from-home records — so only the altitude
+        // record is excluded, matching updateAllDailyRecords' handling of daily rows.
+        var excludeAltitudeRecord = false
         switch validateLocation(location) {
         case .nullIsland:
             debugLog("⚠️ Skipping Null Island location - invalid GPS data")
             return
         case .unrealisticAltitude(let meters):
-            debugLog("⚠️ Skipping unrealistic altitude (\(Int(meters))m) - likely airplane or bad GPS")
-            return
+            debugLog("⚠️ Unrealistic altitude (\(Int(meters))m) - likely airplane; skipping altitude record only")
+            excludeAltitudeRecord = true
         case .valid:
             break
         }
@@ -824,11 +829,21 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             distanceThreshold: distanceDeltaMeters
         )
 
+        let altitudeExclusion: Set<String> = excludeAltitudeRecord ? [RecordType.up.rawValue] : []
+
+        // Collects, per record type, every timeframe that qualifies for a notification;
+        // ONE notification per type is posted at the end with the most significant one
+        var notifiableTimeFrames: [String: Set<TimeFrame>] = [:]
+
         // FIRST PASS: Check all records with normal thresholds
         // Only update records that exceed the configured delta thresholds
         var updatedRecords: [TimeFrame: Set<String>] = [:]
         for timeFrame in TimeFrame.allCases {
-            updatedRecords[timeFrame] = checkAllRecordTypes(params: params, timeFrame: timeFrame)
+            let result = checkAllRecordTypes(params: params, timeFrame: timeFrame, excludeTypes: altitudeExclusion)
+            updatedRecords[timeFrame] = result.updated
+            for type in result.notifiable {
+                notifiableTimeFrames[type, default: []].insert(timeFrame)
+            }
         }
 
         // SECOND PASS: Zero-threshold check for "extreme locations"
@@ -859,12 +874,26 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         for timeFrame in TimeFrame.allCases {
             guard let updated = updatedRecords[timeFrame], !updated.isEmpty else { continue }
             debugLog("📍 Second pass for \(timeFrame.rawValue): checking remaining records at this extreme location")
-            checkAllRecordTypes(
+            let secondPass = checkAllRecordTypes(
                 params: zeroThresholdParams,
                 timeFrame: timeFrame,
-                excludeTypes: updated,
+                excludeTypes: updated.union(altitudeExclusion),
                 logSecondPass: true
             )
+            for type in secondPass.notifiable {
+                notifiableTimeFrames[type, default: []].insert(timeFrame)
+            }
+        }
+
+        // Post ONE notification per record type, carrying the most significant timeframe
+        // beaten (lifetime > yearly > monthly). A border crossing that sets monthly +
+        // yearly + lifetime records produces a single "lifetime" banner, not three.
+        if !shouldSuppressNotifications {
+            for (type, timeFrames) in notifiableTimeFrames {
+                guard let best = TimeFrame.mostSignificant(of: timeFrames),
+                      let detail = getRecord(type: type, timeFrame: best) else { continue }
+                sendRecordNotification(recordType: type, detail: detail)
+            }
         }
     }
     
@@ -895,7 +924,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             let formattedValue = detail.formattedValue(unitSystem: SettingsManager.shared.unitSystem)
 
             // Updated notification: Split text into title and body for better wrapping.
-            content.title = "You've set a new \(recordType) record"
+            // Include the timeframe so simultaneous monthly/yearly/lifetime records read as distinct.
+            content.title = "You've set a new \(detail.timeFrame.rawValue.lowercased()) \(recordType) record"
             content.body = "(\(formattedValue))"
             content.sound = .default
 
@@ -926,8 +956,9 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
 
     // MARK: - Trigger Photo Prompt
     func promptForPhoto(recordType: String, detail: RecordDetail) {
-        // Block during import
-        if case .blockingAlerts = updateState {
+        // Block during import AND during the post-import suppression window
+        // (previously the import's delayed hard-unblock covered this window)
+        if shouldSuppressNotifications {
             return
         }
 

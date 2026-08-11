@@ -346,18 +346,12 @@ class RecordHistoryManager: ObservableObject {
             )
         }
 
-        // Sort by dateAdded (most recent first) to respect user's wizard selections
-        request.sortDescriptors = [NSSortDescriptor(key: "dateAdded", ascending: false)]
-
         do {
             let results = try context.fetch(request)
-            // Find the most recently added record
-            let mostRecent = results.max { r1, r2 in
-                let date1 = r1.dateAdded ?? r1.timestamp ?? Date.distantPast
-                let date2 = r2.dateAdded ?? r2.timestamp ?? Date.distantPast
-                return date1 < date2
-            }
-            if let record = mostRecent {
+            // Same slot rule as RecordManager.loadRecordsFromHistory (wizard choice,
+            // else extreme) — Stats and Records tabs must agree
+            if let recordType = RecordType.from(string: type),
+               let record = recordType.displayRecord(of: results, slotTimeFrame: timeFrame) {
                 return (value: record.value, locationName: record.locationName)
             }
         } catch {
@@ -382,21 +376,18 @@ class RecordHistoryManager: ObservableObject {
             return nil
         }
 
-        // Only include "Yearly" records - matches Records tab for past years
+        // Include Yearly AND Monthly rows — matches the Records tab's past-year query
+        // (a monthly record from that year is part of that year even without a Yearly row)
         request.predicate = NSPredicate(
-            format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
-            type, "Yearly", yearStart as NSDate, yearEnd as NSDate
+            format: "recordType == %@ AND timeFrame IN %@ AND timestamp >= %@ AND timestamp < %@",
+            type, [TimeFrame.year.rawValue, TimeFrame.month.rawValue], yearStart as NSDate, yearEnd as NSDate
         )
 
         do {
             let results = try context.fetch(request)
-            // Find the most recently added record
-            let mostRecent = results.max { r1, r2 in
-                let date1 = r1.dateAdded ?? r1.timestamp ?? Date.distantPast
-                let date2 = r2.dateAdded ?? r2.timestamp ?? Date.distantPast
-                return date1 < date2
-            }
-            if let record = mostRecent {
+            // Same slot rule as everywhere else — see getFurthestRecord
+            if let recordType = RecordType.from(string: type),
+               let record = recordType.displayRecord(of: results, slotTimeFrame: .year) {
                 return (value: record.value, locationName: record.locationName)
             }
         } catch {
@@ -612,7 +603,11 @@ class RecordHistoryManager: ObservableObject {
 
     /// Clear all records from history (both locally and iCloud)
     /// Uses individual deletes instead of batch delete to ensure proper CloudKit sync
-    func clearHistory() {
+    /// - Returns: true if the wipe succeeded; false if the Core Data fetch/save failed
+    ///   (callers that are about to re-import data MUST check this — importing on top of
+    ///   a failed wipe produces duplicates)
+    @discardableResult
+    func clearHistory() -> Bool {
         do {
             // Delete RecordHistoryEntry records
             let recordRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
@@ -652,10 +647,12 @@ class RecordHistoryManager: ObservableObject {
 
             // Clear cached thumbnails
             ThumbnailCache.shared.clearAllThumbnails()
+            return true
         } catch {
             let message = "Failed to clear records: \(error.localizedDescription)"
             debugLog(message)
             showErrorAlert(message)
+            return false
         }
     }
 
@@ -984,10 +981,12 @@ class RecordHistoryManager: ObservableObject {
         return nil
     }
 
-    /// Delete records for a specific type and time period
+    /// Delete records for a specific type, timeframe, and time period
     /// Used when user skips an existing record (to clear it)
+    /// The timeFrame predicate is essential: skipping a monthly record must not delete the
+    /// yearly/lifetime/daily rows that happen to fall inside the same date window.
     @discardableResult
-    func deleteRecords(type: String, year: Int, month: Int? = nil) -> Int {
+    func deleteRecords(type: String, timeFrame: TimeFrame, year: Int, month: Int? = nil) -> Int {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
 
         let calendar = Calendar.current
@@ -1018,8 +1017,9 @@ class RecordHistoryManager: ObservableObject {
         }
 
         request.predicate = NSPredicate(
-            format: "recordType == %@ AND timestamp >= %@ AND timestamp < %@",
+            format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
             type,
+            timeFrame.rawValue,
             startDate as NSDate,
             endDate as NSDate
         )
@@ -1041,13 +1041,15 @@ class RecordHistoryManager: ObservableObject {
         }
     }
 
-    /// Delete all records of a specific type (for clearing all-time records)
+    /// Delete the lifetime record(s) of a specific type (for clearing all-time records)
+    /// Scoped to Lifetime rows only: clearing a lifetime record must not destroy the
+    /// monthly/yearly/daily history of that record type.
     /// - Parameter type: The record type (e.g., "Furthest North")
     /// - Returns: The number of records deleted
     @discardableResult
-    func deleteAllRecords(type: String) -> Int {
+    func deleteLifetimeRecords(type: String) -> Int {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-        request.predicate = NSPredicate(format: "recordType == %@", type)
+        request.predicate = NSPredicate(format: "recordType == %@ AND timeFrame IN %@", type, lifetimeTimeFrameVariations)
 
         do {
             let results = try context.fetch(request)
@@ -1057,7 +1059,7 @@ class RecordHistoryManager: ObservableObject {
             }
             if count > 0 {
                 try context.save()
-                debugLog("🗑️ Deleted all \(count) record(s) for \(type)")
+                debugLog("🗑️ Deleted \(count) lifetime record(s) for \(type)")
             }
             return count
         } catch {
@@ -1468,8 +1470,8 @@ private struct ExtractedExtremes {
     var maxUp: Double?
     var maxDistanceFromHome: Double?
 
-    /// Extract values from records using the most recently added record for each type
-    /// This respects user's wizard selections (most recent dateAdded wins)
+    /// Extract values from records using the most extreme record for each type
+    /// (dateAdded only breaks ties) — must agree with RecordManager.loadRecordsFromHistory
     /// - Parameter records: The records to extract from
     static func extract(from records: [RecordHistoryEntry]) -> ExtractedExtremes {
         var result = ExtractedExtremes()
@@ -1480,14 +1482,7 @@ private struct ExtractedExtremes {
         for (recordTypeString, typeRecords) in grouped {
             guard let type = RecordType.from(string: recordTypeString) else { continue }
 
-            // Find the most recently added record for this type
-            let mostRecent = typeRecords.max { record1, record2 in
-                let date1 = record1.dateAdded ?? record1.timestamp ?? Date.distantPast
-                let date2 = record2.dateAdded ?? record2.timestamp ?? Date.distantPast
-                return date1 < date2
-            }
-
-            guard let record = mostRecent else { continue }
+            guard let record = type.mostExtreme(of: typeRecords) else { continue }
             let value = record.value
 
             switch type {

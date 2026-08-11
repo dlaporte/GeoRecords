@@ -7,6 +7,18 @@ import UserNotifications
 // MARK: - Discovered Region (for confirmation UI)
 
 /// A region discovered during photo scanning, pending user confirmation
+/// A region discovered by the automatic photo catch-up, awaiting user confirmation
+struct PendingRegionVisit: Codable, Identifiable {
+    var id: String { code }
+    let code: String
+    let name: String
+    let regionType: String  // RegionType rawValue
+    var date: Date          // earliest photo date seen (prospective first visit)
+    var latitude: Double
+    var longitude: Double
+    var altitude: Double
+}
+
 struct DiscoveredRegion: Identifiable {
     let id = UUID()
     let regionCode: String
@@ -49,11 +61,90 @@ class RegionTrackingManager: ObservableObject {
     @Published var countryCount: Int = 0
     @Published var continentCount: Int = 0
 
+    /// Regions discovered by the automatic photo catch-up that await user confirmation.
+    /// New regions from unattended scans are queued instead of auto-added: a geotagged
+    /// photo saved from AirDrop/messages must not silently mark a country as visited.
+    @Published var pendingRegions: [PendingRegionVisit] = []
+
     private let context: NSManagedObjectContext
 
     private init() {
         self.context = PersistenceController.shared.container.viewContext
+        loadPendingRegions()
         loadVisitedRegions()
+    }
+
+    // MARK: - Pending Region Confirmation
+
+    private static let pendingRegionsKey = "pendingRegionVisits"
+
+    private var pendingDefaults: UserDefaults {
+        UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard
+    }
+
+    private func loadPendingRegions() {
+        guard let data = pendingDefaults.data(forKey: Self.pendingRegionsKey),
+              let pending = try? JSONDecoder().decode([PendingRegionVisit].self, from: data) else { return }
+        pendingRegions = pending
+    }
+
+    private func persistPendingRegions() {
+        guard let data = try? JSONEncoder().encode(pendingRegions) else { return }
+        pendingDefaults.set(data, forKey: Self.pendingRegionsKey)
+    }
+
+    /// Whether any region record exists for this code (visited already)
+    func isRegionVisited(code: String) -> Bool {
+        return regionExists(code: code)
+    }
+
+    /// Queue a newly discovered region for user confirmation (deduped by code,
+    /// keeping the earliest visit date as the prospective first-visit)
+    func queuePendingVisit(info: RegionInfo, date: Date, coordinate: CLLocationCoordinate2D, altitude: Double) {
+        if let existingIndex = pendingRegions.firstIndex(where: { $0.code == info.code }) {
+            if date < pendingRegions[existingIndex].date {
+                pendingRegions[existingIndex].date = date
+                pendingRegions[existingIndex].latitude = coordinate.latitude
+                pendingRegions[existingIndex].longitude = coordinate.longitude
+                pendingRegions[existingIndex].altitude = altitude
+                persistPendingRegions()
+            }
+            return
+        }
+
+        pendingRegions.append(PendingRegionVisit(
+            code: info.code,
+            name: info.name,
+            regionType: info.type.rawValue,
+            date: date,
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude,
+            altitude: altitude
+        ))
+        persistPendingRegions()
+        debugLog("📍 Queued pending region for confirmation: \(info.name)")
+    }
+
+    /// User confirmed a pending region: record the visit through the normal path
+    /// (which also handles country/continent chaining)
+    func confirmPendingRegion(code: String) {
+        guard let index = pendingRegions.firstIndex(where: { $0.code == code }) else { return }
+        let pending = pendingRegions.remove(at: index)
+        persistPendingRegions()
+
+        recordVisit(
+            coordinate: CLLocationCoordinate2D(latitude: pending.latitude, longitude: pending.longitude),
+            date: pending.date,
+            source: .photo,
+            altitude: pending.altitude
+        )
+    }
+
+    /// User dismissed a pending region: forget it (a future catch-up can re-queue it
+    /// only from newer photos, since the scan window moves forward)
+    func dismissPendingRegion(code: String) {
+        pendingRegions.removeAll { $0.code == code }
+        persistPendingRegions()
     }
 
     // MARK: - Public API
@@ -71,7 +162,10 @@ class RegionTrackingManager: ObservableObject {
             debugLog("⚠️ RegionTrackingManager: Skipping Null Island location")
             return
         case .unrealisticAltitude(let meters):
-            debugLog("⚠️ RegionTrackingManager: Skipping unrealistic altitude (\(Int(meters))m)")
+            // Deliberate: a fix at cruise altitude means the user is flying OVER this
+            // region, not visiting it. (Extreme records DO count in-flight fixes —
+            // see RecordManager.updateRecords — but region visits must not.)
+            debugLog("⚠️ RegionTrackingManager: Skipping in-flight fix (\(Int(meters))m) - flyovers aren't visits")
             return
         case .valid:
             break
@@ -458,18 +552,33 @@ class RegionTrackingManager: ObservableObject {
         debugLog("📍 Migrated: Added US country with \(allDates.count) visit dates from \(usStates.count) states")
     }
 
+    /// UserDefaults key marking the one-time home-region backfill as done
+    private static let homeRegionMigrationDoneKey = "hasMigratedHomeRegions"
+
     /// Migrate: Add the home region if it doesn't exist
     /// This fixes the issue where home regions were previously skipped
     /// Called before loading regions, so we create the entry directly without triggering reload
     /// Now creates state (if applicable), country, AND continent records
+    ///
+    /// One-time backfill: without the completion flag this ran on every load and
+    /// re-fabricated home-region records (dated today) right after "Clear All Records"
+    /// or a backup restore. The flag is only set once the migration actually completes
+    /// its checks, so a transient region-lookup failure doesn't forfeit the backfill.
     private func migrateHomeRegionIfNeeded() {
+        let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? UserDefaults.standard
+        guard !defaults.bool(forKey: Self.homeRegionMigrationDoneKey) else {
+            return  // Backfill already ran on this device
+        }
+
         guard let homeCoord = SettingsManager.shared.homeCoordinate else {
-            return  // No home set
+            return  // No home set — leave the flag unset so migration runs once home exists
         }
 
         guard let homeRegion = RegionLookupService.shared.region(for: homeCoord) else {
-            return  // Couldn't determine home region
+            return  // Couldn't determine home region — retry on a later load
         }
+
+        defaults.set(true, forKey: Self.homeRegionMigrationDoneKey)
 
         let now = Date()
         var addedAny = false

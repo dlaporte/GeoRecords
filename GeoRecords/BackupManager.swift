@@ -246,13 +246,104 @@ class BackupManager {
         }
     }
 
+    // MARK: - Safety Snapshots
+
+    /// Directory holding automatic pre-destructive-operation snapshots
+    private var safetyBackupDirectory: URL? {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
+        return documents.appendingPathComponent("SafetyBackups", isDirectory: true)
+    }
+
+    private static let maxSafetySnapshots = 5
+
+    /// Write an automatic backup snapshot before a destructive operation (restore,
+    /// Delete All, local reset). Best-effort: failure never blocks the operation, but a
+    /// successful snapshot gives the user a local restore point in Files if a wipe or
+    /// restore goes wrong. Keeps the newest few snapshots and prunes the rest.
+    @discardableResult
+    func writeSafetySnapshot(reason: String) async -> URL? {
+        // Nothing worth snapshotting in an empty store
+        let context = PersistenceController.shared.container.viewContext
+        let recordCount = (try? context.count(for: RecordHistoryEntry.fetchRequest())) ?? 0
+        let regionCount = (try? context.count(for: VisitedRegion.fetchRequest())) ?? 0
+        guard recordCount > 0 || regionCount > 0 else {
+            debugLog("🛟 Safety snapshot skipped (\(reason)): store is empty")
+            return nil
+        }
+
+        guard let directory = safetyBackupDirectory else { return nil }
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            debugLog("⚠️ Safety snapshot: could not create directory: \(error.localizedDescription)")
+            return nil
+        }
+
+        guard let tempURL = await exportBackup() else {
+            debugLog("⚠️ Safety snapshot failed (\(reason)): export produced no file")
+            return nil
+        }
+
+        let destination = directory.appendingPathComponent("Safety_\(reason)_\(tempURL.lastPathComponent)")
+        do {
+            try FileManager.default.moveItem(at: tempURL, to: destination)
+            pruneSafetySnapshots(in: directory)
+            debugLog("🛟 Safety snapshot written: \(destination.lastPathComponent)")
+            return destination
+        } catch {
+            debugLog("⚠️ Safety snapshot failed (\(reason)): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func pruneSafetySnapshots(in directory: URL) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+
+        let sorted = files.sorted { lhs, rhs in
+            let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return lhsDate > rhsDate
+        }
+
+        for stale in sorted.dropFirst(Self.maxSafetySnapshots) {
+            try? FileManager.default.removeItem(at: stale)
+        }
+    }
+
     // MARK: - Import
 
     /// Import records from a backup file (replaces all existing data)
     /// Uses transaction-safe approach: validates all data first, creates rollback point, then imports
     /// - Parameter url: URL to the backup JSON file
     /// - Returns: Tuple with (records imported, regions imported, cache entries imported), or nil if import failed
-    func importBackup(from url: URL) async -> (records: Int, regions: Int, cache: Int)? {
+    typealias ImportResult = (records: Int, regions: Int, cache: Int, failed: Int)
+
+    /// Builds the user-facing summary for a completed restore.
+    /// Centralized here so the three restore entry points (Settings, ContentView, NoRecordsView)
+    /// report results identically, including partial failures.
+    static func importResultMessage(for result: ImportResult) -> String {
+        var parts: [String] = []
+        if result.records > 0 {
+            parts.append("\(result.records) record\(result.records == 1 ? "" : "s")")
+        }
+        if result.regions > 0 {
+            parts.append("\(result.regions) visited region\(result.regions == 1 ? "" : "s")")
+        }
+        if result.cache > 0 {
+            parts.append("\(result.cache) photo cache entr\(result.cache == 1 ? "y" : "ies")")
+        }
+        let summary = parts.isEmpty ? "backup data" : parts.joined(separator: ", ")
+        if result.failed > 0 {
+            return "Imported \(summary) from backup, but \(result.failed) record\(result.failed == 1 ? "" : "s") could not be restored."
+        }
+        return "Successfully imported \(summary) from backup."
+    }
+
+    func importBackup(from url: URL) async -> ImportResult? {
         do {
             // PHASE 1: Parse and validate backup file BEFORE any destructive operations
             let jsonData = try Data(contentsOf: url)
@@ -355,8 +446,16 @@ class BackupManager {
             let previousMinDistMetric = settingsManager.minDistanceDeltaMetersMetric
 
             // PHASE 4: Clear existing data (point of no return for data, but settings can be restored)
+            // Safety net first: keep a local snapshot of what's about to be replaced
+            await writeSafetySnapshot(reason: "restore")
+
             debugLog("🗑️ Clearing existing data before restore...")
-            RecordHistoryManager.shared.clearHistory()
+            guard RecordHistoryManager.shared.clearHistory() else {
+                // Importing on top of a failed wipe would duplicate every surviving row;
+                // abort while the user's existing data and settings are still intact
+                debugLog("❌ Aborting restore: could not clear existing data")
+                return nil
+            }
 
             // PHASE 5: Restore settings if present (version 3+)
             if let backupSettings = backup.settings {
@@ -448,11 +547,18 @@ class BackupManager {
 
             // PHASE 6: Import all validated records
             var importedRecordCount = 0
+            var failedRecordCount = 0
             let context = PersistenceController.shared.container.viewContext
 
             for (recordType, detail) in recordsToImport {
-                RecordHistoryManager.shared.addRecord(recordType: recordType, detail: detail)
-                importedRecordCount += 1
+                if RecordHistoryManager.shared.addRecord(recordType: recordType, detail: detail) {
+                    importedRecordCount += 1
+                } else {
+                    failedRecordCount += 1
+                }
+            }
+            if failedRecordCount > 0 {
+                debugLog("⚠️ \(failedRecordCount) of \(recordsToImport.count) records failed to import")
             }
 
             // PHASE 7: Import validated regions
@@ -580,9 +686,9 @@ class BackupManager {
                 debugLog("⚠️ Error triggering sync: \(error.localizedDescription)")
             }
 
-            debugLog("✅ Backup imported: \(importedRecordCount) records, \(importedRegionCount) new regions processed, \(importedCacheCount) photo cache entries")
+            debugLog("✅ Backup imported: \(importedRecordCount) records, \(importedRegionCount) new regions processed, \(importedCacheCount) photo cache entries, \(failedRecordCount) failed")
             debugLog("☁️ IMPORTANT: Wait for 'Export completed' in logs before deleting app!")
-            return (records: importedRecordCount, regions: importedRegionCount, cache: importedCacheCount)
+            return (records: importedRecordCount, regions: importedRegionCount, cache: importedCacheCount, failed: failedRecordCount)
 
         } catch {
             debugLog("❌ Backup import failed: \(error.localizedDescription)")

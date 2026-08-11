@@ -1,6 +1,7 @@
 import Foundation
 import Photos
 import CoreLocation
+import UserNotifications
 
 /// PhotoLocationMonitor: Monitors the photo library for new photos and checks their locations for records
 ///
@@ -68,6 +69,184 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
         debugLog("📸 PhotoLocationMonitor: Stopped monitoring")
     }
 
+    // MARK: - Catch-Up Scanning
+
+    private static let lastCatchUpKey = "lastPhotoCatchUpDate"
+    private static let catchUpWindowCapDays = 90
+    private static let catchUpMinimumInterval: TimeInterval = 15 * 60
+    private static let catchUpAssetCap = 2000
+    /// Overlap so a photo taken exactly at a scan boundary can't fall between two scans
+    private static let catchUpOverlapSeconds: TimeInterval = 3600
+    private var isCatchUpRunning = false
+
+    /// Scan photos taken since the app was last active and auto-add any records they set.
+    /// The live change observer only sees photos while the app is running; this catches
+    /// the gap after force-quit or reboot. Individual record notifications are suppressed
+    /// in favor of a single digest. Reprocessing already-counted photos is harmless:
+    /// their values no longer beat the records they set.
+    func performCatchUpScan() async {
+        guard !isCatchUpRunning else { return }
+
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else { return }
+
+        let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard
+        let now = Date()
+
+        guard let lastCatchUp = defaults.object(forKey: Self.lastCatchUpKey) as? Date else {
+            // First run: don't sweep the whole library automatically — the import wizard
+            // owns deep history. Start tracking from now.
+            defaults.set(now, forKey: Self.lastCatchUpKey)
+            return
+        }
+
+        // Rapid launch/foreground flips shouldn't rescan
+        guard now.timeIntervalSince(lastCatchUp) >= Self.catchUpMinimumInterval else { return }
+
+        isCatchUpRunning = true
+        defer { isCatchUpRunning = false }
+
+        // Warm the region boundaries OFF the main actor first: the first region lookup
+        // otherwise blocks the main thread behind the ~36MB GeoJSON parse
+        await Task.detached(priority: .utility) {
+            RegionLookupService.shared.loadBoundaries()
+        }.value
+
+        // Cap the window — gaps deeper than the cap are the import wizard's job
+        let capStart = Calendar.current.date(byAdding: .day, value: -Self.catchUpWindowCapDays, to: now) ?? lastCatchUp
+        let windowStart = max(lastCatchUp, capStart).addingTimeInterval(-Self.catchUpOverlapSeconds)
+
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.predicate = NSPredicate(format: "creationDate > %@", windowStart as NSDate)
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+        fetchOptions.fetchLimit = Self.catchUpAssetCap
+
+        let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+        guard assets.count > 0 else {
+            defaults.set(now, forKey: Self.lastCatchUpKey)
+            return
+        }
+
+        debugLog("📸 Catch-up scan: checking \(assets.count) photo(s) taken since \(windowStart)")
+
+        let settings = SettingsManager.shared
+        let regionManager = RegionTrackingManager.shared
+        let pendingBefore = regionManager.pendingRegions.count
+        var recordsCreated = 0
+        var lastProcessedDate: Date?
+
+        for index in 0..<assets.count {
+            // Keep the main actor breathing between photos
+            await Task.yield()
+
+            let asset = assets.object(at: index)
+            lastProcessedDate = asset.creationDate ?? lastProcessedDate
+
+            // Periodically stamp progress so an interrupted pass RESUMES here
+            // instead of repeating (or, worse, skipping) work
+            if index % 100 == 99, let progressDate = lastProcessedDate {
+                defaults.set(progressDate, forKey: Self.lastCatchUpKey)
+            }
+
+            guard let location = asset.location else { continue }
+
+            // Same guards as the live path: skip at-home and Null Island fixes
+            // (in-flight photos stay eligible for everything except the altitude record)
+            if let homeCoord = settings.homeCoordinate {
+                let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
+                if location.distance(from: homeLocation) <= atHomeRadiusMeters { continue }
+            }
+            if case .nullIsland = validateLocation(location) { continue }
+
+            // Geocoding is skipped here (rate limits would stall the pass);
+            // BackgroundGeocoder backfills names afterwards
+            recordsCreated += await checkPhotoForRecords(asset: asset, location: location, sendNotifications: false, geocodeNames: false)
+
+            // Regions: photos are the only evidence while the app was closed.
+            // ALREADY-visited regions are enriched through the normal path (earlier
+            // first-visit date, photo attachment); NEW regions are queued for the
+            // user to confirm — an AirDropped photo must not silently add a country.
+            // Flyover guard: recordVisit checks altitude itself; for the queue, apply
+            // the same rule here.
+            if case .valid = validateLocation(location) {
+                if let info = RegionLookupService.shared.region(for: location.coordinate) {
+                    if regionManager.isRegionVisited(code: info.code) {
+                        regionManager.recordVisit(
+                            coordinate: location.coordinate,
+                            date: asset.creationDate ?? Date(),
+                            source: .photo,
+                            altitude: location.altitude
+                        )
+                    } else {
+                        regionManager.queuePendingVisit(
+                            info: info,
+                            date: asset.creationDate ?? Date(),
+                            coordinate: location.coordinate,
+                            altitude: location.altitude
+                        )
+                    }
+                }
+            }
+        }
+
+        // Completion stamp: if we hit the asset cap there are more photos in the window —
+        // leave the stamp at the last processed photo so the next pass CONTINUES from
+        // there. Otherwise stamp the scan start so nothing is rescanned.
+        if assets.count >= Self.catchUpAssetCap, let resumeDate = lastProcessedDate {
+            defaults.set(resumeDate, forKey: Self.lastCatchUpKey)
+            debugLog("📸 Catch-up hit the \(Self.catchUpAssetCap)-photo cap; will continue from \(resumeDate) next pass")
+        } else {
+            defaults.set(now, forKey: Self.lastCatchUpKey)
+        }
+
+        let pendingAdded = regionManager.pendingRegions.count - pendingBefore
+
+        if recordsCreated > 0 {
+            RecordManager.shared.loadRecordsFromHistory()
+            // Backfill the location names we skipped, with proper rate-limit pacing
+            Task {
+                await BackgroundGeocoder.shared.geocodeMissingLocations()
+            }
+        }
+        if recordsCreated > 0 || pendingAdded > 0 {
+            sendCatchUpDigest(recordCount: recordsCreated, pendingRegionCount: pendingAdded)
+        }
+        debugLog("📸 Catch-up scan complete: \(recordsCreated) record(s) created, \(pendingAdded) region(s) queued")
+    }
+
+    /// One digest notification for the whole catch-up pass, instead of per-record banners
+    private func sendCatchUpDigest(recordCount: Int, pendingRegionCount: Int) {
+        let settings = SettingsManager.shared
+        guard settings.notifyOnMonthlyRecords || settings.notifyOnYearlyRecords || settings.notifyOnAllTimeRecords || settings.notifyOnNewRegion else {
+            return
+        }
+
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let notificationSettings = await center.notificationSettings()
+            guard notificationSettings.authorizationStatus == .authorized else { return }
+
+            var parts: [String] = []
+            if recordCount > 0 {
+                parts.append(recordCount == 1 ? "1 new record" : "\(recordCount) new records")
+            }
+            if pendingRegionCount > 0 {
+                parts.append(pendingRegionCount == 1 ? "1 new place to confirm" : "\(pendingRegionCount) new places to confirm")
+            }
+            guard !parts.isEmpty else { return }
+
+            let content = UNMutableNotificationContent()
+            content.title = "While you were away"
+            content.body = "GeoRecords found \(parts.joined(separator: " and ")) in your recent photos."
+            content.sound = .default
+            // Deep link: pending regions live on the Regions tab; records land on Records
+            content.userInfo = ["deepLink": pendingRegionCount > 0 ? "regions" : "records"]
+
+            let request = UNNotificationRequest(identifier: NotificationIdentifier.photoCatchUpDigest, content: content, trigger: nil)
+            try? await center.add(request)
+        }
+    }
+
     /// Process a new photo asset to check for records
     private func processNewPhoto(_ asset: PHAsset) {
         // Skip if no location data
@@ -83,16 +262,12 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
         }
         lastProcessedAssetIdentifier = asset.localIdentifier
 
-        // Validate the location
-        switch validateLocation(location) {
-        case .nullIsland:
+        // Validate the location. Unrealistic altitude (in-flight photo) is NOT a reject:
+        // checkPhotoForRecords keeps the photo for every record except altitude,
+        // matching RecordManager.updateRecords and the library scanner.
+        if case .nullIsland = validateLocation(location) {
             debugLog("📸 Photo location is Null Island, skipping")
             return
-        case .unrealisticAltitude(let meters):
-            debugLog("📸 Photo has unrealistic altitude (\(Int(meters))m), skipping")
-            return
-        case .valid:
-            break
         }
 
         // Skip photos at home
@@ -115,7 +290,15 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
     }
 
     /// Check if a photo's location would create or replace any records
-    private func checkPhotoForRecords(asset: PHAsset, location: CLLocation) async {
+    /// - Parameters:
+    ///   - sendNotifications: false during catch-up scans, where the caller
+    ///     posts a single digest instead of per-photo banners
+    ///   - geocodeNames: false during catch-up scans — sequential CLGeocoder calls are
+    ///     rate-limited (~50/min) and would stall the pass; BackgroundGeocoder backfills
+    ///     names afterwards with proper pacing
+    /// - Returns: number of distinct record TYPES this photo set (for digest counting)
+    @discardableResult
+    func checkPhotoForRecords(asset: PHAsset, location: CLLocation, sendNotifications: Bool = true, geocodeNames: Bool = true) async -> Int {
         let settings = SettingsManager.shared
         let lat = location.coordinate.latitude
         let lon = location.coordinate.longitude
@@ -136,28 +319,34 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
         // Get photo's cloud identifier for cross-device sync
         let cloudId = PHPhotoLibrary.cloudIdentifier(for: asset)
 
-        // Reverse geocode the location
-        let locationName = await geocodeLocation(location)
+        // Reverse geocode the location (skipped in catch-up; backfilled later)
+        let locationName = geocodeNames ? await geocodeLocation(location) : nil
 
         // Track if we created any records
         var recordsCreated: [String] = []
 
-        // Define checks for each record type
-        let recordChecks: [(type: RecordType, value: Double, threshold: Double)] = [
+        // Define checks for each record type. An in-flight photo (unrealistic altitude)
+        // still counts for N/S/E/W/from-home — only the altitude record can't trust it
+        var allChecks: [(type: RecordType, value: Double, threshold: Double)] = [
             (.north, lat, latThreshold),
             (.south, lat, latThreshold),
             (.east, lon, lonThreshold),
-            (.west, lon, lonThreshold),
-            (.up, alt, altThreshold)
+            (.west, lon, lonThreshold)
         ]
 
+        if case .valid = validateLocation(latitude: lat, longitude: lon, altitude: alt) {
+            allChecks.append((.up, alt, altThreshold))
+        }
+
         // Add distance from home if available
-        var allChecks = recordChecks
         if let distance = distanceFromHome {
             allChecks.append((.fromHome, distance, distanceThreshold))
         }
 
-        // Check each record type across all timeframes
+        // Check each record type across all timeframes, collecting notifiable timeframes
+        // per type so we can post ONE "biggest achievement" notification per type
+        var notifiableTimeFrames: [String: Set<TimeFrame>] = [:]
+
         for check in allChecks {
             for timeFrame in TimeFrame.userVisibleCases {
                 let result = await checkAndCreateRecord(
@@ -171,19 +360,43 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
                     cloudId: cloudId
                 )
 
-                if result {
+                if result.created {
                     recordsCreated.append("\(check.type.rawValue) (\(timeFrame.rawValue))")
                 }
+                if result.notifiable {
+                    notifiableTimeFrames[check.type.rawValue, default: []].insert(timeFrame)
+                }
+            }
+        }
+
+        // One notification per record type with the most significant timeframe beaten
+        // (lifetime > yearly > monthly), matching RecordManager.updateRecords —
+        // and matching its import-suppression window too
+        if sendNotifications && !RecordManager.shared.isSuppressingNotifications {
+            let recordManager = RecordManager.shared
+            for (type, timeFrames) in notifiableTimeFrames {
+                guard let best = TimeFrame.mostSignificant(of: timeFrames),
+                      let detail = recordManager.getRecord(type: type, timeFrame: best) else { continue }
+                recordManager.sendRecordNotification(recordType: type, detail: detail)
             }
         }
 
         if !recordsCreated.isEmpty {
             debugLog("📸 Photo created records: \(recordsCreated.joined(separator: ", "))")
         }
+        // Distinct record types, not rows: one location beating monthly+yearly+lifetime
+        // is ONE achievement in digest terms, not three
+        return notifiableOrCreatedTypeCount(from: recordsCreated)
     }
 
-    /// Check if a photo should create or replace a record
-    /// Returns true if a record was created or replaced
+    /// Count distinct record types from "Type (TimeFrame)" entries
+    private func notifiableOrCreatedTypeCount(from entries: [String]) -> Int {
+        Set(entries.compactMap { $0.split(separator: "(").first?.trimmingCharacters(in: .whitespaces) }).count
+    }
+
+    /// Check if a photo should create or replace a record.
+    /// Does NOT post notifications: checkPhotoForRecords aggregates the notifiable
+    /// results into one "biggest achievement" notification per record type.
     private func checkAndCreateRecord(
         recordType: RecordType,
         value: Double,
@@ -193,13 +406,41 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
         timeFrame: TimeFrame,
         asset: PHAsset,
         cloudId: String?
-    ) async -> Bool {
+    ) async -> (created: Bool, notifiable: Bool) {
         let recordManager = RecordManager.shared
         let historyManager = RecordHistoryManager.shared
         let settings = SettingsManager.shared
-
-        let currentRecord = recordManager.getRecord(type: recordType.rawValue, timeFrame: timeFrame)
         let now = Date()
+
+        // A photo must compete against the records of ITS OWN period: a July 30 photo
+        // scanned in August compares against July's monthly record, not August's.
+        // Only current-period wins update the in-memory slots or notify.
+        let photoDate = asset.creationDate ?? now
+        let calendar = Calendar.current
+        let isCurrentPeriod: Bool
+        switch timeFrame {
+        case .daily, .allTime:
+            isCurrentPeriod = true
+        case .month:
+            isCurrentPeriod = calendar.isDate(photoDate, equalTo: now, toGranularity: .month)
+        case .year:
+            isCurrentPeriod = calendar.isDate(photoDate, equalTo: now, toGranularity: .year)
+        }
+
+        let currentRecord: RecordDetail?
+        if isCurrentPeriod {
+            currentRecord = recordManager.getRecord(type: recordType.rawValue, timeFrame: timeFrame)
+        } else {
+            let components = calendar.dateComponents([.year, .month], from: photoDate)
+            switch timeFrame {
+            case .month:
+                currentRecord = historyManager.getBestRecord(type: recordType.rawValue, year: components.year ?? 0, month: components.month ?? 0)
+            case .year:
+                currentRecord = historyManager.getBestRecord(type: recordType.rawValue, year: components.year ?? 0)
+            default:
+                currentRecord = nil
+            }
+        }
 
         // Calculate if this value would be a new record
         let isNewRecord: Bool
@@ -220,8 +461,9 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
         }
 
         // Check if there's a recent record we should replace (even if not a "new" record by threshold)
+        // Only meaningful for the current period (the "recent" window is measured from now)
         let shouldReplaceRecent: Bool
-        if !isNewRecord, let current = currentRecord {
+        if isCurrentPeriod, !isNewRecord, let current = currentRecord {
             // Check if the current record was created recently and doesn't have a photo
             let timeSinceRecord = now.timeIntervalSince(current.timestamp)
             let isRecent = timeSinceRecord <= recentRecordWindowSeconds
@@ -249,7 +491,7 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
 
         // If neither a new record nor replacing a recent one, skip
         guard isNewRecord || shouldReplaceRecent else {
-            return false
+            return (created: false, notifiable: false)
         }
 
         // Create the new record detail with photo attached
@@ -276,15 +518,18 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
         let saveSucceeded = historyManager.addRecord(recordType: recordType.rawValue, detail: newRecord)
 
         if saveSucceeded {
-            // Update in-memory record
-            recordManager.setRecord(type: recordType.rawValue, timeFrame: timeFrame, record: newRecord)
+            // In-memory slots, badges, and notifications describe the CURRENT period;
+            // a past-period row only belongs in history
+            if isCurrentPeriod {
+                recordManager.setRecord(type: recordType.rawValue, timeFrame: timeFrame, record: newRecord)
+                recordManager.incrementBadge(for: timeFrame)
+            }
 
-            // Increment badge for this timeframe
-            recordManager.incrementBadge(for: timeFrame)
-
-            // Send notification based on settings
+            // Notification eligibility based on settings (posted by the caller)
             let shouldNotify: Bool
             switch timeFrame {
+            case _ where !isCurrentPeriod:
+                shouldNotify = false
             case .daily:
                 shouldNotify = false
             case .month:
@@ -295,20 +540,16 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
                 shouldNotify = settings.notifyOnAllTimeRecords && isNewRecord  // Don't notify for replacements
             }
 
-            if shouldNotify {
-                recordManager.sendRecordNotification(recordType: recordType.rawValue, detail: newRecord)
-            }
-
             // Generate thumbnail for the new record
             Task {
                 await ThumbnailCache.shared.saveThumbnail(from: asset, for: newRecord.id)
             }
 
             debugLog("📸 Created record from photo: \(recordType.rawValue) (\(timeFrame.rawValue)) = \(value)")
-            return true
+            return (created: true, notifiable: shouldNotify)
         }
 
-        return false
+        return (created: false, notifiable: false)
     }
 
     /// Geocode a location to get a place name

@@ -422,12 +422,19 @@ class SettingsManager: ObservableObject, SettingsManaging {
         defaults.set(minAltitudeDeltaMetersMetric, forKey: UserDefaultsKey.minAltitudeDeltaMetersMetric.rawValue)
         defaults.set(minDistanceDeltaMetersMetric, forKey: UserDefaultsKey.minDistanceDeltaMetersMetric.rawValue)
         defaults.set(homeAddress, forKey: UserDefaultsKey.homeAddress.rawValue)
+        // Remove the keys when nil: a cleared home must not resurrect on next launch,
+        // and the widget reads these keys directly for its at-home filtering
         if let homeLocationName = homeLocationName {
             defaults.set(homeLocationName, forKey: UserDefaultsKey.homeLocationName.rawValue)
+        } else {
+            defaults.removeObject(forKey: UserDefaultsKey.homeLocationName.rawValue)
         }
         if let homeCoord = homeCoordinate {
             defaults.set(homeCoord.latitude, forKey: UserDefaultsKey.homeLatitude.rawValue)
             defaults.set(homeCoord.longitude, forKey: UserDefaultsKey.homeLongitude.rawValue)
+        } else {
+            defaults.removeObject(forKey: UserDefaultsKey.homeLatitude.rawValue)
+            defaults.removeObject(forKey: UserDefaultsKey.homeLongitude.rawValue)
         }
         defaults.set(unitSystem.rawValue, forKey: UserDefaultsKey.unitSystem.rawValue)
 
@@ -466,12 +473,18 @@ class SettingsManager: ObservableObject, SettingsManaging {
         ubiquitousStore.set(homeAddress, forKey: UserDefaultsKey.homeAddress.rawValue)
         ubiquitousStore.set(unitSystem.rawValue, forKey: UserDefaultsKey.unitSystem.rawValue)
 
+        // Remove the keys when nil so a cleared home doesn't sync back from iCloud
         if let homeLocationName = homeLocationName {
             ubiquitousStore.set(homeLocationName, forKey: UserDefaultsKey.homeLocationName.rawValue)
+        } else {
+            ubiquitousStore.removeObject(forKey: UserDefaultsKey.homeLocationName.rawValue)
         }
         if let homeCoord = homeCoordinate {
             ubiquitousStore.set(homeCoord.latitude, forKey: UserDefaultsKey.homeLatitude.rawValue)
             ubiquitousStore.set(homeCoord.longitude, forKey: UserDefaultsKey.homeLongitude.rawValue)
+        } else {
+            ubiquitousStore.removeObject(forKey: UserDefaultsKey.homeLatitude.rawValue)
+            ubiquitousStore.removeObject(forKey: UserDefaultsKey.homeLongitude.rawValue)
         }
 
         // Sync iCloud Key-Value Store

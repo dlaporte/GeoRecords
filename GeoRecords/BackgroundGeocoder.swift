@@ -25,6 +25,7 @@ class BackgroundGeocoder {
         }
 
         isRunning = true
+        defer { isRunning = false }  // A thrown/cancelled run must not block geocoding forever
         debugLog("📍 Starting background geocoding of missing locations...")
 
         var geocodedCount = 0
@@ -39,6 +40,10 @@ class BackgroundGeocoder {
                 break
             }
 
+            // Rows that fail stay nameless and would be re-fetched forever (e.g., offline),
+            // so a pass that resolves nothing must end the run; the next launch retries.
+            var resolvedThisPass = 0
+
             for record in records {
                 let coordinate = CLLocationCoordinate2D(latitude: record.latitude, longitude: record.longitude)
 
@@ -46,6 +51,7 @@ class BackgroundGeocoder {
                 if let cachedName = await sharedGeocodingCache.getCachedName(for: coordinate) {
                     updateRecordLocationName(record: record, locationName: cachedName)
                     geocodedCount += 1
+                    resolvedThisPass += 1
                     continue
                 }
 
@@ -56,6 +62,7 @@ class BackgroundGeocoder {
                     await sharedGeocodingCache.setCachedName(existingName, for: coordinate)
                     updateRecordLocationName(record: record, locationName: existingName)
                     geocodedCount += 1
+                    resolvedThisPass += 1
                     continue
                 }
 
@@ -73,6 +80,11 @@ class BackgroundGeocoder {
                         await sharedGeocodingCache.setCachedName(name, for: coordinate)
                         updateRecordLocationName(record: record, locationName: name)
                         geocodedCount += 1
+                        resolvedThisPass += 1
+                    } else {
+                        // An empty placemark list is a non-result: count it so rate-limit
+                        // pacing and the progress check see it, or this row spins the loop
+                        errorCount += 1
                     }
                 } catch {
                     errorCount += 1
@@ -87,9 +99,15 @@ class BackgroundGeocoder {
                     debugLog("📍 Background geocoding progress: \(geocodedCount) resolved, \(errorCount) errors")
                 }
             }
-        }
 
-        isRunning = false
+            // Save once per pass instead of once per record (each save is a CloudKit push)
+            saveIfNeeded()
+
+            if resolvedThisPass == 0 {
+                debugLog("📍 Background geocoding stopped: no progress this pass (\(geocodedCount) resolved, \(errorCount) errors); will retry next launch")
+                break
+            }
+        }
     }
 
     /// Fetch records that don't have a location name yet
@@ -107,7 +125,7 @@ class BackgroundGeocoder {
         }
     }
 
-    /// Update a record with its geocoded location name
+    /// Update a record with its geocoded location name (saved once per pass by saveIfNeeded)
     private func updateRecordLocationName(record: RecordHistoryEntry, locationName: String) {
         // Check if record was deleted while we were geocoding
         guard !record.isDeleted, record.managedObjectContext != nil else {
@@ -115,10 +133,15 @@ class BackgroundGeocoder {
         }
 
         record.locationName = locationName
+    }
+
+    /// Save accumulated location-name updates for the current pass
+    private func saveIfNeeded() {
+        guard context.hasChanges else { return }
         do {
             try context.save()
         } catch {
-            debugLog("📍 Error saving location name: \(error.localizedDescription)")
+            debugLog("📍 Error saving geocoded names: \(error.localizedDescription)")
         }
     }
 

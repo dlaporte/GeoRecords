@@ -68,30 +68,55 @@ struct RecordPhotoThumbnail: View {
         }
     }
 
+    /// The photo source the cached thumbnail must have been rendered from to be valid
+    private var expectedThumbnailSource: String? {
+        if let photoAssetIdentifier = photoAssetIdentifier { return photoAssetIdentifier }
+        if photoData != nil { return ThumbnailCache.embeddedPhotoSource }
+        return nil
+    }
+
     private func loadThumbnail() async {
-        // First, try loading from thumbnail cache (fastest)
-        if let cached = ThumbnailCache.shared.loadThumbnail(for: recordId) {
+        let cache = ThumbnailCache.shared
+
+        // Exact provenance match: the cached thumbnail was rendered from the record's
+        // CURRENT photo — trust it. (Fallback-matched thumbnails must not stick forever;
+        // that made cards show a different photo than the detail view.)
+        if let cached = cache.loadValidatedThumbnail(for: recordId, expectedSource: expectedThumbnailSource) {
             loadedImage = cached
             return
         }
 
-        // Fall back to Photos library with fallback: local ID → cloud ID → timestamp/location
+        // Provenance mismatch or missing (pre-update caches, fallback-matched assets):
+        // show the stale thumbnail immediately — never blank a previously-working card —
+        // then re-resolve at most once per session below.
+        if let stale = cache.loadThumbnail(for: recordId) {
+            loadedImage = stale
+        }
+
+        guard cache.shouldRevalidate(recordId) else { return }
+
+        // Resolve via Photos: local ID → cloud ID → timestamp/location
         if let identifier = photoAssetIdentifier {
-            if let photo = await PhotoReferenceManager.shared.fetchThumbnailWithFallback(
+            if let result = await PhotoReferenceManager.shared.fetchThumbnailWithSource(
                 identifier: identifier,
                 cloudIdentifier: photoCloudIdentifier,
                 timestamp: timestamp,
                 coordinate: coordinate
             ) {
-                loadedImage = photo
+                loadedImage = result.image
+                // Re-cache with provenance: pre-update caches heal to exact-match here;
+                // fallback matches self-heal once the record's real asset is available
+                cache.saveThumbnail(from: result.image, for: recordId, source: result.sourceIdentifier)
                 return
             }
         }
 
         // Fallback to legacy embedded photo data
-        if let data = photoData, let image = UIImage(data: data) {
+        if loadedImage == nil, let data = photoData, let image = UIImage(data: data) {
             loadedImage = image
+            cache.saveThumbnail(from: image, for: recordId, source: ThumbnailCache.embeddedPhotoSource)
         }
+        // Resolution failed: whatever stale thumbnail we showed above stays visible
     }
 }
 

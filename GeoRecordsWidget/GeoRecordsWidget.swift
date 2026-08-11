@@ -33,20 +33,8 @@ private let wholeNumberFormatter: NumberFormatter = {
     return formatter
 }()
 
-private let twoDecimalFormatter: NumberFormatter = {
-    let formatter = NumberFormatter()
-    formatter.numberStyle = .decimal
-    formatter.maximumFractionDigits = 2
-    formatter.minimumFractionDigits = 2
-    return formatter
-}()
-
 private func formatWholeNumber(_ value: Double) -> String {
     wholeNumberFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.0f", value)
-}
-
-private func formatTwoDecimal(_ value: Double) -> String {
-    twoDecimalFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
 }
 
 private func formatRecordValue(_ value: Double, recordType: String, unitSystem: String) -> String {
@@ -64,10 +52,12 @@ private func formatRecordValue(_ value: Double, recordType: String, unitSystem: 
             return "\(formatWholeNumber(value)) m"
         }
     case .fromHome:
+        // Whole numbers to match FormatUtils.formatValue in the main app
+        // (decimals: 0 there) — the widget and app must show the same value
         if unitSystem == "imperial" {
-            return "\(formatTwoDecimal(value * UnitConversion.metersToMiles)) mi"
+            return "\(formatWholeNumber(value * UnitConversion.metersToMiles)) mi"
         } else {
-            return "\(formatTwoDecimal(value * UnitConversion.metersToKilometers)) km"
+            return "\(formatWholeNumber(value * UnitConversion.metersToKilometers)) km"
         }
     }
 }
@@ -87,14 +77,28 @@ let standardRecordOrder = WidgetRecordType.allCases.sorted { $0.sortOrder < $1.s
 
 // MARK: - Shared Core Data Access
 
-/// Creates and configures a Core Data container for widget read-only access
-/// - Parameter completion: Called with the loaded context or nil on error
-private func loadWidgetCoreData(completion: @escaping (NSManagedObjectContext?) -> Void) {
+/// Shared read-only container: the model load and store open happen once per widget
+/// process instead of once per timeline fetch. Unlike a global `let`, a failed open
+/// (e.g., the app hasn't created the database yet) is retried on the next fetch
+/// instead of pinning nil for the process lifetime.
+private enum WidgetCoreData {
+    private static var container: NSPersistentContainer?
+    private static let lock = NSLock()
+
+    static func sharedContainer() -> NSPersistentContainer? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let container = container { return container }
+        container = makeWidgetContainer()
+        return container
+    }
+}
+
+private func makeWidgetContainer() -> NSPersistentContainer? {
     guard let appGroupURL = FileManager.default.containerURL(
         forSecurityApplicationGroupIdentifier: appGroupIdentifier
     ) else {
-        completion(nil)
-        return
+        return nil
     }
 
     let storeURL = appGroupURL.appendingPathComponent("GeoRecordsModel.sqlite")
@@ -102,8 +106,7 @@ private func loadWidgetCoreData(completion: @escaping (NSManagedObjectContext?) 
     // Check if database file exists - widget can't create it (read-only)
     guard FileManager.default.fileExists(atPath: storeURL.path) else {
         print("Widget: Database not created yet - open the main app first")
-        completion(nil)
-        return
+        return nil
     }
 
     let container = NSPersistentContainer(name: "GeoRecordsModel")
@@ -116,13 +119,29 @@ private func loadWidgetCoreData(completion: @escaping (NSManagedObjectContext?) 
 
     container.persistentStoreDescriptions = [storeDescription]
 
-    container.loadPersistentStores { _, error in
-        if let error = error {
-            print("Widget: Failed to load Core Data: \(error)")
-            completion(nil)
-            return
-        }
-        completion(container.viewContext)
+    var loadError: Error?
+    container.loadPersistentStores { _, error in  // Synchronous by default
+        loadError = error
+    }
+    if let loadError = loadError {
+        print("Widget: Failed to load Core Data: \(loadError)")
+        return nil
+    }
+    return container
+}
+
+/// Runs `completion` with a fresh read-only context, or nil if the store is unavailable.
+/// A new context per fetch (rather than the cached viewContext) guarantees each timeline
+/// reload sees the app's latest writes; `performAndWait` keeps the fetch on the
+/// context's own queue.
+private func loadWidgetCoreData(completion: @escaping (NSManagedObjectContext?) -> Void) {
+    guard let container = WidgetCoreData.sharedContainer() else {
+        completion(nil)
+        return
+    }
+    let context = container.newBackgroundContext()
+    context.performAndWait {
+        completion(context)
     }
 }
 
@@ -383,28 +402,26 @@ struct Provider: AppIntentTimelineProvider {
 
             guard let context = context else { return }
 
+            let unitSystem = getUnitSystem()
+            let filter = timeFrameFilter(for: timeFrame)
+            let homeCoord = getHomeCoordinate()
+            let homeLocation: CLLocation? = homeCoord.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
+
             let request = NSFetchRequest<NSFetchRequestResult>(entityName: "RecordHistoryEntry")
             request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: false)]
+            // Filter timeFrame and date range in the store instead of fetching every row
+            request.predicate = NSPredicate(
+                format: "timeFrame IN %@ AND timestamp >= %@ AND timestamp < %@",
+                filter.timeFrameValues,
+                filter.startDate as NSDate,
+                filter.endDate as NSDate
+            )
 
             do {
                 guard let entries = try context.fetch(request) as? [NSManagedObject] else { return }
 
-                let unitSystem = getUnitSystem()
-                let filter = timeFrameFilter(for: timeFrame)
-                let homeCoord = getHomeCoordinate()
-                let homeLocation: CLLocation? = homeCoord.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
-
-                // Filter entries by timeFrame field AND timestamp range (matching main app logic)
+                // At-home filtering needs a distance computation, so it stays in memory
                 let filteredEntries = entries.filter { entry in
-                    // Must have valid timeFrame field that matches our filter
-                    guard let entryTimeFrame = entry.value(forKey: "timeFrame") as? String else { return false }
-                    guard filter.timeFrameValues.contains(entryTimeFrame) else { return false }
-
-                    // Must be within date range
-                    guard let timestamp = entry.value(forKey: "timestamp") as? Date else { return false }
-                    guard timestamp >= filter.startDate && timestamp < filter.endDate else { return false }
-
-                    // Filter out records at home
                     if let home = homeLocation,
                        let lat = entry.value(forKey: "latitude") as? Double,
                        let lon = entry.value(forKey: "longitude") as? Double {
@@ -413,7 +430,6 @@ struct Provider: AppIntentTimelineProvider {
                             return false
                         }
                     }
-
                     return true
                 }
 

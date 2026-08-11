@@ -45,26 +45,4 @@ extension Calendar {
         return (monthInterval.start, monthInterval.end)
     }
 
-    /// Returns the start and end dates for the current year
-    /// Uses the calendar's timezone for proper local date calculation
-    /// - Parameter referenceDate: The date to use as reference (defaults to now)
-    /// - Returns: Tuple of start and end dates for the current year, nil if calculation fails
-    func currentYearRange(for referenceDate: Date = Date()) -> (start: Date, end: Date)? {
-        guard let yearInterval = dateInterval(of: .year, for: referenceDate) else {
-            return nil
-        }
-        return (yearInterval.start, yearInterval.end)
-    }
-
-    /// Returns the start and end dates for the current day
-    /// Uses the calendar's timezone for proper local date calculation
-    /// - Parameter referenceDate: The date to use as reference (defaults to now)
-    /// - Returns: Tuple of start and end dates for the current day
-    func currentDayRange(for referenceDate: Date = Date()) -> (start: Date, end: Date)? {
-        let start = startOfDay(for: referenceDate)
-        guard let end = date(byAdding: .day, value: 1, to: start) else {
-            return nil
-        }
-        return (start, end)
-    }
 }

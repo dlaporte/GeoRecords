@@ -15,6 +15,21 @@ class ThumbnailCache {
     private let thumbnailSize = CGSize(width: 300, height: 300)
     private let compressionQuality: CGFloat = 0.7
 
+    /// Sentinel source for thumbnails rendered from legacy embedded photo data
+    static let embeddedPhotoSource = "embedded-photo-data"
+
+    /// Maps recordId → identifier of the photo each cached thumbnail was rendered from.
+    /// A cached thumbnail is only trustworthy while this matches the record's current
+    /// photo: a thumbnail generated from a timestamp/location fallback match (e.g.,
+    /// before iCloud Photos synced the real asset) must be regenerated once the real
+    /// asset resolves, or cards show a different photo than the detail view forever.
+    private var thumbnailSources: [String: String] = [:]
+    private let sourcesFileName = "thumbnail-sources.json"
+
+    private var sourcesFileURL: URL? {
+        thumbnailDirectory?.appendingPathComponent(sourcesFileName)
+    }
+
     private var thumbnailDirectory: URL? {
         guard let appGroupURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroupIdentifier
@@ -33,6 +48,39 @@ class ThumbnailCache {
 
     private init() {
         createThumbnailDirectoryIfNeeded()
+        loadSources()
+    }
+
+    // MARK: - Source Index
+
+    private func loadSources() {
+        guard let url = sourcesFileURL,
+              let data = try? Data(contentsOf: url),
+              let sources = try? JSONDecoder().decode([String: String].self, from: data) else { return }
+        thumbnailSources = sources
+    }
+
+    private func persistSources() {
+        guard let url = sourcesFileURL,
+              let data = try? JSONEncoder().encode(thumbnailSources) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private func recordSource(_ source: String, for recordId: UUID) {
+        thumbnailSources[recordId.uuidString] = source
+        persistSources()
+    }
+
+    /// Records that already attempted a re-resolution this session
+    private var revalidatedThisSession: Set<UUID> = []
+
+    /// True at most once per record per app session — limits records whose cached
+    /// thumbnail can't be provenance-validated (pre-update caches, fallback-matched
+    /// assets) to a single re-resolution attempt instead of one per card appearance.
+    func shouldRevalidate(_ recordId: UUID) -> Bool {
+        if revalidatedThisSession.contains(recordId) { return false }
+        revalidatedThisSession.insert(recordId)
+        return true
     }
 
     // MARK: - Directory Management
@@ -56,7 +104,10 @@ class ThumbnailCache {
     /// - Parameters:
     ///   - image: The source image to create thumbnail from
     ///   - recordId: The record's UUID
-    func saveThumbnail(from image: UIImage, for recordId: UUID) {
+    /// - Parameter source: identifier of the photo the image came from
+    ///   (asset localIdentifier, or `embeddedPhotoSource` for legacy photo data);
+    ///   used to detect stale thumbnails when the record's photo changes
+    func saveThumbnail(from image: UIImage, for recordId: UUID, source: String) {
         guard let directory = thumbnailDirectory else { return }
 
         // Create thumbnail
@@ -74,6 +125,7 @@ class ThumbnailCache {
 
         do {
             try data.write(to: fileURL)
+            recordSource(source, for: recordId)
             debugLog("💾 Saved thumbnail for record \(recordId)")
         } catch {
             debugLog("❌ Failed to save thumbnail: \(error.localizedDescription)")
@@ -91,22 +143,29 @@ class ThumbnailCache {
         options.isNetworkAccessAllowed = true
         options.isSynchronous = false
 
-        let image = await withCheckedContinuation { continuation in
+        let image: UIImage? = await withCheckedContinuation { continuation in
+            var hasResumed = false
             PHImageManager.default().requestImage(
                 for: asset,
                 targetSize: thumbnailSize,
                 contentMode: .aspectFill,
                 options: options
             ) { image, info in
+                guard !hasResumed else { return }
                 let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                if !isDegraded {
-                    continuation.resume(returning: image)
+                let hasError = info?[PHImageErrorKey] != nil
+                // Resume on the final (non-degraded) image, or on error so the
+                // continuation can never leak when the full-quality image never arrives
+                // (e.g., iCloud original unavailable offline)
+                if !isDegraded || hasError {
+                    hasResumed = true
+                    continuation.resume(returning: isDegraded ? nil : image)
                 }
             }
         }
 
         if let image = image {
-            saveThumbnail(from: image, for: recordId)
+            saveThumbnail(from: image, for: recordId, source: asset.localIdentifier)
         }
     }
 
@@ -163,6 +222,17 @@ class ThumbnailCache {
     /// Load a cached thumbnail for a record
     /// - Parameter recordId: The record's UUID
     /// - Returns: The cached thumbnail image, or nil if not found
+    /// Load a cached thumbnail only if it was rendered from the expected photo source.
+    /// Returns nil — forcing regeneration — when the thumbnail predates source tracking
+    /// or was generated from a fallback-matched asset that no longer matches the record.
+    func loadValidatedThumbnail(for recordId: UUID, expectedSource: String?) -> UIImage? {
+        guard let expectedSource = expectedSource,
+              thumbnailSources[recordId.uuidString] == expectedSource else {
+            return nil
+        }
+        return loadThumbnail(for: recordId)
+    }
+
     func loadThumbnail(for recordId: UUID) -> UIImage? {
         guard let directory = thumbnailDirectory else { return nil }
 
@@ -195,6 +265,9 @@ class ThumbnailCache {
 
         let fileURL = directory.appendingPathComponent("\(recordId.uuidString).jpg")
 
+        thumbnailSources.removeValue(forKey: recordId.uuidString)
+        persistSources()
+
         do {
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 try FileManager.default.removeItem(at: fileURL)
@@ -208,6 +281,8 @@ class ThumbnailCache {
     /// Clear all cached thumbnails
     func clearAllThumbnails() {
         guard let directory = thumbnailDirectory else { return }
+
+        thumbnailSources.removeAll()
 
         do {
             let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -277,7 +352,7 @@ class ThumbnailCache {
 
                 // Try legacy photo data first (fastest, no Photos library access needed)
                 if let photoData = entry.photoData, let image = UIImage(data: photoData) {
-                    saveThumbnail(from: image, for: recordId)
+                    saveThumbnail(from: image, for: recordId, source: Self.embeddedPhotoSource)
                     generatedCount += 1
                     continue
                 }

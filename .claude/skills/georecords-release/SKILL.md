@@ -18,6 +18,7 @@ Publishing a GitHub release tagged `vX.Y.Z` builds, tests, signs, and uploads th
 
 ## Release procedure
 
+0. **Determine the version.** If not provided with the invocation (e.g. `/georecords-release 1.8.1`), ASK the user which version to release before doing anything else — suggest the next patch number derived from the latest tag (`git tag -l 'v*' --sort=-v:refname | head -1`, or `gh release list --limit 1` if tags aren't local), offering minor/major bumps as alternatives.
 1. **Preflight:** on `main`, working tree clean and pushed. Verify `grep -c "MARKETING_VERSION = X.Y.Z" GeoRecords.xcodeproj/project.pbxproj` returns 4. To bump (all 4 entries at once), commit, and push:
    ```bash
    sed -i '' 's/MARKETING_VERSION = OLD.VERSION;/MARKETING_VERSION = X.Y.Z;/g' GeoRecords.xcodeproj/project.pbxproj

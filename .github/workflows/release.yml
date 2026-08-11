@@ -45,7 +45,7 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Select latest stable Xcode
         run: |
@@ -84,12 +84,14 @@ jobs:
           DEVICE_ID=$(xcrun simctl list devices available --json \
             | jq -r '[.devices[] | .[] | select(.name | test("^iPhone"))][0].udid')
           echo "Testing on simulator $DEVICE_ID"
+          # NOTE: no CODE_SIGNING_ALLOWED=NO here — simulator test builds sign ad-hoc
+          # with no certificates, and disabling signing strips the app-group/iCloud
+          # entitlements, which crashes the test host at launch
           xcodebuild test \
             -project GeoRecords.xcodeproj \
             -scheme GeoRecords \
             -destination "id=$DEVICE_ID" \
-            -only-testing:GeoRecordsTests \
-            CODE_SIGNING_ALLOWED=NO
+            -only-testing:GeoRecordsTests
 
       - name: Archive
         env:

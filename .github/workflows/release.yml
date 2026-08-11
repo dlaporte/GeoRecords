@@ -1,0 +1,131 @@
+# Release to App Store Connect
+#
+# Publishing a GitHub release with a v* tag (e.g. v1.8.1) builds, signs, and
+# uploads that version to App Store Connect (TestFlight processing). Public
+# App Store release still requires submitting for review in App Store Connect.
+#
+# Signing uses Xcode cloud-managed signing via an App Store Connect API key —
+# no certificates or provisioning profiles are stored in this repo.
+#
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   ASC_KEY_ID      - App Store Connect API key ID (e.g. ABC123DEFG)
+#   ASC_ISSUER_ID   - Issuer ID from the same Integrations page (a UUID)
+#   ASC_KEY_P8      - Contents of the AuthKey_<ID>.p8 file, base64-encoded:
+#                     base64 -i AuthKey_ABC123DEFG.p8 | pbcopy
+#   The key needs the "App Manager" role (Admin also works).
+#
+# Version semantics:
+#   MARKETING_VERSION      = release tag without the leading "v"
+#   CURRENT_PROJECT_VERSION = the CI run number (monotonic, never collides)
+#
+# First-time validation: run this manually from the Actions tab
+# (workflow_dispatch) with "upload" left false — it exercises build, tests,
+# signing, and archiving without publishing anything.
+
+name: Release to App Store
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload the build to App Store Connect"
+        type: boolean
+        default: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        run: |
+          # App Review rejects binaries built with beta SDKs, so always pin the
+          # newest NON-beta Xcode available on the runner image
+          XCODE_PATH=$(ls -d /Applications/Xcode_*.app 2>/dev/null | grep -vi beta | sort -V | tail -1)
+          echo "Using: $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            TAG="$GITHUB_REF_NAME"
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+              echo "::error::Tag '$TAG' must look like v1.8.1 to release"
+              exit 1
+            fi
+            echo "marketing_version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          else
+            # Manual runs keep the version already set in the project
+            echo "marketing_version=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "build_number=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p ~/private_keys
+          printf '%s' "$ASC_KEY_P8" | base64 --decode > ~/private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+      - name: Run unit tests
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices[] | .[] | select(.name | test("^iPhone"))][0].udid')
+          echo "Testing on simulator $DEVICE_ID"
+          xcodebuild test \
+            -project GeoRecords.xcodeproj \
+            -scheme GeoRecords \
+            -destination "id=$DEVICE_ID" \
+            -only-testing:GeoRecordsTests \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Archive
+        env:
+          MARKETING_VERSION: ${{ steps.version.outputs.marketing_version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+        run: |
+          VERSION_OVERRIDE=""
+          if [[ -n "$MARKETING_VERSION" ]]; then
+            VERSION_OVERRIDE="MARKETING_VERSION=$MARKETING_VERSION"
+          fi
+          xcodebuild archive \
+            -project GeoRecords.xcodeproj \
+            -scheme GeoRecords \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/GeoRecords.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            INFOPLIST_KEY_ITSAppUsesNonExemptEncryption=NO \
+            $VERSION_OVERRIDE
+
+      - name: Upload to App Store Connect
+        if: github.event_name == 'release' || inputs.upload
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath build/GeoRecords.xcarchive \
+            -exportOptionsPlist ci/ExportOptions.plist \
+            -exportPath build/export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          echo "Uploaded. The build will appear in App Store Connect once processing finishes."
+
+      - name: Clean up API key
+        if: always()
+        run: rm -rf ~/private_keys

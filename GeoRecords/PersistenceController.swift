@@ -12,6 +12,20 @@ class PersistenceController: ObservableObject {
     @Published var showDatabaseRecoveryAlert = false
     @Published var databaseWasDeleted = false
     @Published var isSyncing = false
+
+    /// Changes whenever the persistent store is destroyed and rebuilt (Delete All
+    /// Records, database recovery). The root tab hierarchy is keyed on this so
+    /// SwiftUI rebuilds every view — @FetchRequest results and any held
+    /// NSManagedObjects from the OLD store are torn down instead of crashing with
+    /// "persistent store is not reachable from this NSManagedObjectContext's
+    /// coordinator" on next render.
+    @Published private(set) var storeGeneration = UUID()
+
+    /// Call on the main thread after a successful store destroy + reload
+    func noteStoreReplaced() {
+        storeGeneration = UUID()
+        debugLog("♻️ Persistent store replaced - invalidating all fetched objects")
+    }
     @Published var lastSyncError: Error?
     @Published var lastExportTime: Date?
     @Published var lastImportTime: Date?
@@ -180,6 +194,7 @@ class PersistenceController: ObservableObject {
                 self.loadError = nil
                 Task { @MainActor in
                     self.databaseWasDeleted = true
+                    self.noteStoreReplaced()
                 }
             }
         }
@@ -246,53 +261,20 @@ class PersistenceController: ObservableObject {
             return false
         }
 
-        debugLog("☁️ CloudKit zone exists - waiting for sync to complete...")
-
-        // Zone exists, so user has synced data before
-        // Wait for CloudKit import to complete, then check local database
-        // This avoids the "recordName not queryable" error from direct CKQuery
-        let maxWaitSeconds = 15
-        let checkIntervalNanos: UInt64 = 1_000_000_000  // 1 second (local constant, not in Constants.swift)
-
-        for second in 1...maxWaitSeconds {
-            // Wait for sync
-            try? await Task.sleep(nanoseconds: checkIntervalNanos)
-
-            // Check if import has completed by looking at local data
-            let hasLocalData = await hasExistingCloudData()
-            if hasLocalData {
-                debugLog("☁️ Found data after \(second)s of sync - user has data to restore!")
-                return true
-            }
-
-            // Also check if we're still syncing
-            let stillSyncing = await MainActor.run { self.isSyncing }
-            if !stillSyncing && second >= 3 {
-                // Sync finished but no data found - give it a couple more seconds just in case
-                debugLog("☁️ Sync appears complete after \(second)s, checking for data...")
-                try? await Task.sleep(nanoseconds: standardDelayNanos)  // Wait 2 more seconds
-                let finalCheck = await hasExistingCloudData()
-                if finalCheck {
-                    debugLog("☁️ Found data after final check - user has data to restore!")
-                    return true
-                }
-                debugLog("☁️ No data found after sync completed")
-                break
-            }
-
-            debugLog("☁️ Waiting for sync... (\(second)/\(maxWaitSeconds)s, syncing: \(stillSyncing))")
-        }
-
-        // Zone exists but no data synced - could be empty zone from previous install
-        // Check one final time
-        let finalHasData = await hasExistingCloudData()
-        if finalHasData {
-            debugLog("☁️ Found data on final check!")
-            return true
-        }
-
-        debugLog("☁️ CloudKit zone exists but no data synced after \(maxWaitSeconds)s - treating as new user")
-        return false
+        // The zone existing is our answer: this account has synced data before, so
+        // attempt a restore. Do NOT wait here for the local import as proof — a full
+        // re-import after a store wipe takes minutes, and mirroring briefly reports
+        // isSyncing=false right after a store reload, so any short local-data wait
+        // gives up long before real data can arrive (the old 15s loop bailed at ~5s
+        // and sent post-delete users to "No Records Found" with a full zone in iCloud).
+        // Whether the data actually ARRIVES is the restore flow's job:
+        // monitorSyncCompletion waits up to 120s with progress UI, and an empty zone
+        // (rare: everything previously deleted) simply falls through to the
+        // no-records prompt there instead.
+        // (Direct CKQuery for record counts isn't possible: CD_ record types aren't
+        // queryable — "recordName not queryable".)
+        debugLog("☁️ CloudKit zone exists - user has data to restore")
+        return true
     }
 
     /// Check CloudKit account status

@@ -2,10 +2,13 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Shown when user has completed setup but has no records
-/// Offers options to scan photos or restore from backup
+/// Offers options to scan photos, restore from backup, or explicitly start fresh
 struct NoRecordsView: View {
     @Environment(\.dismiss) var dismiss
     let onScanPhotos: () -> Void
+    /// Explicit "begin from zero" choice — releases the data-restore gate so
+    /// automatic record tracking resumes. Optional so previews stay simple.
+    var onStartFresh: (() -> Void)? = nil
 
     @State private var showFilePicker = false
     @State private var showImportConfirm = false
@@ -125,6 +128,20 @@ struct NoRecordsView: View {
                             .foregroundColor(.secondary)
                     }
                     .padding(.horizontal)
+
+                    // Explicit escape hatch: without it, declining both restore options
+                    // leaves record tracking suspended with no way to re-enable it
+                    if let onStartFresh = onStartFresh {
+                        Button {
+                            onStartFresh()
+                            dismiss()
+                        } label: {
+                            Text("Start Fresh — track from scratch")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .underline()
+                        }
+                    }
 
                     Spacer(minLength: 40)
                 }

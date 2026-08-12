@@ -742,6 +742,15 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             break
         }
 
+        // Data-restore gate: after Delete All Records, nothing may create records until
+        // the user completes an iCloud/backup/photo restore path or opts to start fresh.
+        // A record written here would both bypass the restore-first launch gate (store
+        // no longer empty) and sync junk out to the user's other devices.
+        if SettingsManager.shared.needsDataRestore {
+            debugLog("🚧 Restore gate armed - skipping location record update")
+            return
+        }
+
         // Validate location before processing.
         // An unrealistic altitude (airplane fix) still carries valid lat/lon — exactly the
         // fixes that set the big N/S/E/W and from-home records — so only the altitude

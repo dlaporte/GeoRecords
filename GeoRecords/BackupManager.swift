@@ -29,6 +29,9 @@ class BackupManager {
         let photoCloudIdentifier: String?  // For cross-device photo access via iCloud Photo Library
         let notes: String?
         let regionCode: String?  // For region records (state code, country code, continent name)
+        // Optional so backups from versions <= 6 still decode (restore as nil)
+        let source: String?      // RecordSource rawValue — "wizard" is load-bearing for slot selection
+        let dateAdded: Date?     // Preserved so tie-breaks survive a restore
     }
 
     /// Represents a visited region (state/country) in the backup
@@ -139,7 +142,9 @@ class BackupManager {
                     photoAssetIdentifier: entry.photoAssetIdentifier,
                     photoCloudIdentifier: entry.photoCloudIdentifier,
                     notes: entry.notes,
-                    regionCode: entry.regionCode
+                    regionCode: entry.regionCode,
+                    source: entry.source,
+                    dateAdded: entry.dateAdded
                 )
             }
 
@@ -208,7 +213,7 @@ class BackupManager {
             )
 
             let backup = BackupFile(
-                version: 6,  // Updated version to include threshold settings
+                version: 7,  // v7 adds record source + dateAdded (wizard markers survive restore)
                 exportDate: Date(),
                 appVersion: appVersion,
                 deviceName: deviceName,
@@ -357,7 +362,7 @@ class BackupManager {
             debugLog("📥 Importing backup: version \(backup.version), \(backup.recordCount) records, \(regionCount) visited regions, \(cacheCount) photo cache entries from \(backup.deviceName)")
 
             // Validate version (support v1, v2, v3, v4, v5, and v6)
-            guard backup.version >= 1 && backup.version <= 6 else {
+            guard backup.version >= 1 && backup.version <= 7 else {
                 debugLog("❌ Unsupported backup version: \(backup.version)")
                 return nil
             }
@@ -396,7 +401,9 @@ class BackupManager {
                     photoAssetIdentifier: record.photoAssetIdentifier,
                     photoCloudIdentifier: record.photoCloudIdentifier,
                     notes: record.notes,
-                    regionCode: normalizedRegionCode
+                    dateAdded: record.dateAdded,
+                    regionCode: normalizedRegionCode,
+                    source: record.source.flatMap { RecordSource(rawValue: $0) }
                 )
                 recordsToImport.append((record.recordType, detail))
             }
@@ -688,6 +695,10 @@ class BackupManager {
 
             debugLog("✅ Backup imported: \(importedRecordCount) records, \(importedRegionCount) new regions processed, \(importedCacheCount) photo cache entries, \(failedRecordCount) failed")
             debugLog("☁️ IMPORTANT: Wait for 'Export completed' in logs before deleting app!")
+
+            // Backup restore is a completed data path — release the restore gate
+            SettingsManager.shared.needsDataRestore = false
+
             return (records: importedRecordCount, regions: importedRegionCount, cache: importedCacheCount, failed: failedRecordCount)
 
         } catch {

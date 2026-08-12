@@ -18,7 +18,6 @@ struct SettingsView: View {
     @State private var showClearRecordsSheet = false
     @State private var deleteFromiCloud = false
     @State private var showImportView = false
-    @State private var showNoRecordsView = false
     @State private var showPermissionAlert = false
     @State private var showManualImport = false
     @State private var showSetupWizard = false
@@ -447,10 +446,11 @@ struct SettingsView: View {
                     persistenceController: persistenceController,
                     onComplete: {
                         showClearRecordsSheet = false
-                        // Small delay to let sheet dismiss, then show no records view
+                        // Route through the restore-first gate that ContentView owns:
+                        // check iCloud FIRST, prompt for restore/scan only if that fails
                         Task { @MainActor in
                             try? await Task.sleep(nanoseconds: shortDelayNanos)
-                            showNoRecordsView = true
+                            NotificationCenter.default.post(name: .dataRestoreCheckNeeded, object: nil)
                         }
                     },
                     onCancel: {
@@ -497,15 +497,6 @@ struct SettingsView: View {
             .sheet(isPresented: $showManualImport) {
                 ManualRecordImportView()
                     .environmentObject(settings)
-            }
-            .sheet(isPresented: $showNoRecordsView) {
-                NoRecordsView(onScanPhotos: {
-                    // Small delay to let the NoRecordsView dismiss first
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: shortDelayNanos)
-                        showImportView = true
-                    }
-                })
             }
             .sheet(isPresented: $showBackupShareSheet) {
                 if let url = backupURL {
@@ -750,6 +741,10 @@ struct ClearRecordsSheet: View {
                     return
                 }
 
+                // Arm the restore gate: no automatic record creation until the user
+                // completes an iCloud/backup/photo restore or explicitly starts fresh
+                SettingsManager.shared.needsDataRestore = true
+
                 if deleteZone {
                     // Complete reset - delete the CloudKit zone entirely
                     await MainActor.run {
@@ -850,7 +845,9 @@ struct ClearRecordsSheet: View {
 
                 await MainActor.run {
                     if success {
-                        statusMessage = "Store reloaded - records will sync from iCloud"
+                        // Arm the restore gate (see the iCloud branch above)
+                        SettingsManager.shared.needsDataRestore = true
+                        statusMessage = "Store reloaded - checking iCloud for your records"
                     } else {
                         statusMessage = "Failed to clear local data"
                     }

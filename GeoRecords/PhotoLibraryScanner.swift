@@ -997,6 +997,9 @@ class PhotoLibraryScanner: ObservableObject {
             // Log summary
             debugLog("✅ Import completed successfully. \(successCount) records imported.")
 
+            // Photo import is a completed data path — release the restore gate
+            SettingsManager.shared.needsDataRestore = false
+
             // Switch from the hard import block to the time-based suppression window.
             // (A fixed-delay unblock Task here could outlive this import and clear a
             // LATER import's block mid-run — one mechanism, deadline-based, is enough.)

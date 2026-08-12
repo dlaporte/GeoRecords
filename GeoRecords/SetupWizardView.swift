@@ -235,6 +235,10 @@ struct SetupWizardView: View {
     }
 
     private func completeSetup() {
+        // Completing setup is an explicit user decision about their data —
+        // release any pending restore gate (e.g., after a full app reset)
+        settings.needsDataRestore = false
+
         // Save settings
         settings.unitSystem = selectedUnitSystem
         // homeCoordinate already saved directly to settings during selection

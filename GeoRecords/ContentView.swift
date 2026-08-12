@@ -123,6 +123,11 @@ struct ContentView: View {
         VStack(spacing: 0) {
             LocationHealthBanner(isDismissed: $locationManager.healthBannerDismissed, selectedTab: selectedTab)
             tabView
+                // Rebuild the entire tab hierarchy when the persistent store is
+                // replaced: any surviving view (e.g., HistoryView's @FetchRequest)
+                // holding objects from the destroyed store would crash on render.
+                // selectedTab lives above this subtree, so the active tab persists.
+                .id(persistenceController.storeGeneration)
         }
         .onAppear(perform: handleOnAppear)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
@@ -132,6 +137,10 @@ struct ContentView: View {
             Task {
                 await PhotoLocationMonitor.shared.performCatchUpScan()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dataRestoreCheckNeeded)) { _ in
+            // Delete All Records just completed: run the restore-first gate in-session
+            checkForCloudRestoreOrShowPhotoImport()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             Task { @MainActor in
@@ -185,13 +194,19 @@ struct ContentView: View {
                 .interactiveDismissDisabled()
         }
         .sheet(isPresented: $showNoRecordsView) {
-            NoRecordsView(onScanPhotos: {
-                // Small delay to let the NoRecordsView dismiss first
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: shortDelayNanos)
-                    showPhotoImportWizard = true
+            NoRecordsView(
+                onScanPhotos: {
+                    // Small delay to let the NoRecordsView dismiss first
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: shortDelayNanos)
+                        showPhotoImportWizard = true
+                    }
+                },
+                onStartFresh: {
+                    // Explicit user choice: begin from zero — releases the restore gate
+                    settings.needsDataRestore = false
                 }
-            })
+            )
         }
         .modifier(ContentViewAlertsModifier(
             setupFlowState: $setupFlowState,
@@ -309,6 +324,12 @@ struct ContentView: View {
     private func handleOnAppear() {
         if !settings.hasCompletedSetup && setupFlowState == .none {
             checkForCloudRestore()
+        } else if settings.needsDataRestore && setupFlowState == .none {
+            // Restore gate armed by Delete All Records: back to the first-open flow —
+            // check iCloud FIRST, prompt for restore/scan only if that finds nothing.
+            // Keyed off the persisted flag (not "is the store empty") so a stray early
+            // write can never bypass the gate.
+            checkForCloudRestoreOrShowPhotoImport()
         } else if settings.hasCompletedSetup && setupFlowState == .none {
             // Setup was marked complete, but check if there's actually any data
             // This handles the case where user deleted all data but hasCompletedSetup was synced from iCloud
@@ -496,7 +517,23 @@ struct ContentView: View {
             recordManager.resetRecords()
             RegionTrackingManager.shared.loadVisitedRegions()  // Reload empty state
 
+            // Explicit user choice to begin from zero — release any restore gate
+            settings.needsDataRestore = false
+
             setupFlowState = .showingSetupWizard
+        }
+    }
+
+    /// Release the restore gate once real data has actually landed locally.
+    /// Gate must NOT clear on "sync finished" alone — an empty first import would
+    /// re-enable record writers with nothing restored.
+    private func clearRestoreGateIfDataArrived() {
+        guard settings.needsDataRestore else { return }
+        let context = PersistenceController.shared.container.viewContext
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.fetchLimit = 1
+        if ((try? context.count(for: request)) ?? 0) > 0 {
+            settings.needsDataRestore = false
         }
     }
 
@@ -532,6 +569,7 @@ struct ContentView: View {
                 await MainActor.run {
                     debugLog("☁️ iCloud import completed at \(currentTime) - reloading records")
                     recordManager.loadRecordsFromHistory()
+                    clearRestoreGateIfDataArrived()
                 }
                 return
             }
@@ -541,6 +579,7 @@ struct ContentView: View {
                 await MainActor.run {
                     debugLog("☁️ iCloud sync completed (no new import) - reloading records")
                     recordManager.loadRecordsFromHistory()
+                    clearRestoreGateIfDataArrived()
                 }
                 return
             }

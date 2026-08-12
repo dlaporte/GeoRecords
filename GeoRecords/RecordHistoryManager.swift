@@ -34,7 +34,9 @@ class RecordHistoryManager: ObservableObject {
         let newEntry = RecordHistoryEntry(context: context)
         newEntry.id = detail.id
         newEntry.timestamp = detail.timestamp  // timestamp is non-optional Date
-        newEntry.dateAdded = Date()  // Track when record was imported
+        // Track when the record was added — but a backup restore carries the ORIGINAL
+        // dateAdded so wizard-choice tie-breaks don't reshuffle after restoring
+        newEntry.dateAdded = detail.dateAdded ?? Date()
         newEntry.recordType = recordType
         newEntry.timeFrame = detail.timeFrame.rawValue
         newEntry.value = detail.value
@@ -727,6 +729,9 @@ class RecordHistoryManager: ObservableObject {
                             continuation.resume(returning: false)
                         } else {
                             debugLog("✅ Store reloaded - waiting for iCloud sync to restore data")
+                            // Views may hold objects from the destroyed store — force a
+                            // rebuild before anything re-renders and faults one (crash)
+                            PersistenceController.shared.noteStoreReplaced()
                             // DON'T load records here - wait for iCloud sync to complete first
                             // The caller should monitor sync completion and then reload
                             continuation.resume(returning: true)

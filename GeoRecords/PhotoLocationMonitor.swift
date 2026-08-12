@@ -87,6 +87,15 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
     func performCatchUpScan() async {
         guard !isCatchUpRunning else { return }
 
+        // Data-restore gate: catch-up is the most likely writer to race an iCloud
+        // re-sync (shared photo library recreates the other device's records with new
+        // IDs). Return WITHOUT stamping lastCatchUpDate so the window is preserved
+        // and this pass simply runs later, after the gate clears.
+        guard !SettingsManager.shared.needsDataRestore else {
+            debugLog("🚧 Restore gate armed - deferring photo catch-up scan")
+            return
+        }
+
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard status == .authorized || status == .limited else { return }
 
@@ -249,6 +258,9 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
 
     /// Process a new photo asset to check for records
     private func processNewPhoto(_ asset: PHAsset) {
+        // Data-restore gate: no record creation until the user completes a restore path
+        guard !SettingsManager.shared.needsDataRestore else { return }
+
         // Skip if no location data
         guard let location = asset.location else {
             debugLog("📸 New photo has no location data, skipping")

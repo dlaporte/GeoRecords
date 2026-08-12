@@ -39,6 +39,26 @@ class SettingsManager: ObservableObject, SettingsManaging {
 
     // MARK: - Published Properties
     @Published var hasCompletedSetup: Bool
+
+    /// True from "Delete All Records" until the user completes a data path
+    /// (iCloud restore, backup restore, photo import) or explicitly starts fresh.
+    /// While set, ALL automatic record creation is suspended — otherwise a stray
+    /// location fix or photo catch-up writes rows before iCloud re-sync lands,
+    /// defeating the restore-first launch gate and syncing junk to other devices.
+    /// Persisted directly (not cached) so every consumer sees one truth, and it
+    /// survives relaunch — the app can't restart itself, so the gate must.
+    var needsDataRestore: Bool {
+        get {
+            (UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard)
+                .bool(forKey: "needsDataRestore")
+        }
+        set {
+            objectWillChange.send()
+            (UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard)
+                .set(newValue, forKey: "needsDataRestore")
+            debugLog(newValue ? "🚧 Data-restore gate ARMED" : "✅ Data-restore gate cleared")
+        }
+    }
     @Published var notifyOnMonthlyRecords: Bool
     @Published var notifyOnYearlyRecords: Bool
     @Published var notifyOnAllTimeRecords: Bool

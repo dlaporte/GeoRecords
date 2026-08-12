@@ -155,6 +155,9 @@ class RegionTrackingManager: ObservableObject {
     ///   - date: When the visit occurred
     ///   - source: How the visit was recorded (photo, location, manual)
     func recordVisit(coordinate: CLLocationCoordinate2D, date: Date, source: VisitSource, altitude: Double? = nil) {
+        // Data-restore gate: no region records until the user completes a restore path
+        guard !SettingsManager.shared.needsDataRestore else { return }
+
         // Validate location
         let alt = altitude ?? 0
         switch validateLocation(latitude: coordinate.latitude, longitude: coordinate.longitude, altitude: alt) {
@@ -565,6 +568,11 @@ class RegionTrackingManager: ObservableObject {
     /// or a backup restore. The flag is only set once the migration actually completes
     /// its checks, so a transient region-lookup failure doesn't forfeit the backfill.
     private func migrateHomeRegionIfNeeded() {
+        // Data-restore gate: the backfill must not fabricate home-region rows into an
+        // empty store that iCloud is about to repopulate (fresh installs hit this
+        // window before their first sync completes)
+        guard !SettingsManager.shared.needsDataRestore else { return }
+
         let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? UserDefaults.standard
         guard !defaults.bool(forKey: Self.homeRegionMigrationDoneKey) else {
             return  // Backfill already ran on this device

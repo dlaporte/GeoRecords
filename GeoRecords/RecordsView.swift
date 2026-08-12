@@ -10,6 +10,8 @@ extension Notification.Name {
     static let showSetupWizard = Notification.Name("showSetupWizard")
     static let statisticsDidChange = Notification.Name("statisticsDidChange")
     static let recordsDidChange = Notification.Name("recordsDidChange")
+    /// Posted after Delete All Records; ContentView runs the restore-first gate
+    static let dataRestoreCheckNeeded = Notification.Name("dataRestoreCheckNeeded")
 }
 
 // MARK: - Layout Constants

@@ -101,6 +101,11 @@ struct ContentView: View {
     @State private var setupFlowState: SetupFlowState = .none
     @State private var showPhotoImportWizard = false
     @State private var showNoRecordsView = false
+    /// True while a cloud check/restore flow is running (including the sync
+    /// monitor after the user is let into the app). Prevents a second entry —
+    /// e.g. a notification arriving mid-monitor — from starting a duplicate
+    /// restore over the one in progress.
+    @State private var isCloudRestoreFlowActive = false
 
     // Backup import state
     @State private var showBackupImportConfirm = false
@@ -141,6 +146,17 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .dataRestoreCheckNeeded)) { _ in
             // Delete All Records just completed: run the restore-first gate in-session
             checkForCloudRestoreOrShowPhotoImport()
+        }
+        .onChange(of: persistenceController.lastImportTime) { _, imported in
+            // Self-heal a restore that outlived its monitor: if an import lands
+            // after the monitor timed out (rate-limited CloudKit can take many
+            // minutes), pick the data up and release the gate without making
+            // the user relaunch the app.
+            guard imported != nil, settings.needsDataRestore, localStoreHasData() else { return }
+            debugLog("☁️ Late iCloud import arrived while gate armed - loading data")
+            recordManager.loadRecordsFromHistory()
+            RegionTrackingManager.shared.loadVisitedRegions()
+            clearRestoreGateIfDataArrived()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             Task { @MainActor in
@@ -341,6 +357,21 @@ struct ContentView: View {
         locationManager.updateHealthStatus()
     }
 
+    /// Whether the local store currently holds any records or visited regions
+    private func localStoreHasData() -> Bool {
+        let context = PersistenceController.shared.container.viewContext
+
+        let recordRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        recordRequest.fetchLimit = 1
+        let recordCount = (try? context.count(for: recordRequest)) ?? 0
+
+        let regionRequest: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
+        regionRequest.fetchLimit = 1
+        let regionCount = (try? context.count(for: regionRequest)) ?? 0
+
+        return recordCount > 0 || regionCount > 0
+    }
+
     /// Check if local data exists - if not, check iCloud and show photo import if no data anywhere
     private func checkIfDataExistsOrShowWizard() {
         // Skip this check if we're in the middle of a backup import
@@ -349,29 +380,22 @@ struct ContentView: View {
             return
         }
 
-        let context = PersistenceController.shared.container.viewContext
-
-        // Check for RecordHistoryEntry
-        let recordRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-        recordRequest.fetchLimit = 1
-        let recordCount = (try? context.count(for: recordRequest)) ?? 0
-
-        // Check for VisitedRegion
-        let regionRequest: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
-        regionRequest.fetchLimit = 1
-        let regionCount = (try? context.count(for: regionRequest)) ?? 0
-
-        if recordCount == 0 && regionCount == 0 {
+        if !localStoreHasData() {
             debugLog("⚠️ hasCompletedSetup is true but no local data found - checking iCloud...")
             // Check iCloud for data - if found, restore; if not, show photo import
             checkForCloudRestoreOrShowPhotoImport()
         } else {
-            debugLog("✅ Local data exists: \(recordCount) records, \(regionCount) regions")
+            debugLog("✅ Local data exists")
         }
     }
 
     /// Check iCloud for data - restore if found, show no records view if not
     private func checkForCloudRestoreOrShowPhotoImport() {
+        guard !isCloudRestoreFlowActive else {
+            debugLog("☁️ Restore flow already running - ignoring duplicate trigger")
+            return
+        }
+        isCloudRestoreFlowActive = true
         setupFlowState = .checkingCloud
 
         // Block alerts during cloud check to prevent false "new record" prompts
@@ -387,12 +411,14 @@ struct ContentView: View {
                     setupFlowState = .none
                     if hasCloudData {
                         debugLog("☁️ iCloud records found, auto-restoring")
-                        // Note: restoreFromiCloud() will keep alerts blocked and unblock when done
+                        // Note: restoreFromiCloud() will keep alerts blocked and unblock when
+                        // done, and releases isCloudRestoreFlowActive when its monitor ends
                         restoreFromiCloud()
                     } else {
                         debugLog("☁️ No iCloud records found, showing no records view")
                         recordManager.blockAlertsDuringImport(block: false)
                         showNoRecordsView = true
+                        isCloudRestoreFlowActive = false
                     }
                 }
             } catch {
@@ -402,12 +428,18 @@ struct ContentView: View {
                     recordManager.blockAlertsDuringImport(block: false)
                     // On error, show no records view as fallback
                     showNoRecordsView = true
+                    isCloudRestoreFlowActive = false
                 }
             }
         }
     }
 
     private func checkForCloudRestore() {
+        guard !isCloudRestoreFlowActive else {
+            debugLog("☁️ Restore flow already running - ignoring duplicate trigger")
+            return
+        }
+        isCloudRestoreFlowActive = true
         setupFlowState = .checkingCloud
 
         // Block alerts during cloud check to prevent false "new record" prompts
@@ -418,20 +450,21 @@ struct ContentView: View {
             debugLog("☁️ Checking for iCloud data...")
 
             do {
-                // This function waits up to 15 seconds for CloudKit sync to complete
                 let hasCloudData = try await persistenceController.hasExistingCloudDataThrowing()
 
                 await MainActor.run {
                     if hasCloudData {
                         debugLog("☁️ iCloud records found, auto-restoring")
                         // Always restore from iCloud automatically - skip the choice dialog
-                        // Note: restoreFromiCloud() will keep alerts blocked and unblock when done
+                        // Note: restoreFromiCloud() will keep alerts blocked and unblock when
+                        // done, and releases isCloudRestoreFlowActive when its monitor ends
                         restoreFromiCloud()
                     } else {
                         debugLog("☁️ No iCloud records found, showing setup wizard")
                         // Unblock alerts - new user starting fresh
                         recordManager.blockAlertsDuringImport(block: false)
                         setupFlowState = .showingSetupWizard
+                        isCloudRestoreFlowActive = false
                     }
                 }
             } catch {
@@ -440,6 +473,7 @@ struct ContentView: View {
                     // Unblock alerts on error
                     recordManager.blockAlertsDuringImport(block: false)
                     setupFlowState = .showingSetupWizard
+                    isCloudRestoreFlowActive = false
                 }
             }
         }
@@ -468,13 +502,23 @@ struct ContentView: View {
             debugLog("📷 Photo library access: \(status == .authorized || status == .limited ? "granted" : "denied")")
         }
 
-        // Destroy the local database completely - this forces a fresh sync from iCloud
         Task {
-            // Safety net: automatic local snapshot before destroying the local store
-            await BackupManager.shared.writeSafetySnapshot(reason: "icloud-restore")
+            // Destroy the local database ONLY if it holds data that must not win
+            // over the iCloud copy (first-run restore over stray local records).
+            // Never destroy while the restore gate is armed: the gate only arms
+            // AFTER a successful clear, so any rows present then are the cloud
+            // import already arriving — destroying would discard them and restart
+            // the full CloudKit re-import from zero, and repeated destroy/re-import
+            // cycles get rate-limited until the restore never finishes.
+            if !settings.needsDataRestore && localStoreHasData() {
+                // Safety net: automatic local snapshot before destroying the local store
+                await BackupManager.shared.writeSafetySnapshot(reason: "icloud-restore")
 
-            let cleared = await RecordHistoryManager.shared.clearLocalOnly()
-            debugLog("☁️ Local database cleared: \(cleared)")
+                let cleared = await RecordHistoryManager.shared.clearLocalOnly()
+                debugLog("☁️ Local database cleared: \(cleared)")
+            } else {
+                debugLog("☁️ Keeping local store as-is - iCloud import continues into it")
+            }
 
             // NOTE: Settings (alerts, reminders, home location) are already synced via iCloud Key-Value Store
             // and were loaded correctly in SettingsManager.init(). Do NOT reset them here, as that would
@@ -493,6 +537,7 @@ struct ContentView: View {
             // Unblock alerts after restore is complete
             await MainActor.run {
                 recordManager.blockAlertsDuringImport(block: false)
+                isCloudRestoreFlowActive = false
                 debugLog("☁️ iCloud restore complete - alerts unblocked")
             }
         }
@@ -526,81 +571,112 @@ struct ContentView: View {
 
     /// Release the restore gate once real data has actually landed locally.
     /// Gate must NOT clear on "sync finished" alone — an empty first import would
-    /// re-enable record writers with nothing restored.
+    /// re-enable record writers with nothing restored. Visited regions count too:
+    /// a regions-only user's restore is just as complete without record rows.
     private func clearRestoreGateIfDataArrived() {
         guard settings.needsDataRestore else { return }
-        let context = PersistenceController.shared.container.viewContext
-        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
-        request.fetchLimit = 1
-        if ((try? context.count(for: request)) ?? 0) > 0 {
+        if localStoreHasData() {
             settings.needsDataRestore = false
         }
     }
 
-    private func monitorSyncCompletion() async {
-        // Wait for iCloud sync to actually import data
-        var syncWaitTime: TimeInterval = 0
-        let maxSyncWait: TimeInterval = 120 // 2 minutes max
-        var hasSeenSyncStart = false
-        var lastImportTime: Date? = nil
+    /// App-group key counting consecutive restore monitors that timed out with
+    /// nothing restored. Lets later attempts surface the options screen quickly
+    /// instead of making the user sit through the full wait on every launch
+    /// (the empty-zone case after "delete from iCloud" would otherwise cost the
+    /// full wait per launch until a data path completes).
+    private static let restoreTimeoutCountKey = "cloudRestoreTimeoutCount"
 
-        // Get initial import time
-        await MainActor.run {
-            lastImportTime = persistenceController.lastImportTime
+    private func monitorSyncCompletion() async {
+        // Wait for iCloud data to actually LAND locally. Sync event edges are
+        // not proof of a finished restore: isSyncing also flips on exports, and
+        // an import event can complete having delivered only an empty first
+        // batch. Returning on those left the user in an empty app while the
+        // real import was still running — and the next launch then destroyed
+        // the store and restarted the import from zero, so with a large history
+        // the restore could never finish.
+        let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard
+        let previousTimeouts = defaults.integer(forKey: Self.restoreTimeoutCountKey)
+        let maxSyncWait: TimeInterval = previousTimeouts == 0 ? 120 : 30
+        var syncWaitTime: TimeInterval = 0
+        var lastCount = 0
+        var stablePolls = 0
+
+        // Records OR visited regions — either proves the restore is delivering
+        func currentDataCount() async -> Int {
+            await MainActor.run {
+                let context = PersistenceController.shared.container.viewContext
+                let recordRequest: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+                let regionRequest: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
+                return ((try? context.count(for: recordRequest)) ?? 0)
+                    + ((try? context.count(for: regionRequest)) ?? 0)
+            }
+        }
+
+        // Shared exit once data has arrived (count stable or timer expired):
+        // sweep duplicates first — a backup/snapshot restored while the cloud
+        // import was still delivering can hold the same record twice under
+        // different CloudKit identities — then load and release the gate.
+        // Regions must reload here too: RegionTrackingManager cached its
+        // in-memory state at init, when the store was still empty, so without
+        // this the restored VisitedRegion rows never reach the Regions tab.
+        func finishWithData(_ count: Int, context: String) async {
+            await MainActor.run {
+                defaults.set(0, forKey: Self.restoreTimeoutCountKey)
+                let deduped = RecordHistoryManager.shared.removeDuplicates()
+                if deduped > 0 {
+                    debugLog("🧹 Removed \(deduped) duplicate(s) after restore overlap")
+                }
+                debugLog("☁️ iCloud restore \(context) with \(count) entries - reloading records and regions")
+                recordManager.loadRecordsFromHistory()
+                RegionTrackingManager.shared.loadVisitedRegions()
+                clearRestoreGateIfDataArrived()
+            }
         }
 
         while syncWaitTime < maxSyncWait {
             try? await Task.sleep(nanoseconds: standardDelayNanos) // Check every 2 seconds
             syncWaitTime += 2
 
-            let (isSyncing, currentImportTime) = await MainActor.run {
-                (persistenceController.isSyncing, persistenceController.lastImportTime)
-            }
+            let count = await currentDataCount()
 
-            // Track if sync has started
-            if isSyncing {
-                hasSeenSyncStart = true
-            }
-
-            // Check if a new import has completed
-            if let currentTime = currentImportTime,
-               (lastImportTime.map { currentTime > $0 } ?? true) {
-                // New import completed - reload records
-                await MainActor.run {
-                    debugLog("☁️ iCloud import completed at \(currentTime) - reloading records")
-                    recordManager.loadRecordsFromHistory()
-                    clearRestoreGateIfDataArrived()
+            if count > 0 {
+                // Data is arriving. Finish once the count holds steady for a few
+                // polls — anything that trickles in later still merges in the
+                // background, it just won't hold up entering the app.
+                stablePolls = (count == lastCount) ? stablePolls + 1 : 0
+                if stablePolls >= 2 {
+                    await finishWithData(count, context: "settled")
+                    return
                 }
-                return
             }
-
-            // If sync finished without seeing an import, still try loading
-            if hasSeenSyncStart && !isSyncing {
-                await MainActor.run {
-                    debugLog("☁️ iCloud sync completed (no new import) - reloading records")
-                    recordManager.loadRecordsFromHistory()
-                    clearRestoreGateIfDataArrived()
-                }
-                return
-            }
+            lastCount = count
 
             // Periodically reload to show progress
             if Int(syncWaitTime) % 10 == 0 {
                 await MainActor.run {
                     recordManager.loadRecordsFromHistory()
-                    // Count all-time records as a proxy for total loaded
-                    let count = RecordType.allCases.compactMap {
-                        recordManager.getRecord(type: $0.rawValue, timeFrame: .allTime)
-                    }.count
-                    debugLog("☁️ Waiting for sync (\(Int(syncWaitTime))s) - currently have \(count) all-time records")
+                    RegionTrackingManager.shared.loadVisitedRegions()
+                    debugLog("☁️ Waiting for iCloud restore (\(Int(syncWaitTime))s) - \(count) entries so far")
                 }
             }
         }
 
         // Max wait reached
+        let finalCount = await currentDataCount()
+        if finalCount > 0 {
+            await finishWithData(finalCount, context: "timed out mid-delivery")
+            return
+        }
         await MainActor.run {
-            debugLog("☁️ Sync timeout after \(Int(maxSyncWait))s - loading available records")
+            // Nothing arrived: surface the options (restore a backup or
+            // snapshot, scan photos, start fresh — or just dismiss and let
+            // the import keep trying in the background) instead of silently
+            // dropping the user into an empty app.
+            defaults.set(previousTimeouts + 1, forKey: Self.restoreTimeoutCountKey)
             recordManager.loadRecordsFromHistory()
+            debugLog("☁️ Sync timeout after \(Int(maxSyncWait))s with no data - showing restore options")
+            showNoRecordsView = true
         }
     }
 

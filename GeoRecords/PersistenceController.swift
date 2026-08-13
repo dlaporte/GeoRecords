@@ -148,6 +148,14 @@ class PersistenceController: ObservableObject {
         if let error = event.error {
             debugLog("☁️ CloudKit error: \(error.localizedDescription)")
             lastSyncError = error
+        } else if event.endDate != nil {
+            // A later successful completion supersedes any earlier failure.
+            // Without this, one transient CloudKit hiccup (common right after an
+            // app update) shows as a "persistent" sync error in Settings forever.
+            if lastSyncError != nil {
+                debugLog("☁️ CloudKit recovered - clearing previous sync error")
+                lastSyncError = nil
+            }
         }
     }
 

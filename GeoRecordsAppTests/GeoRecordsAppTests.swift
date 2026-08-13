@@ -73,4 +73,60 @@ struct GeoRecordsTests {
         #expect(!RecordType.west.shouldReplace(newValue: -60.0, oldValue: -71.0))
         #expect(RecordType.up.shouldReplace(newValue: 3000.0, oldValue: 1200.0))
     }
+
+    // Safety snapshots are the user's escape hatch after a failed iCloud restore,
+    // so the reason slug (which drives the restore UI's labels) must parse out of
+    // the snapshot filename — including reasons that themselves contain underscores'
+    // sibling separators like hyphens — and reject non-snapshot files.
+    @Test func safetySnapshotReasonParsesFromFileName() async throws {
+        #expect(
+            BackupManager.snapshotReason(
+                fromFileName: "Safety_local-reset_GeoRecords_Backup_2026-08-12_08-30-00.georecords"
+            ) == "local-reset"
+        )
+        #expect(
+            BackupManager.snapshotReason(
+                fromFileName: "Safety_icloud-restore_GeoRecords_Backup_2026-08-12.georecords"
+            ) == "icloud-restore"
+        )
+        // Regular exports and stray files are not snapshots
+        #expect(BackupManager.snapshotReason(fromFileName: "GeoRecords_Backup_2026-08-12.georecords") == nil)
+        #expect(BackupManager.snapshotReason(fromFileName: ".DS_Store") == nil)
+    }
+
+    // v8 backups carry embedded photoData (legacy records and photos attached via
+    // the new-record prompt have no Photos-library asset to re-link — the JPEG in
+    // the database is the only copy). It must survive a JSON round trip, and
+    // pre-v8 files without the key must still decode.
+    @Test func backupRecordRoundTripsPhotoDataAndDecodesLegacyFiles() async throws {
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10])
+        let record = BackupManager.BackupRecord(
+            id: UUID().uuidString, recordType: "Furthest North", timeFrame: "Lifetime",
+            value: 64.15, timestamp: Date(timeIntervalSince1970: 1_750_000_000),
+            latitude: 64.15, longitude: -21.94, altitude: 12,
+            locationName: "Reykjavík", photoAssetIdentifier: nil, photoCloudIdentifier: nil,
+            notes: nil, regionCode: "IS", source: "manual",
+            dateAdded: Date(timeIntervalSince1970: 1_750_000_100), photoData: jpeg
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let decoded = try decoder.decode(BackupManager.BackupRecord.self, from: encoder.encode(record))
+        #expect(decoded.photoData == jpeg)
+        #expect(decoded.source == "manual")
+        #expect(decoded.dateAdded == record.dateAdded)
+
+        // A v7-era record (no photoData/source keys) still decodes, with nils
+        let legacyJSON = """
+        {"id": "\(UUID().uuidString)", "recordType": "Furthest Up", "timeFrame": "Monthly",
+         "value": 3000, "timestamp": "2025-07-01T12:00:00Z",
+         "latitude": 51.0, "longitude": -115.0, "altitude": 3000}
+        """
+        let legacy = try decoder.decode(BackupManager.BackupRecord.self, from: Data(legacyJSON.utf8))
+        #expect(legacy.photoData == nil)
+        #expect(legacy.source == nil)
+    }
 }

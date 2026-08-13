@@ -54,8 +54,13 @@ class SettingsManager: ObservableObject, SettingsManaging {
         }
         set {
             objectWillChange.send()
-            (UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard)
-                .set(newValue, forKey: "needsDataRestore")
+            let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard
+            defaults.set(newValue, forKey: "needsDataRestore")
+            if newValue {
+                // Arming starts a NEW restore cycle: forget timeouts from any
+                // earlier cycle so the first attempt gets its full sync wait
+                defaults.set(0, forKey: "cloudRestoreTimeoutCount")
+            }
             debugLog(newValue ? "🚧 Data-restore gate ARMED" : "✅ Data-restore gate cleared")
         }
     }

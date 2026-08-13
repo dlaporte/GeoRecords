@@ -16,6 +16,7 @@ struct NoRecordsView: View {
     @State private var importResultMessage = ""
     @State private var pendingBackupURL: URL?
     @State private var backupInfo: (recordCount: Int, regionCount: Int, exportDate: Date, deviceName: String)?
+    @State private var snapshots: [BackupManager.SafetySnapshot] = []
 
     var body: some View {
         NavigationStack {
@@ -129,6 +130,40 @@ struct NoRecordsView: View {
                     }
                     .padding(.horizontal)
 
+                    // Automatic pre-delete snapshot: the built-in escape hatch when
+                    // iCloud can't deliver the records back
+                    if let newest = snapshots.first {
+                        Button(action: {
+                            restoreSnapshot(newest)
+                        }) {
+                            HStack(spacing: 16) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.system(size: 24))
+                                    .frame(width: 40)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Restore Automatic Snapshot")
+                                        .font(.headline)
+                                    Text("\(newest.reasonLabel) — \(newest.exportDate.formatted(date: .abbreviated, time: .shortened)), \(newest.contentsDescription)")
+                                        .font(.caption)
+                                        .opacity(0.8)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "chevron.right")
+                                    .font(.body)
+                                    .opacity(0.6)
+                            }
+                            .padding()
+                            .frame(maxWidth: .infinity)
+                            .background(Color(UIColor.secondarySystemBackground))
+                            .foregroundColor(.primary)
+                            .cornerRadius(12)
+                        }
+                        .padding(.horizontal)
+                    }
+
                     // Explicit escape hatch: without it, declining both restore options
                     // leaves record tracking suspended with no way to re-enable it
                     if let onStartFresh = onStartFresh {
@@ -148,6 +183,9 @@ struct NoRecordsView: View {
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                snapshots = BackupManager.shared.listSafetySnapshots()
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -260,6 +298,24 @@ struct NoRecordsView: View {
 
             // Clean up temp file
             try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func restoreSnapshot(_ snapshot: BackupManager.SafetySnapshot) {
+        // Stage a copy so the confirm/import flow's temp-file cleanup never
+        // touches the snapshot original
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("georecords")
+        do {
+            try FileManager.default.copyItem(at: snapshot.url, to: tempURL)
+            pendingBackupURL = tempURL
+            // The snapshot already carries the header info — no need to re-decode
+            backupInfo = (snapshot.recordCount, snapshot.regionCount, snapshot.exportDate, snapshot.deviceName)
+            showImportConfirm = true
+        } catch {
+            importResultMessage = "Could not read the snapshot: \(error.localizedDescription)"
+            showImportResult = true
         }
     }
 

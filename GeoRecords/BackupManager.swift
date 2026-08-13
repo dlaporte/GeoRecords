@@ -32,6 +32,11 @@ class BackupManager {
         // Optional so backups from versions <= 6 still decode (restore as nil)
         let source: String?      // RecordSource rawValue — "wizard" is load-bearing for slot selection
         let dateAdded: Date?     // Preserved so tie-breaks survive a restore
+        // Optional so backups from versions <= 7 still decode (restore as nil).
+        // Embedded JPEG for records whose photo lives in the database (legacy
+        // records and photos attached via the new-record prompt) — these have no
+        // Photos-library asset to re-link, so dropping this loses the photo.
+        let photoData: Data?     // JSON-encodes as base64
     }
 
     /// Represents a visited region (state/country) in the backup
@@ -144,7 +149,8 @@ class BackupManager {
                     notes: entry.notes,
                     regionCode: entry.regionCode,
                     source: entry.source,
-                    dateAdded: entry.dateAdded
+                    dateAdded: entry.dateAdded,
+                    photoData: entry.photoData
                 )
             }
 
@@ -213,7 +219,7 @@ class BackupManager {
             )
 
             let backup = BackupFile(
-                version: 7,  // v7 adds record source + dateAdded (wizard markers survive restore)
+                version: 8,  // v7 added source + dateAdded; v8 adds embedded photoData
                 exportDate: Date(),
                 appVersion: appVersion,
                 deviceName: deviceName,
@@ -319,6 +325,64 @@ class BackupManager {
         }
     }
 
+    /// One automatic pre-destructive-operation snapshot, ready to restore
+    struct SafetySnapshot: Identifiable {
+        let url: URL
+        let reason: String
+        let exportDate: Date
+        let recordCount: Int
+        let regionCount: Int
+        let deviceName: String
+        var id: URL { url }
+
+        /// Human-readable description of the operation the snapshot preceded
+        var reasonLabel: String {
+            switch reason {
+            case "delete-all": return "Before Delete All Records"
+            case "local-reset": return "Before deleting local records"
+            case "icloud-restore": return "Before iCloud restore"
+            case "restore": return "Before backup restore"
+            case "start-fresh": return "Before Start Fresh"
+            default: return "Automatic snapshot"
+            }
+        }
+
+        /// One shared contents string so every surface describes a snapshot the
+        /// same way (the restore-result message is centralized for the same reason)
+        var contentsDescription: String {
+            "\(recordCount) record\(recordCount == 1 ? "" : "s"), \(regionCount) visited region\(regionCount == 1 ? "" : "s")"
+        }
+    }
+
+    /// Extract the reason slug from a snapshot filename
+    /// ("Safety_local-reset_GeoRecords_Backup_….georecords" → "local-reset")
+    nonisolated static func snapshotReason(fromFileName name: String) -> String? {
+        guard name.hasPrefix("Safety_") else { return nil }
+        let rest = name.dropFirst("Safety_".count)
+        guard let separator = rest.range(of: "_GeoRecords_Backup_") else { return nil }
+        return String(rest[..<separator.lowerBound])
+    }
+
+    /// All automatic snapshots on this device, newest first. These are the local
+    /// escape hatch when an iCloud restore can't deliver the records back.
+    /// Any decodable backup in the folder is listed even if its name no longer
+    /// matches the snapshot pattern — Documents is visible in the Files app, and
+    /// a user rename must not hide a snapshot exactly when recovery is needed.
+    func listSafetySnapshots() -> [SafetySnapshot] {
+        guard let directory = safetyBackupDirectory,
+              let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        return files.compactMap { url in
+            guard let info = getBackupInfo(from: url) else { return nil }
+            let reason = Self.snapshotReason(fromFileName: url.lastPathComponent) ?? "unknown"
+            return SafetySnapshot(url: url, reason: reason, exportDate: info.exportDate,
+                                  recordCount: info.recordCount, regionCount: info.regionCount,
+                                  deviceName: info.deviceName)
+        }
+        .sorted { $0.exportDate > $1.exportDate }
+    }
+
     // MARK: - Import
 
     /// Import records from a backup file (replaces all existing data)
@@ -361,8 +425,9 @@ class BackupManager {
             let cacheCount = backup.photoCacheCount ?? 0
             debugLog("📥 Importing backup: version \(backup.version), \(backup.recordCount) records, \(regionCount) visited regions, \(cacheCount) photo cache entries from \(backup.deviceName)")
 
-            // Validate version (support v1, v2, v3, v4, v5, and v6)
-            guard backup.version >= 1 && backup.version <= 7 else {
+            // Validate version (v1 through v8; newer fields are optional so older
+            // files decode with them nil)
+            guard backup.version >= 1 && backup.version <= 8 else {
                 debugLog("❌ Unsupported backup version: \(backup.version)")
                 return nil
             }
@@ -398,6 +463,7 @@ class BackupManager {
                     locationName: record.locationName,
                     recordType: record.recordType,
                     timeFrame: timeFrame,
+                    photoData: record.photoData,
                     photoAssetIdentifier: record.photoAssetIdentifier,
                     photoCloudIdentifier: record.photoCloudIdentifier,
                     notes: record.notes,
@@ -737,14 +803,24 @@ class BackupManager {
     /// Get information about a backup file without importing it
     /// - Parameter url: URL to the backup JSON file
     /// - Returns: Tuple with counts and metadata, or nil if file is invalid
+    /// Lightweight header for previews — decodes only the summary fields, not the
+    /// records array (v8 files can carry megabytes of base64 photo data, and this
+    /// runs on the main actor for confirm dialogs and the snapshot list)
+    private struct BackupHeader: Codable {
+        let exportDate: Date
+        let deviceName: String
+        let recordCount: Int
+        let visitedRegionCount: Int?
+    }
+
     func getBackupInfo(from url: URL) -> (recordCount: Int, regionCount: Int, exportDate: Date, deviceName: String)? {
         do {
             let jsonData = try Data(contentsOf: url)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
 
-            let backup = try decoder.decode(BackupFile.self, from: jsonData)
-            return (backup.recordCount, backup.visitedRegionCount ?? 0, backup.exportDate, backup.deviceName)
+            let header = try decoder.decode(BackupHeader.self, from: jsonData)
+            return (header.recordCount, header.visitedRegionCount ?? 0, header.exportDate, header.deviceName)
         } catch {
             debugLog("❌ Could not read backup info: \(error.localizedDescription)")
             return nil

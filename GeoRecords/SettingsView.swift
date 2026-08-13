@@ -408,10 +408,16 @@ struct SettingsView: View {
                         }
                     }
                     .disabled(isExporting)
+
+                    NavigationLink {
+                        SafetySnapshotsView()
+                    } label: {
+                        Label("Automatic Snapshots", systemImage: "clock.arrow.circlepath")
+                    }
                 } header: {
                     Text("Backup & Data")
                 } footer: {
-                    Text("Import records from your photo library, a backup file, or add them manually. Exports save to a backup file; photos are stored as references to your Photos library. A safety backup is also saved automatically before any destructive operation.")
+                    Text("Import records from your photo library, a backup file, or add them manually. Exports save to a backup file; photos are stored as references to your Photos library. A safety snapshot is also saved automatically before any destructive operation — see Automatic Snapshots.")
                 }
 
                 // MARK: - Danger Zone (kept as its own section so the destructive
@@ -673,7 +679,15 @@ struct ClearRecordsSheet: View {
             Spacer()
 
             if !isDeleting {
-                if PersistenceController.shared.lastExportTime == nil {
+                if persistenceController.lastSyncError != nil {
+                    // The exact trap this warning prevents: deleting local records
+                    // while sync is unhealthy, expecting iCloud to restore them
+                    Label("iCloud sync recently reported an error, so records may not restore from iCloud. A safety snapshot is saved on this device first (Settings → Automatic Snapshots).", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 4)
+                } else if PersistenceController.shared.lastExportTime == nil {
                     Label("Records haven't synced to iCloud this session. A safety backup is saved locally before deleting.", systemImage: "exclamationmark.icloud")
                         .font(.caption)
                         .foregroundColor(.orange)

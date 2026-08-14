@@ -128,11 +128,29 @@ struct StatisticsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
-                    // Time Frame Picker with year selection
-                    StyledTimeFramePicker(
-                        selection: $selectedTimeFrame,
+                    // Time Frame Picker with year selection (shared with Records page)
+                    TimeFramePickerWithBadges(
+                        selectedTimeFrame: $selectedTimeFrame,
                         selectedYear: $selectedYear,
-                        availableYears: availableYears
+                        selectedMonth: .constant(nil),
+                        availableYears: availableYears,
+                        availableMonths: [],
+                        timeFrameLabel: { timeFrame in
+                            switch timeFrame {
+                            case .allTime:
+                                return "Lifetime"
+                            case .year:
+                                if let year = selectedYear {
+                                    return String(format: "%d", year)
+                                }
+                                return "This Year"
+                            case .month: return "This Month"
+                            case .daily: return "Daily"  // Not shown in UI
+                            }
+                        },
+                        yearString: { year in
+                            String(format: "%d", year)
+                        }
                     )
                     .padding(.horizontal)
 
@@ -1561,73 +1579,6 @@ struct HomeNotSetCard: View {
                 .fill(Color(UIColor.secondarySystemBackground))
         )
         .padding(.horizontal)
-    }
-}
-
-// MARK: - Styled TimeFrame Picker
-
-/// Styled segmented picker for TimeFrame that matches the Records page styling
-private struct StyledTimeFramePicker: View {
-    @Binding var selection: TimeFrame
-    @Binding var selectedYear: Int?
-    let availableYears: [Int]
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach([TimeFrame.allTime, .year, .month], id: \.self) { timeFrame in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        selection = timeFrame
-                    }
-                } label: {
-                    Text(label(for: timeFrame))
-                        .font(.subheadline)
-                        .fontWeight(selection == timeFrame ? .semibold : .regular)
-                        .foregroundColor(selection == timeFrame ? .primary : .secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(
-                            selection == timeFrame ? Color(UIColor.systemBackground) : Color.clear
-                        )
-                        .cornerRadius(6)
-                        .padding(2)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .background(Color(UIColor.systemGray5))
-        .cornerRadius(8)
-        .contextMenu {
-            if selection == .year && !availableYears.isEmpty {
-                Button {
-                    selectedYear = nil
-                } label: {
-                    Label("This Year", systemImage: selectedYear == nil ? "checkmark" : "calendar")
-                }
-                Divider()
-                ForEach(availableYears, id: \.self) { year in
-                    Button {
-                        selectedYear = year
-                    } label: {
-                        Label(String(format: "%d", year), systemImage: selectedYear == year ? "checkmark" : "calendar")
-                    }
-                }
-            }
-        }
-    }
-
-    private func label(for timeFrame: TimeFrame) -> String {
-        switch timeFrame {
-        case .allTime:
-            return "Lifetime"
-        case .year:
-            if let year = selectedYear {
-                return String(format: "%d", year)
-            }
-            return "This Year"
-        case .month: return "This Month"
-        case .daily: return "Daily"  // Not shown in UI
-        }
     }
 }
 

@@ -19,24 +19,6 @@ extension Notification.Name {
 private let mapHeightRatio: CGFloat = 0.5
 private let cardHeightOffset: CGFloat = 100
 
-// MARK: - Month Selection
-
-/// A specific past month selectable in the Records timeframe picker
-struct MonthSelection: Hashable {
-    let year: Int
-    let month: Int
-
-    var startDate: Date? {
-        Calendar.current.date(from: DateComponents(year: year, month: month, day: 1))
-    }
-
-    /// e.g. "Jul 2026"
-    var displayName: String {
-        guard let date = startDate else { return "\(year)-\(month)" }
-        return date.formatted(.dateTime.month(.abbreviated).year())
-    }
-}
-
 struct RecordsView: View {
     @EnvironmentObject var recordManager: RecordManager
     @EnvironmentObject var settings: SettingsManager
@@ -108,6 +90,18 @@ struct RecordsView: View {
                     },
                     yearString: { year in
                         String(format: "%d", year)
+                    },
+                    badgeCount: { timeFrame in
+                        switch timeFrame {
+                        case .daily:
+                            return 0  // No badge for daily records
+                        case .month:
+                            return recordManager.newMonthlyRecordCount
+                        case .year:
+                            return recordManager.newYearlyRecordCount
+                        case .allTime:
+                            return recordManager.newAllTimeRecordCount
+                        }
                     }
                 )
                 .padding()
@@ -565,166 +559,5 @@ struct RecordCardView: View {
                 .fill(Color(UIColor.secondarySystemBackground))
         )
         .padding(.horizontal, sizing.horizontalPadding)
-    }
-}
-
-// MARK: - Custom TimeFrame Picker with Badges
-
-private struct TimeFramePickerWithBadges: View {
-    @Binding var selectedTimeFrame: TimeFrame
-    @Binding var selectedYear: Int?
-    @Binding var selectedMonth: MonthSelection?
-    let availableYears: [Int]
-    let availableMonths: [MonthSelection]
-    let timeFrameLabel: (TimeFrame) -> String
-    let yearString: (Int) -> String
-
-    @EnvironmentObject var recordManager: RecordManager
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach([TimeFrame.allTime, .year, .month], id: \.self) { timeFrame in
-                // The selected Year/Month segment becomes a visible pulldown for browsing
-                // history (the old long-press context menu was nearly undiscoverable).
-                // First tap selects the timeframe; tapping the selected segment opens the menu.
-                if selectedTimeFrame == timeFrame && hasHistoryMenu(for: timeFrame) {
-                    Menu {
-                        historyMenu(for: timeFrame)
-                    } label: {
-                        TimeFrameSegmentLabel(
-                            isSelected: true,
-                            label: timeFrameLabel(timeFrame),
-                            badgeCount: badgeCount(for: timeFrame),
-                            showsChevron: true
-                        )
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    TimeFrameSegment(
-                        timeFrame: timeFrame,
-                        isSelected: selectedTimeFrame == timeFrame,
-                        label: timeFrameLabel(timeFrame),
-                        badgeCount: badgeCount(for: timeFrame)
-                    ) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            selectedTimeFrame = timeFrame
-                        }
-                    }
-                }
-            }
-        }
-        .background(Color(UIColor.systemGray5))
-        .cornerRadius(8)
-    }
-
-    private func hasHistoryMenu(for timeFrame: TimeFrame) -> Bool {
-        switch timeFrame {
-        case .year: return !availableYears.isEmpty
-        case .month: return !availableMonths.isEmpty
-        default: return false
-        }
-    }
-
-    @ViewBuilder
-    private func historyMenu(for timeFrame: TimeFrame) -> some View {
-        switch timeFrame {
-        case .year:
-            Button {
-                selectedYear = nil
-            } label: {
-                Label("This Year", systemImage: selectedYear == nil ? "checkmark" : "calendar")
-            }
-            Divider()
-            ForEach(availableYears, id: \.self) { year in
-                Button {
-                    selectedYear = year
-                } label: {
-                    Label(yearString(year), systemImage: selectedYear == year ? "checkmark" : "calendar")
-                }
-            }
-        case .month:
-            Button {
-                selectedMonth = nil
-            } label: {
-                Label("This Month", systemImage: selectedMonth == nil ? "checkmark" : "calendar")
-            }
-            Divider()
-            ForEach(availableMonths, id: \.self) { month in
-                Button {
-                    selectedMonth = month
-                } label: {
-                    Label(month.displayName, systemImage: selectedMonth == month ? "checkmark" : "calendar")
-                }
-            }
-        default:
-            EmptyView()
-        }
-    }
-
-    private func badgeCount(for timeFrame: TimeFrame) -> Int {
-        switch timeFrame {
-        case .daily:
-            return 0  // No badge for daily records
-        case .month:
-            return recordManager.newMonthlyRecordCount
-        case .year:
-            return recordManager.newYearlyRecordCount
-        case .allTime:
-            return recordManager.newAllTimeRecordCount
-        }
-    }
-}
-
-/// Shared segment content used by both plain segments and the pulldown segment
-private struct TimeFrameSegmentLabel: View {
-    let isSelected: Bool
-    let label: String
-    let badgeCount: Int
-    var showsChevron: Bool = false
-
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            HStack(spacing: 3) {
-                Text(label)
-                    .font(.subheadline)
-                    .fontWeight(isSelected ? .semibold : .regular)
-                if showsChevron {
-                    Image(systemName: "chevron.down")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .foregroundColor(isSelected ? .primary : .secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(
-                isSelected ? Color(UIColor.systemBackground) : Color.clear
-            )
-            .cornerRadius(6)
-            .padding(2)
-
-            // Badge indicator
-            if badgeCount > 0 {
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 8, height: 8)
-                    .offset(x: -4, y: 4)
-            }
-        }
-    }
-}
-
-private struct TimeFrameSegment: View {
-    let timeFrame: TimeFrame
-    let isSelected: Bool
-    let label: String
-    let badgeCount: Int
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            TimeFrameSegmentLabel(isSelected: isSelected, label: label, badgeCount: badgeCount)
-        }
-        .buttonStyle(.plain)
     }
 }

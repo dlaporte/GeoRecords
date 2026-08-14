@@ -88,9 +88,6 @@ struct RecordsView: View {
                             return "This Month"
                         }
                     },
-                    yearString: { year in
-                        String(format: "%d", year)
-                    },
                     badgeCount: { timeFrame in
                         switch timeFrame {
                         case .daily:
@@ -338,11 +335,6 @@ struct RecordsView: View {
         } catch {
             debugLog("Failed to load available years: \(error.localizedDescription)")
         }
-    }
-
-    /// Format year as plain string without locale-specific formatting (no commas)
-    private func yearString(_ year: Int) -> String {
-        return String(format: "%d", year)
     }
 
     /// Fetch the best records for a specific past month from Core Data history

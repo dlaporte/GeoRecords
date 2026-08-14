@@ -147,9 +147,6 @@ struct StatisticsView: View {
                             case .month: return "This Month"
                             case .daily: return "Daily"  // Not shown in UI
                             }
-                        },
-                        yearString: { year in
-                            String(format: "%d", year)
                         }
                     )
                     .padding(.horizontal)

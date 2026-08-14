@@ -220,7 +220,7 @@ struct TimeFramePickerWithBadges: View {
     let availableYears: [Int]
     let availableMonths: [MonthSelection]
     let timeFrameLabel: (TimeFrame) -> String
-    let yearString: (Int) -> String
+    var yearString: (Int) -> String = { String(format: "%d", $0) }
     var badgeCount: (TimeFrame) -> Int = { _ in 0 }
 
     var body: some View {

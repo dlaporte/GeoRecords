@@ -795,6 +795,59 @@ class RecordHistoryManager: ObservableObject {
         }
     }
 
+    /// Merge duplicate region rows (same recordType + normalized regionCode).
+    /// iCloud sync merges and the home-region migration can each insert their own
+    /// copy of a region; the Regions tab hides these by deduplicating in memory,
+    /// but the store keeps them and the widgets count raw rows.
+    /// Keeps the earliest visit and carries over photo fields the keeper lacks.
+    /// Returns the number of duplicate rows removed.
+    @discardableResult
+    func removeDuplicateRegionEntries() -> Int {
+        let regionTypes = [RecordType.state, .country, .continent].map { $0.rawValue }
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "recordType IN %@", regionTypes)
+        request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: true)]
+
+        do {
+            let rows = try context.fetch(request)
+            var keepers: [String: RecordHistoryEntry] = [:]
+            var duplicatesRemoved = 0
+
+            for row in rows {
+                guard let type = row.recordType,
+                      let code = row.regionCode ?? row.locationName else { continue }
+                let isState = (type == RecordType.state.rawValue)
+                let key = "\(type)|\(normalizeRegionCode(code, isState: isState))"
+
+                if let keeper = keepers[key] {
+                    // Rows are sorted by timestamp, so the keeper is the first visit
+                    if keeper.photoAssetIdentifier == nil && row.photoAssetIdentifier != nil {
+                        keeper.photoAssetIdentifier = row.photoAssetIdentifier
+                        keeper.photoCloudIdentifier = row.photoCloudIdentifier
+                    }
+                    if keeper.photoData == nil && row.photoData != nil {
+                        keeper.photoData = row.photoData
+                    }
+                    context.delete(row)
+                    duplicatesRemoved += 1
+                    debugLog("🗑️ Removing duplicate region row: \(type) \(code)")
+                } else {
+                    keepers[key] = row
+                }
+            }
+
+            if duplicatesRemoved > 0 {
+                try context.save()
+                debugLog("✅ Removed \(duplicatesRemoved) duplicate region row(s)")
+            }
+
+            return duplicatesRemoved
+        } catch {
+            debugLog("❌ Error removing duplicate region rows: \(error.localizedDescription)")
+            return 0
+        }
+    }
+
     /// Delete all records that are within the home radius
     /// These are typically test/bogus data from when the user was at home
     /// - Returns: Number of records deleted
@@ -813,6 +866,14 @@ class RecordHistoryManager: ObservableObject {
             var recordsDeleted = 0
 
             for record in allRecords {
+                // Region visits are facts, not bogus at-home data — and home-region
+                // rows live exactly at the home coordinate, so deleting them here
+                // made the home migration recreate them on the next load, churning
+                // duplicate rows through iCloud on every launch
+                if let type = RecordType(rawValue: record.recordType ?? ""), type.isRegionVisit {
+                    continue
+                }
+
                 let recordLocation = CLLocation(latitude: record.latitude, longitude: record.longitude)
                 let distance = recordLocation.distance(from: homeLocation)
 
@@ -853,7 +914,11 @@ class RecordHistoryManager: ObservableObject {
         let duplicatesRemoved = removeDuplicates()
         totalCleaned += duplicatesRemoved
 
-        // 2. Delete records at home (bogus/test data)
+        // 2. Merge duplicate region rows (iCloud sync / home-migration copies)
+        let regionDuplicatesRemoved = removeDuplicateRegionEntries()
+        totalCleaned += regionDuplicatesRemoved
+
+        // 3. Delete records at home (bogus/test data)
         let atHomeDeleted = deleteRecordsAtHome()
         totalCleaned += atHomeDeleted
 

@@ -129,4 +129,43 @@ struct GeoRecordsTests {
         #expect(legacy.photoData == nil)
         #expect(legacy.source == nil)
     }
+
+    @Test func uniqueRegionCountsMatchRegionsTabRules() async throws {
+        // Duplicate rows (iCloud sync merges, home-migration churn) collapse to one;
+        // bare and US-prefixed state codes are the same state
+        let states: [(regionCode: String?, locationName: String?)] = [
+            ("US-MA", "Massachusetts"), ("US-MA", "Massachusetts"), ("MA", "Massachusetts"),
+            ("US-DC", "District of Columbia"),  // tracked, but not one of the 50
+            (nil, "Mystery State"),             // no code: never counted as a state
+            ("US-VT", "Vermont"),
+        ]
+        #expect(countUniqueRegions(states, type: .state) == 2)
+
+        let countries: [(regionCode: String?, locationName: String?)] = [
+            ("US", "United States"), ("US", "United States"), ("US", "United States"),
+            ("GL", "Greenland"),   // territory: shown as a card but not counted
+            ("FR", "France"),
+            (nil, "Atlantis"),     // uncoded countries still count, keyed by name
+        ]
+        #expect(countUniqueRegions(countries, type: .country) == 3)
+
+        let continents: [(regionCode: String?, locationName: String?)] = [
+            ("North America", "North America"), ("North America", "North America"),
+            ("North America", "North America"), ("Europe", "Europe"),
+        ]
+        #expect(countUniqueRegions(continents, type: .continent) == 2)
+    }
+
+    @Test func regionVisitTypesAreExemptFromAtHomeCleanup() async throws {
+        // Home-region rows live at the home coordinate on purpose; the at-home
+        // cleanup must never treat region visits as bogus data
+        for type in RecordType.allCases {
+            #expect(type.isRegionVisit == !type.isGeographicExtreme)
+        }
+        #expect(RecordType.state.isRegionVisit)
+        #expect(RecordType.country.isRegionVisit)
+        #expect(RecordType.continent.isRegionVisit)
+        #expect(!RecordType.north.isRegionVisit)
+        #expect(!RecordType.fromHome.isRegionVisit)
+    }
 }

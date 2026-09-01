@@ -624,6 +624,7 @@ struct ContentView: View {
             await MainActor.run {
                 defaults.set(0, forKey: Self.restoreTimeoutCountKey)
                 let deduped = RecordHistoryManager.shared.removeDuplicates()
+                    + RecordHistoryManager.shared.removeDuplicateRegionEntries()
                 if deduped > 0 {
                     debugLog("🧹 Removed \(deduped) duplicate(s) after restore overlap")
                 }

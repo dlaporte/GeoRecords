@@ -372,6 +372,36 @@ func normalizeRegionCode(_ code: String, isState: Bool) -> String {
     return code
 }
 
+/// Count unique visited regions from raw region-history rows using the same rules
+/// as the Regions tab: dedupe by normalized regionCode (falling back to locationName),
+/// then apply the per-type exclusions (DC/US territories for states, non-sovereign
+/// territories for countries). iCloud sync can leave duplicate rows in the store,
+/// so anything that counts rows directly (like the widgets) must go through this.
+func countUniqueRegions(_ rows: [(regionCode: String?, locationName: String?)], type: RecordType) -> Int {
+    let isState = (type == .state)
+    var keys = Set<String>()
+    var uncoded = 0  // rows with neither code nor name each count once (keyed by id in the app)
+
+    for row in rows {
+        // States without a region code never count toward the 50 (matches the Regions tab)
+        if isState && row.regionCode == nil { continue }
+        guard let key = row.regionCode ?? row.locationName else {
+            uncoded += 1
+            continue
+        }
+        keys.insert(normalizeRegionCode(key, isState: isState))
+    }
+
+    switch type {
+    case .state:
+        return keys.filter { !nonStateCodesForCount.contains($0) }.count
+    case .country:
+        return keys.filter { !isTerritory($0) }.count + uncoded
+    default:
+        return keys.count + uncoded
+    }
+}
+
 /// FIPS code to postal code mapping for US states and territories
 let fipsToPostalCode: [String: String] = [
     "01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA",

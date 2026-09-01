@@ -1190,32 +1190,19 @@ struct RegionStatsProvider: AppIntentTimelineProvider {
                 let countries = try context.fetch(countryRequest)
                 let continents = try context.fetch(continentRequest)
 
-                // Count states (exclude DC and territories)
-                let stateCount = states.filter { entry in
-                    guard let code = entry.value(forKey: "regionCode") as? String else { return false }
-                    // Exclude DC and US territories from count
-                    let excludedCodes: Set<String> = ["DC", "US-DC", "PR", "US-PR", "VI", "US-VI", "GU", "US-GU", "AS", "US-AS", "MP", "US-MP"]
-                    return !excludedCodes.contains(code)
-                }.count
+                // Count through the shared dedupe + exclusion rules (Constants.swift):
+                // iCloud sync can leave duplicate region rows in the store, and the app
+                // deduplicates in memory — counting raw rows here overcounted
+                func regionRows(_ entries: [NSManagedObject]) -> [(regionCode: String?, locationName: String?)] {
+                    entries.map {
+                        ($0.value(forKey: "regionCode") as? String,
+                         $0.value(forKey: "locationName") as? String)
+                    }
+                }
 
-                // Count countries (exclude territories)
-                let countryCount = countries.filter { entry in
-                    guard let code = entry.value(forKey: "regionCode") as? String else { return true }
-                    // Territory codes that don't count as sovereign countries
-                    let territoryCodes: Set<String> = [
-                        "GF", "MQ", "GP", "RE", "YT", "NC", "PF",  // French
-                        "PT-20", "PT-30",  // Portuguese
-                        "ES-CN",  // Spanish
-                        "CW", "AW", "SX",  // Dutch
-                        "BM", "VG", "KY", "FK", "SC", "GI",  // British
-                        "FO", "GL",  // Danish
-                        "CX", "CC", "NF",  // Australian
-                        "CK", "NU", "TK"  // New Zealand
-                    ]
-                    return !territoryCodes.contains(code)
-                }.count
-
-                let continentCount = continents.count
+                let stateCount = countUniqueRegions(regionRows(states), type: .state)
+                let countryCount = countUniqueRegions(regionRows(countries), type: .country)
+                let continentCount = countUniqueRegions(regionRows(continents), type: .continent)
 
                 result = RegionStatsData(
                     stateCount: stateCount, totalStates: 50,

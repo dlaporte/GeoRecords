@@ -58,7 +58,8 @@ struct ManualRecordImportView: View {
                     }
                 }
             }
-            .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItem, matching: .images)
+            // photoLibrary: .shared() is required for itemIdentifier, which links the record to the asset
+            .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared())
             .onChange(of: selectedPhotoItem) { _, _ in
                 Task { await loadPhotoLocation() }
             }

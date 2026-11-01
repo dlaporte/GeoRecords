@@ -14,6 +14,7 @@ struct NoRecordsView: View {
     @State private var showImportConfirm = false
     @State private var showImportResult = false
     @State private var importResultMessage = ""
+    @State private var importSucceeded = false
     @State private var pendingBackupURL: URL?
     @State private var backupInfo: (recordCount: Int, regionCount: Int, exportDate: Date, deviceName: String)?
     @State private var snapshots: [BackupManager.SafetySnapshot] = []
@@ -206,7 +207,7 @@ struct NoRecordsView: View {
             } message: {
                 Text(backupImportMessage)
             }
-            .alert("Import Complete", isPresented: $showImportResult) {
+            .alert(BackupManager.importAlertTitle(succeeded: importSucceeded), isPresented: $showImportResult) {
                 Button("OK") { dismiss() }
             } message: {
                 Text(importResultMessage)
@@ -243,6 +244,7 @@ struct NoRecordsView: View {
 
             // Start accessing security-scoped resource
             guard url.startAccessingSecurityScopedResource() else {
+                importSucceeded = false
                 importResultMessage = "Unable to access the selected file."
                 showImportResult = true
                 return
@@ -264,15 +266,18 @@ struct NoRecordsView: View {
                     backupInfo = info
                     showImportConfirm = true
                 } else {
+                    importSucceeded = false
                     importResultMessage = "Could not read backup file. It may be corrupted or invalid."
                     showImportResult = true
                 }
             } catch {
+                importSucceeded = false
                 importResultMessage = "Failed to read backup file: \(error.localizedDescription)"
                 showImportResult = true
             }
 
         case .failure(let error):
+            importSucceeded = false
             importResultMessage = "Failed to select file: \(error.localizedDescription)"
             showImportResult = true
         }
@@ -284,12 +289,14 @@ struct NoRecordsView: View {
         Task {
             if let result = await BackupManager.shared.importBackup(from: url) {
                 await MainActor.run {
+                    importSucceeded = true
                     importResultMessage = BackupManager.importResultMessage(for: result)
                     showImportResult = true
                     clearBackupInfo()
                 }
             } else {
                 await MainActor.run {
+                    importSucceeded = false
                     importResultMessage = "Failed to import backup. The file may be corrupted or incompatible."
                     showImportResult = true
                     clearBackupInfo()
@@ -314,6 +321,7 @@ struct NoRecordsView: View {
             backupInfo = (snapshot.recordCount, snapshot.regionCount, snapshot.exportDate, snapshot.deviceName)
             showImportConfirm = true
         } catch {
+            importSucceeded = false
             importResultMessage = "Could not read the snapshot: \(error.localizedDescription)"
             showImportResult = true
         }

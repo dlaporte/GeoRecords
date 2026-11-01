@@ -56,14 +56,6 @@ enum RecordQueryTimeFrame: String, AppEnum {
         }
     }
 
-    /// How the timeframe reads inside a spoken sentence
-    var spokenName: String {
-        switch self {
-        case .month: return "this month's"
-        case .year: return "this year's"
-        case .lifetime: return "lifetime"
-        }
-    }
 }
 
 // MARK: - Intents
@@ -88,13 +80,43 @@ struct GetRecordIntent: AppIntent {
         let typeName = recordType.recordType.rawValue
 
         guard let detail = RecordManager.shared.getRecord(type: typeName, timeFrame: timeFrame.timeFrame) else {
-            return .result(dialog: "You don't have a \(timeFrame.spokenName) \(typeName) record yet.")
+            return .result(dialog: IntentDialog(stringLiteral: Self.missingRecordDialog(timeFrame: timeFrame, typeName: typeName)))
         }
 
         let value = detail.formattedValue(unitSystem: SettingsManager.shared.unitSystem)
-        let place = detail.locationName.map { " at \($0)" } ?? ""
         let date = detail.timestamp.formatted(date: .abbreviated, time: .omitted)
-        return .result(dialog: "Your \(timeFrame.spokenName) \(typeName) record is \(value)\(place), set \(date).")
+        let dialog = Self.recordDialog(timeFrame: timeFrame, typeName: typeName, value: value,
+                                       locationName: detail.locationName, date: date)
+        return .result(dialog: IntentDialog(stringLiteral: dialog))
+    }
+
+    // MARK: Spoken phrasing
+
+    /// "Furthest North record for this month" / "lifetime Furthest North record":
+    /// the qualifier goes where English puts it, so Siri never reads
+    /// "a this month's Furthest North record".
+    private static func qualifiedRecordName(timeFrame: RecordQueryTimeFrame, typeName: String) -> String {
+        switch timeFrame {
+        case .month: return "\(typeName) record for this month"
+        case .year: return "\(typeName) record for this year"
+        case .lifetime: return "lifetime \(typeName) record"
+        }
+    }
+
+    static func missingRecordDialog(timeFrame: RecordQueryTimeFrame, typeName: String) -> String {
+        "You don't have a \(qualifiedRecordName(timeFrame: timeFrame, typeName: typeName)) yet."
+    }
+
+    static func recordDialog(timeFrame: RecordQueryTimeFrame, typeName: String, value: String,
+                             locationName: String?, date: String) -> String {
+        // Geocoding stores "" while throttled; an empty name must not read as "at ,"
+        let place: String
+        if let name = locationName?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+            place = " at \(name)"
+        } else {
+            place = ""
+        }
+        return "Your \(qualifiedRecordName(timeFrame: timeFrame, typeName: typeName)) is \(value)\(place), set \(date)."
     }
 }
 

@@ -113,6 +113,7 @@ struct ContentView: View {
     @State private var backupInfo: (recordCount: Int, regionCount: Int, exportDate: Date, deviceName: String)?
     @State private var showBackupImportResult = false
     @State private var backupImportResultMessage = ""
+    @State private var backupImportSucceeded = false
     @State private var isImportingBackup = false  // Prevents photo wizard from showing during import
 
     var body: some View {
@@ -229,6 +230,7 @@ struct ContentView: View {
             showBackupImportConfirm: $showBackupImportConfirm,
             showBackupImportResult: $showBackupImportResult,
             backupImportResultMessage: backupImportResultMessage,
+            backupImportSucceeded: backupImportSucceeded,
             backupInfo: backupInfo,
             recordHistoryManager: recordHistoryManager,
             persistenceController: persistenceController,
@@ -705,6 +707,7 @@ struct ContentView: View {
             showBackupImportConfirm = true
         } catch {
             debugLog("❌ Failed to copy backup file: \(error.localizedDescription)")
+            backupImportSucceeded = false
             backupImportResultMessage = "Failed to read backup file."
             showBackupImportResult = true
         }
@@ -719,6 +722,7 @@ struct ContentView: View {
             if let result = await BackupManager.shared.importBackup(from: url) {
                 await MainActor.run {
                     isImportingBackup = false
+                    backupImportSucceeded = true
                     backupImportResultMessage = BackupManager.importResultMessage(for: result)
                     showBackupImportResult = true
                     backupImportURL = nil
@@ -727,6 +731,7 @@ struct ContentView: View {
             } else {
                 await MainActor.run {
                     isImportingBackup = false
+                    backupImportSucceeded = false
                     backupImportResultMessage = "Failed to import backup. The file may be corrupted or incompatible."
                     showBackupImportResult = true
                     backupImportURL = nil
@@ -747,6 +752,7 @@ private struct ContentViewAlertsModifier: ViewModifier {
     @Binding var showBackupImportConfirm: Bool
     @Binding var showBackupImportResult: Bool
     let backupImportResultMessage: String
+    let backupImportSucceeded: Bool
     let backupInfo: (recordCount: Int, regionCount: Int, exportDate: Date, deviceName: String)?
     let recordHistoryManager: RecordHistoryManager
     let persistenceController: PersistenceController
@@ -808,7 +814,7 @@ private struct ContentViewAlertsModifier: ViewModifier {
             } message: {
                 Text(backupImportMessage)
             }
-            .alert("Import Complete", isPresented: $showBackupImportResult) {
+            .alert(BackupManager.importAlertTitle(succeeded: backupImportSucceeded), isPresented: $showBackupImportResult) {
                 Button("OK") {}
             } message: {
                 Text(backupImportResultMessage)

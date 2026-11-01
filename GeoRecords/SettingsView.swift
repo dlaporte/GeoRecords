@@ -27,6 +27,7 @@ struct SettingsView: View {
     @State private var showImportFilePicker = false
     @State private var showImportResult = false
     @State private var importResultMessage = ""
+    @State private var importSucceeded = false
     @State private var isExporting = false
     @State private var notificationPermissionStatus: UNAuthorizationStatus = .notDetermined
 
@@ -285,7 +286,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Notifications")
                 } footer: {
-                    Text("Record alerts fire when you set a new record or enter a new region (one alert per record, for the biggest achievement). Photo prompts appear when you set an all-time record. Summaries arrive at month/year end. The inactivity reminder fires after days without tracking.")
+                    Text("Record alerts fire when you set a new record or enter a new region (one alert per record, for the biggest achievement). Photo prompts appear when you set an all-time record. Summaries arrive at month/year end. The inactivity reminder fires if you haven't opened the app in \(settings.inactivityReminderDays) days.")
                 }
 
                 // MARK: - iCloud Sync Section
@@ -538,6 +539,7 @@ struct SettingsView: View {
 
                     // Need to access security-scoped resource
                     guard url.startAccessingSecurityScopedResource() else {
+                        importSucceeded = false
                         importResultMessage = "Could not access the selected file."
                         showImportResult = true
                         return
@@ -546,13 +548,16 @@ struct SettingsView: View {
 
                     Task {
                         if let result = await BackupManager.shared.importBackup(from: url) {
+                            importSucceeded = true
                             importResultMessage = BackupManager.importResultMessage(for: result)
                         } else {
+                            importSucceeded = false
                             importResultMessage = "Failed to import backup. The file may be corrupted or incompatible."
                         }
                         showImportResult = true
                     }
                 case .failure(let error):
+                    importSucceeded = false
                     importResultMessage = "Error selecting file: \(error.localizedDescription)"
                     showImportResult = true
                 }
@@ -562,7 +567,7 @@ struct SettingsView: View {
             } message: {
                 Text("Failed to create backup. Please try again.")
             }
-            .alert("Import Complete", isPresented: $showImportResult) {
+            .alert(BackupManager.importAlertTitle(succeeded: importSucceeded), isPresented: $showImportResult) {
                 Button("OK") {}
             } message: {
                 Text(importResultMessage)

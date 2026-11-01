@@ -129,6 +129,12 @@ class RegionTrackingManager: ObservableObject {
     /// (which also handles country/continent chaining)
     func confirmPendingRegion(code: String) {
         guard let index = pendingRegions.firstIndex(where: { $0.code == code }) else { return }
+        // recordVisit returns without writing while the restore gate is armed; the
+        // queue entry must survive that, not be dropped on the floor
+        guard !SettingsManager.shared.needsDataRestore else {
+            debugLog("🚧 Restore gate armed - keeping pending region \(code) queued")
+            return
+        }
         let pending = pendingRegions.remove(at: index)
         persistPendingRegions()
 

@@ -402,7 +402,9 @@ struct DetailContentView: View {
 
                                 // Add photo button
                                 if onSavePhoto != nil {
-                                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                                    // photoLibrary: .shared() is what makes itemIdentifier non-nil;
+                                    // without it handlePhotoSelection can never persist the choice
+                                    PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
                                         Label("Select Photo", systemImage: "photo.badge.plus")
                                             .font(.subheadline)
                                             .padding(.horizontal, 12)
@@ -433,7 +435,7 @@ struct DetailContentView: View {
 
                     // Add photo button
                     if onSavePhoto != nil {
-                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                        PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
                             Image(systemName: "photo.badge.plus")
                                 .font(.caption)
                                 .padding(8)

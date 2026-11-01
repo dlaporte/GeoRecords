@@ -21,12 +21,14 @@ struct HistoryDetailPager: View {
         _currentIndex = State(initialValue: initialIndex)
     }
 
-    private var currentEntry: RecordHistoryEntry {
-        entries[currentIndex]
+    /// Safe-subscripted like RecordDetailPager: the page index can outlive the
+    /// entries array for a frame after a deletion
+    private var currentEntry: RecordHistoryEntry? {
+        entries[safe: currentIndex]
     }
 
     private var currentRecordDetail: RecordDetail? {
-        RecordDetail(from: currentEntry)
+        currentEntry.flatMap { RecordDetail(from: $0) }
     }
 
     var body: some View {
@@ -42,7 +44,7 @@ struct HistoryDetailPager: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
-                    Text(currentEntry.recordType ?? "Detail")
+                    Text(navigationTitle)
                         .font(.headline)
                     Text("\(currentIndex + 1) of \(entries.count)")
                         .font(.caption)
@@ -63,12 +65,12 @@ struct HistoryDetailPager: View {
                 deleteCurrentRecord()
             }
         } message: {
-            Text("Are you sure you want to delete this \(currentEntry.recordType ?? "record")? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
+            Text("Are you sure you want to delete this \(currentEntry?.recordType ?? "record")? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
         }
     }
 
     private var navigationTitle: String {
-        currentEntry.recordType ?? "Detail"
+        currentEntry?.recordType ?? "Detail"
     }
 
     private func deleteCurrentRecord() {

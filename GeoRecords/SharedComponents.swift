@@ -301,10 +301,25 @@ struct TimeFramePickerWithBadges: View {
         .cornerRadius(8)
     }
 
+    /// The menu already leads with "This Year", so the history list holds only past years
+    static func pastYears(_ years: [Int], now: Date = Date()) -> [Int] {
+        let currentYear = Calendar.current.component(.year, from: now)
+        return years.filter { $0 != currentYear }
+    }
+
+    /// The menu already leads with "This Month", so the history list holds only past months
+    static func pastMonths(_ months: [MonthSelection], now: Date = Date()) -> [MonthSelection] {
+        let current = MonthSelection.containing(now)
+        return months.filter { $0 != current }
+    }
+
+    private var pastYears: [Int] { Self.pastYears(availableYears) }
+    private var pastMonths: [MonthSelection] { Self.pastMonths(availableMonths) }
+
     private func hasHistoryMenu(for timeFrame: TimeFrame) -> Bool {
         switch timeFrame {
-        case .year: return !availableYears.isEmpty
-        case .month: return !availableMonths.isEmpty
+        case .year: return !pastYears.isEmpty
+        case .month: return !pastMonths.isEmpty
         default: return false
         }
     }
@@ -319,7 +334,7 @@ struct TimeFramePickerWithBadges: View {
                 Label("This Year", systemImage: selectedYear == nil ? "checkmark" : "calendar")
             }
             Divider()
-            ForEach(availableYears, id: \.self) { year in
+            ForEach(pastYears, id: \.self) { year in
                 Button {
                     selectedYear = year
                 } label: {
@@ -333,7 +348,7 @@ struct TimeFramePickerWithBadges: View {
                 Label("This Month", systemImage: selectedMonth == nil ? "checkmark" : "calendar")
             }
             Divider()
-            ForEach(availableMonths, id: \.self) { month in
+            ForEach(pastMonths, id: \.self) { month in
                 Button {
                     selectedMonth = month
                 } label: {

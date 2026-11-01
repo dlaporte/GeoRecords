@@ -391,6 +391,11 @@ class BackupManager {
     /// - Returns: Tuple with (records imported, regions imported, cache entries imported), or nil if import failed
     typealias ImportResult = (records: Int, regions: Int, cache: Int, failed: Int)
 
+    /// Alert title for a restore attempt; a failure must not be headed "Import Complete"
+    nonisolated static func importAlertTitle(succeeded: Bool) -> String {
+        succeeded ? "Import Complete" : "Import Failed"
+    }
+
     /// Builds the user-facing summary for a completed restore.
     /// Centralized here so the three restore entry points (Settings, ContentView, NoRecordsView)
     /// report results identically, including partial failures.

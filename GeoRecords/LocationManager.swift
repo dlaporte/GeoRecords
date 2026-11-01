@@ -176,6 +176,13 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     private let inactivityReminderIdentifier = "georecords-inactivity-reminder"
 
+    /// The reminder is rescheduled whenever the app comes to the foreground, so what
+    /// it measures is days since the app was last opened — the copy says exactly that
+    /// rather than claiming tracking stopped.
+    static func inactivityReminderBody(days: Int) -> String {
+        "You haven't opened GeoRecords in \(days) days. Open it to make sure location tracking is still working."
+    }
+
     /// Schedule or reschedule the inactivity reminder notification
     /// Called each time the app becomes active
     @MainActor
@@ -211,7 +218,7 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
             // Schedule notification for X days from now
             let content = UNMutableNotificationContent()
             content.title = "Missing Your Adventures!"
-            content.body = "GeoRecords hasn't tracked any locations in \(days) days. Open the app to make sure location tracking is still working."
+            content.body = Self.inactivityReminderBody(days: days)
             content.sound = .default
 
             // Trigger after X days

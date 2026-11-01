@@ -64,6 +64,13 @@ struct SettingsView: View {
         ("10 km", 10000.0)
     ]
     
+    /// e.g. "GeoRecords 1.8.4 (123)" — marketing version plus CI build number
+    private var appVersionString: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "GeoRecords \(version) (\(build))"
+    }
+
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
@@ -317,7 +324,9 @@ struct SettingsView: View {
                     }
 
                     if let error = persistenceController.lastSyncError {
-                        Text(error.localizedDescription)
+                        // Prefer an actionable explanation over CloudKit's terse
+                        // description ("Failed to modify some records")
+                        Text(persistenceController.syncErrorGuidance ?? error.localizedDescription)
                             .font(.caption)
                             .foregroundColor(.orange)
                     }
@@ -432,6 +441,15 @@ struct SettingsView: View {
                     }
                 } footer: {
                     Text("Permanently delete all records from this device and optionally from iCloud.")
+                }
+
+                // Version footer — deliberately quiet, just enough to answer
+                // "which build are you on?" without a dedicated About screen
+                Section {
+                } footer: {
+                    Text(appVersionString)
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .scrollToiCloudSync)) { _ in

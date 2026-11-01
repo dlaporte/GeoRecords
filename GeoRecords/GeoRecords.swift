@@ -100,6 +100,10 @@ struct GeoRecords: App {
         // Schedule summary notifications
         SummaryNotificationManager.shared.scheduleSummaryNotifications()
 
+        // Widgets re-read the shared store after any record/region save (coalesced);
+        // without this they lagged a new record by up to the hourly refresh
+        WidgetReloader.shared.observeSaves(of: persistenceController.container.viewContext)
+
         // Start monitoring photo library for new photos (catches extreme locations from camera)
         PhotoLocationMonitor.shared.startMonitoring()
 

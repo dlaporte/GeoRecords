@@ -75,6 +75,16 @@ private let widgetRefreshIntervalHours = 1
 /// Standard record order using WidgetRecordType enum, sorted by sortOrder
 let standardRecordOrder = WidgetRecordType.allCases.sorted { $0.sortOrder < $1.sortOrder }.map { $0.rawValue }
 
+/// The app's record-slot timeframe (Constants.swift) for a widget timeframe, so the
+/// widget can apply the same display rule as the Records tab
+private func slotTimeFrame(for timeFrame: WidgetTimeFrame) -> TimeFrame {
+    switch timeFrame {
+    case .allTime: return .allTime
+    case .year: return .year
+    case .month: return .month
+    }
+}
+
 // MARK: - Shared Core Data Access
 
 /// Shared read-only container: the model load and store open happen once per widget
@@ -433,32 +443,18 @@ struct Provider: AppIntentTimelineProvider {
                     return true
                 }
 
-                // Group by record type and get the most extreme for each
+                // Per type, the record the app's Records tab shows for this slot
+                // (RecordType.displayRecord: a record the user chose in the import
+                // wizard for this timeframe outranks raw extremeness). Picking by
+                // extremeness alone made the widget disagree with the app.
+                let slot = slotTimeFrame(for: timeFrame)
                 var latestByType: [String: NSManagedObject] = [:]
-
-                for entry in filteredEntries {
-                    guard let type = entry.value(forKey: "recordType") as? String else { continue }
-
-                    // Only include selected record types
-                    guard selectedTypes.contains(type) else { continue }
-
-                    // Keep the most extreme value for each type
-                    if let existing = latestByType[type],
-                       let existingValue = existing.value(forKey: "value") as? Double,
-                       let newValue = entry.value(forKey: "value") as? Double {
-
-                        let shouldReplace: Bool
-                        if let widgetType = WidgetRecordType.from(string: type) {
-                            shouldReplace = widgetType.isAscending ? newValue > existingValue : newValue < existingValue
-                        } else {
-                            shouldReplace = false
-                        }
-
-                        if shouldReplace {
-                            latestByType[type] = entry
-                        }
-                    } else {
-                        latestByType[type] = entry
+                let typedEntries = filteredEntries.compactMap { $0 as? RecordHistoryEntry }
+                let byType = Dictionary(grouping: typedEntries) { $0.recordType ?? "" }
+                for (type, typeEntries) in byType where selectedTypes.contains(type) {
+                    if let recordType = RecordType.from(string: type),
+                       let chosen = recordType.displayRecord(of: typeEntries, slotTimeFrame: slot) {
+                        latestByType[type] = chosen
                     }
                 }
 
@@ -823,25 +819,11 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
                     return true
                 }
 
-                var bestEntry: NSManagedObject?
-                for entry in filteredEntries {
-                    guard let newValue = entry.value(forKey: "value") as? Double else { continue }
-
-                    if let existing = bestEntry,
-                       let existingValue = existing.value(forKey: "value") as? Double {
-                        let shouldReplace: Bool
-                        if let widgetType = WidgetRecordType.from(string: recordType) {
-                            shouldReplace = widgetType.isAscending ? newValue > existingValue : newValue < existingValue
-                        } else {
-                            shouldReplace = false
-                        }
-                        if shouldReplace {
-                            bestEntry = entry
-                        }
-                    } else {
-                        bestEntry = entry
-                    }
-                }
+                // Same slot rule as the app's Records tab: a wizard choice for this
+                // timeframe wins, otherwise the most extreme value
+                let typedEntries = filteredEntries.compactMap { $0 as? RecordHistoryEntry }
+                let bestEntry: NSManagedObject? = RecordType.from(string: recordType)?
+                    .displayRecord(of: typedEntries, slotTimeFrame: slotTimeFrame(for: timeFrame))
 
                 if let entry = bestEntry,
                    let value = entry.value(forKey: "value") as? Double,
@@ -1624,34 +1606,20 @@ struct RegionMapProvider: AppIntentTimelineProvider {
             do {
                 let results = try context.fetch(request)
 
-                switch mapType {
-                case .states:
-                    // Exclude DC and territories
-                    let excludedCodes: Set<String> = ["DC", "US-DC", "PR", "US-PR", "VI", "US-VI", "GU", "US-GU", "AS", "US-AS", "MP", "US-MP"]
-                    regionCount = results.filter { entry in
-                        guard let code = entry.value(forKey: "regionCode") as? String else { return false }
-                        return !excludedCodes.contains(code)
-                    }.count
-
-                case .countries:
-                    // Exclude territories
-                    let territoryCodes: Set<String> = [
-                        "GF", "MQ", "GP", "RE", "YT", "NC", "PF",
-                        "PT-20", "PT-30", "ES-CN",
-                        "CW", "AW", "SX",
-                        "BM", "VG", "KY", "FK", "SC", "GI",
-                        "FO", "GL",
-                        "CX", "CC", "NF",
-                        "CK", "NU", "TK"
-                    ]
-                    regionCount = results.filter { entry in
-                        guard let code = entry.value(forKey: "regionCode") as? String else { return true }
-                        return !territoryCodes.contains(code)
-                    }.count
-
-                case .continents:
-                    regionCount = results.count
+                // Same dedupe + exclusion rules as the app and the Region Stats widget
+                // (Constants.swift): iCloud sync can leave duplicate region rows, and
+                // the two region widgets must agree when placed side by side
+                let rows: [(regionCode: String?, locationName: String?)] = results.map {
+                    ($0.value(forKey: "regionCode") as? String,
+                     $0.value(forKey: "locationName") as? String)
                 }
+                let countedType: RecordType
+                switch mapType {
+                case .states: countedType = .state
+                case .countries: countedType = .country
+                case .continents: countedType = .continent
+                }
+                regionCount = countUniqueRegions(rows, type: countedType)
             } catch {
                 print("Widget: Failed to fetch region count: \(error)")
             }

@@ -1,4 +1,5 @@
 import SwiftUI
+import StoreKit
 import CoreData
 import CoreLocation
 import Photos
@@ -90,6 +91,7 @@ struct LocationHealthBanner: View {
 }
 
 struct ContentView: View {
+    @Environment(\.requestReview) private var requestReview
     @EnvironmentObject var deepLinkManager: DeepLinkManager
     @EnvironmentObject var recordManager: RecordManager
     @EnvironmentObject var recordHistoryManager: RecordHistoryManager
@@ -199,6 +201,18 @@ struct ContentView: View {
         .sheet(isPresented: $recordManager.showPhotoPrompt) {
             photoPromptSheet
         }
+        .sensoryFeedback(.success, trigger: recordManager.showPhotoPrompt) { _, isShowing in isShowing }
+        .onChange(of: recordManager.shouldRequestReview) { _, pending in
+            if pending && !recordManager.showPhotoPrompt {
+                requestReviewAfterPause()
+            }
+        }
+        .onChange(of: recordManager.showPhotoPrompt) { _, isShowing in
+            // The review request waits until the photo prompt is out of the way
+            if !isShowing && recordManager.shouldRequestReview {
+                requestReviewAfterPause()
+            }
+        }
         .sheet(isPresented: $showPhotoImportWizard, onDismiss: {
             // Discard results AFTER teardown (see SettingsView) so the next
             // Import Photos starts fresh at the options screen
@@ -274,6 +288,17 @@ struct ContentView: View {
                 try? await Task.sleep(nanoseconds: briefPauseNanos)
                 NotificationCenter.default.post(name: .openHomePicker, object: nil)
             }
+        }
+    }
+
+    /// Ask for an App Store review once, a moment after the record moment settles
+    private func requestReviewAfterPause() {
+        recordManager.shouldRequestReview = false
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            requestReview()
+            let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard
+            defaults.set(true, forKey: UserDefaultsKey.reviewRequested.rawValue)
         }
     }
 

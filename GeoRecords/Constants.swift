@@ -304,6 +304,10 @@ enum UserDefaultsKey: String {
     case lastLiveCountryCode
     case lastLiveContinent
 
+    // App Store review prompt (device-local): beaten lifetime records so far, and whether we asked
+    case beatenLifetimeRecordCount
+    case reviewRequested
+
     // Widget map regions (user-defined framing for widget maps)
     // NOTE: these cases look unreferenced, but their raw values ARE the live keys —
     // SettingsManager builds them by string interpolation ("\(prefix)Lat" etc. in

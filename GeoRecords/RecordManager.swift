@@ -138,6 +138,8 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     // Photo prompt state
     @Published var showPhotoPrompt = false
     @Published var pendingRecordForPhoto: (type: String, detail: RecordDetail)?
+    /// Set once the second beaten lifetime record lands; ContentView asks for a review
+    @Published var shouldRequestReview = false
 
     // Badge counts for new/unseen records per timeframe
     @Published var newMonthlyRecordCount = 0
@@ -542,6 +544,11 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                     // Increment badge for this timeframe
                     incrementBadge(for: timeFrame)
 
+                    // A beaten lifetime record is the natural moment to ask for a review
+                    if timeFrame == .allTime, RecordType.from(string: type)?.isGeographicExtreme == true {
+                        noteBeatenLifetimeRecord()
+                    }
+
                     // Photo prompts only for all-time records
                     if timeFrame == .allTime {
                         promptForPhoto(recordType: type, detail: newRecord)
@@ -915,6 +922,18 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         return distanceBetween(from: location.coordinate, to: homeCoord)
     }
     
+    /// Count beaten lifetime records toward the App Store review prompt. First-ever
+    /// rows, imports and region rows never reach this path.
+    private func noteBeatenLifetimeRecord() {
+        let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard
+        let count = defaults.integer(forKey: UserDefaultsKey.beatenLifetimeRecordCount.rawValue) + 1
+        defaults.set(count, forKey: UserDefaultsKey.beatenLifetimeRecordCount.rawValue)
+        let requested = defaults.bool(forKey: UserDefaultsKey.reviewRequested.rawValue)
+        if ReviewPrompt.shouldRequest(beatenLifetimeCount: count, alreadyRequested: requested) {
+            shouldRequestReview = true
+        }
+    }
+
     /// "69.6492° N at Tromsø, Norway", or the value alone when the place is unknown
     /// (geocoding stores "" while throttled and a placeholder on failure)
     nonisolated static func recordNotificationBody(value: String, locationName: String?) -> String {

@@ -69,6 +69,14 @@ struct DetailContentView: View {
         record.source?.displayName
     }
 
+    /// "3 visits · last Aug 2026" for region records
+    private var regionVisitsText: String? {
+        guard isRegionRecord, let code = record.regionCode,
+              let type = RecordType.from(string: record.recordType) else { return nil }
+        let summary = RegionTrackingManager.shared.visitSummary(code: code, type: type)
+        return VisitLog.text(count: summary.count, last: summary.last)
+    }
+
     private var formattedAltitude: String {
         if settings.unitSystem == .imperial {
             return FormatUtils.formatFeet(record.altitude * metersToFeet)
@@ -592,6 +600,17 @@ struct DetailContentView: View {
                     iconColor: .green,
                     label: "Beat previous by",
                     value: beatPreviousText
+                )
+            }
+
+            if let regionVisitsText {
+                Divider().padding(.leading, 44)
+
+                DetailRow(
+                    icon: "arrow.triangle.2.circlepath",
+                    iconColor: .teal,
+                    label: "Visits",
+                    value: regionVisitsText
                 )
             }
 

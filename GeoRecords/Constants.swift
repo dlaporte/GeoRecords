@@ -299,6 +299,11 @@ enum UserDefaultsKey: String {
     // Wizard preferences
     case skippedWizardRecords  // Set of record keys that user chose to skip
 
+    // Repeat-visit tracking: the region the last live fix landed in, per kind
+    case lastLiveStateCode
+    case lastLiveCountryCode
+    case lastLiveContinent
+
     // Widget map regions (user-defined framing for widget maps)
     // NOTE: these cases look unreferenced, but their raw values ARE the live keys —
     // SettingsManager builds them by string interpolation ("\(prefix)Lat" etc. in

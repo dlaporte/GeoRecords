@@ -61,6 +61,9 @@ class RegionTrackingManager: ObservableObject {
     @Published var countryCount: Int = 0
     @Published var continentCount: Int = 0
 
+    /// Repeat-visit counts per region (see VisitLog), rebuilt with the regions
+    @Published var visitSummaries: [VisitLog.Key: (count: Int, last: Date?)] = [:]
+
     /// Regions discovered by the automatic photo catch-up that await user confirmation.
     /// New regions from unattended scans are queued instead of auto-added: a geotagged
     /// photo saved from AirDrop/messages must not silently mark a country as visited.
@@ -448,11 +451,99 @@ class RegionTrackingManager: ObservableObject {
             }.count
             continentCount = visitedContinents.count
 
+            refreshVisitSummaries()
+
             let territoriesCount = visitedStates.count - stateCount
             debugLog("📍 RegionTrackingManager: Loaded \(stateCount) states + \(territoriesCount) DC/territories, \(countryCount) countries, \(continentCount) continents")
         } catch {
             debugLog("⚠️ RegionTrackingManager: Failed to load visited regions: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Repeat visits
+
+    /// How often a region has been arrived in and when last (see VisitLog)
+    func visitSummary(code: String, type: RecordType) -> (count: Int, last: Date?) {
+        visitSummaries[VisitLog.key(code: code, type: type)] ?? (0, nil)
+    }
+
+    private var sharedDefaults: UserDefaults {
+        UserDefaults(suiteName: "group.com.georecords.shared") ?? .standard
+    }
+
+    private func lastLiveDefaultsKey(for regionType: String) -> String {
+        switch regionType {
+        case "state": return UserDefaultsKey.lastLiveStateCode.rawValue
+        case "country": return UserDefaultsKey.lastLiveCountryCode.rawValue
+        default: return UserDefaultsKey.lastLiveContinent.rawValue
+        }
+    }
+
+    /// Every VisitedRegion row for a key (iCloud sync can duplicate rows across devices)
+    private func visitedRegionRows(for key: VisitLog.Key) -> [VisitedRegion] {
+        let request: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
+        request.predicate = NSPredicate(format: "regionType == %@ AND regionCode == %@", key.regionType, key.regionCode)
+        return (try? context.fetch(request)) ?? []
+    }
+
+    /// Record an arrival in a region, new or already visited. Live fixes count when
+    /// the region differs from the previous fix's region of the same kind; photo,
+    /// manual and wizard entries count on a day with no earlier visit.
+    private func logArrival(key: VisitLog.Key, name: String, date: Date, source: RecordSource) {
+        let defaultsKey = lastLiveDefaultsKey(for: key.regionType)
+        let previous = source == .location ? sharedDefaults.string(forKey: defaultsKey) : nil
+        if source == .location {
+            sharedDefaults.set(key.regionCode, forKey: defaultsKey)
+        }
+
+        let rows = visitedRegionRows(for: key)
+        let dates = rows.flatMap(\.visitDatesArray)
+        guard VisitLog.shouldLogArrival(previousRegionCode: previous, newRegionCode: key.regionCode,
+                                        existingDates: dates, date: date, source: source) else { return }
+
+        let row = rows.first ?? {
+            let new = VisitedRegion(context: context)
+            new.regionType = key.regionType
+            new.regionCode = key.regionCode
+            new.regionName = name
+            return new
+        }()
+        let updated = (dates + [date]).sorted()
+        row.visitDates = updated as NSArray
+        saveContext()
+        visitSummaries[key] = VisitLog.summary(dates: updated)
+    }
+
+    /// Rebuild the summaries from VisitedRegion rows, creating a row (seeded with the
+    /// record row's first-visit date) for any visited region that has none yet
+    private func refreshVisitSummaries() {
+        let request: NSFetchRequest<VisitedRegion> = VisitedRegion.fetchRequest()
+        let rows = (try? context.fetch(request)) ?? []
+        var datesByKey: [VisitLog.Key: [Date]] = [:]
+        for row in rows {
+            guard let type = row.regionType, let code = row.regionCode else { continue }
+            datesByKey[VisitLog.Key(regionType: type, regionCode: code), default: []] += row.visitDatesArray
+        }
+
+        var created = false
+        let visited: [(RecordType, [RecordDetail])] = [(.state, visitedStates), (.country, visitedCountries), (.continent, visitedContinents)]
+        for (type, details) in visited {
+            for detail in details {
+                guard let code = detail.regionCode else { continue }
+                let key = VisitLog.key(code: code, type: type)
+                guard datesByKey[key] == nil else { continue }
+                let new = VisitedRegion(context: context)
+                new.regionType = key.regionType
+                new.regionCode = key.regionCode
+                new.regionName = detail.locationName
+                new.visitDates = [detail.timestamp] as NSArray
+                datesByKey[key] = [detail.timestamp]
+                created = true
+            }
+        }
+        if created { saveContext() }
+
+        visitSummaries = datesByKey.mapValues { VisitLog.summary(dates: $0) }
     }
 
     /// Migrate existing records to populate missing regionCode fields
@@ -868,6 +959,9 @@ class RegionTrackingManager: ObservableObject {
             recordTypeString = RecordType.country.rawValue
         }
 
+        // Count the arrival whether or not the region is new
+        logArrival(key: VisitLog.key(code: code, type: type == .state ? .state : .country), name: name, date: date, source: source)
+
         // Check if we already have a record for this region
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
         request.predicate = NSPredicate(format: "recordType == %@ AND regionCode == %@", recordTypeString, code)
@@ -971,6 +1065,9 @@ class RegionTrackingManager: ObservableObject {
 
     private func addContinentVisit(continent: String, date: Date, coordinate: CLLocationCoordinate2D, altitude: Double, photoAssetIdentifier: String? = nil, photoCloudIdentifier: String? = nil, suppressNotifications: Bool = false, suppressPhotoPrompts: Bool = false, source: RecordSource = .location) {
         let recordTypeString = RecordType.continent.rawValue
+
+        // Count the arrival whether or not the continent is new
+        logArrival(key: VisitLog.key(code: continent, type: .continent), name: continent, date: date, source: source)
 
         // Check if we already have a record for this continent
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()

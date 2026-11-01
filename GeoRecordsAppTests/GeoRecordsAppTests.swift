@@ -7,6 +7,7 @@
 
 import Testing
 import CoreLocation
+import CloudKit
 @testable import GeoRecords
 
 struct GeoRecordsTests {
@@ -154,6 +155,73 @@ struct GeoRecordsTests {
             ("North America", "North America"), ("Europe", "Europe"),
         ]
         #expect(countUniqueRegions(continents, type: .continent) == 2)
+    }
+
+    @Test func dailyRetentionCutoffKeepsPreviousMonth() async throws {
+        // The monthly summary notification on the 1st links to the month that just
+        // ended, so its daily rows must survive the cleanup for that whole month
+        let calendar = Calendar.current
+        func cutoff(year: Int, month: Int, day: Int) -> DateComponents? {
+            guard let date = calendar.date(from: DateComponents(year: year, month: month, day: day)),
+                  let cutoff = dailyStatsRetentionCutoff(for: date) else { return nil }
+            return calendar.dateComponents([.year, .month, .day], from: cutoff)
+        }
+
+        let novFirst = try #require(cutoff(year: 2026, month: 11, day: 1))
+        #expect((novFirst.year, novFirst.month, novFirst.day) == (2026, 10, 1))
+
+        let midJanuary = try #require(cutoff(year: 2026, month: 1, day: 15))
+        #expect((midJanuary.year, midJanuary.month, midJanuary.day) == (2025, 12, 1))
+
+        let marchFirst = try #require(cutoff(year: 2027, month: 3, day: 1))
+        #expect((marchFirst.year, marchFirst.month, marchFirst.day) == (2027, 2, 1))
+    }
+
+    @Test func statsDeepLinkPeriodResolvesSummaryPayloads() async throws {
+        let calendar = Calendar.current
+        let novFirst = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 8)))
+        let janThird = try #require(calendar.date(from: DateComponents(year: 2027, month: 1, day: 3)))
+
+        // Precise notifications embed the concrete month/year
+        #expect(StatsDeepLinkPeriod.resolve(period: nil, year: 2026, month: 10, now: novFirst)
+                == .month(MonthSelection(year: 2026, month: 10)))
+        #expect(StatsDeepLinkPeriod.resolve(period: nil, year: 2026, month: nil, now: janThird)
+                == .year(2026))
+
+        // Repeating fallbacks resolve relative to the tap date, across year boundaries
+        #expect(StatsDeepLinkPeriod.resolve(period: "previousMonth", year: nil, month: nil, now: novFirst)
+                == .month(MonthSelection(year: 2026, month: 10)))
+        #expect(StatsDeepLinkPeriod.resolve(period: "previousMonth", year: nil, month: nil, now: janThird)
+                == .month(MonthSelection(year: 2026, month: 12)))
+        #expect(StatsDeepLinkPeriod.resolve(period: "previousYear", year: nil, month: nil, now: janThird)
+                == .year(2026))
+
+        // Garbage never navigates anywhere
+        #expect(StatsDeepLinkPeriod.resolve(period: "someday", year: nil, month: nil, now: novFirst) == nil)
+        #expect(StatsDeepLinkPeriod.resolve(period: nil, year: nil, month: 10, now: novFirst) == nil)
+        #expect(StatsDeepLinkPeriod.resolve(period: nil, year: 2026, month: 13, now: novFirst) == nil)
+    }
+
+    @Test func syncErrorGuidanceExplainsBuriedCloudKitCodes() async throws {
+        // "Failed to modify some records" is a partial failure whose actionable
+        // reason (e.g. full iCloud storage) is buried in the per-item errors
+        let quotaItem = NSError(domain: CKErrorDomain, code: CKError.Code.quotaExceeded.rawValue)
+        let partialFailure = NSError(
+            domain: CKErrorDomain,
+            code: CKError.Code.partialFailure.rawValue,
+            userInfo: [CKPartialErrorsByItemIDKey: [CKRecord.ID(recordName: "r1"): quotaItem]]
+        )
+        let quotaGuidance = try #require(PersistenceController.syncErrorGuidance(for: partialFailure))
+        #expect(quotaGuidance.contains("storage"))
+
+        let signedOut = NSError(domain: CKErrorDomain, code: CKError.Code.notAuthenticated.rawValue)
+        let signInGuidance = try #require(PersistenceController.syncErrorGuidance(for: signedOut))
+        #expect(signInGuidance.contains("Sign in"))
+
+        // Unknown errors fall back to the raw description (nil guidance)
+        let mystery = NSError(domain: "SomeDomain", code: 7)
+        #expect(PersistenceController.syncErrorGuidance(for: mystery) == nil)
+        #expect(PersistenceController.syncErrorGuidance(for: nil) == nil)
     }
 
     @Test func regionVisitTypesAreExemptFromAtHomeCleanup() async throws {

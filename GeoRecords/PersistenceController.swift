@@ -124,6 +124,9 @@ class PersistenceController: ObservableObject {
             if event.endDate != nil {
                 debugLog("☁️ CloudKit: Import completed ✅")
                 isSyncing = false
+                // Set even on partial failure: a failed import can still have
+                // delivered rows, and this timestamp wakes the restore self-heal
+                // listener (which checks the store itself before acting)
                 lastImportTime = Date()
             } else {
                 debugLog("☁️ CloudKit: Import started...")
@@ -131,10 +134,16 @@ class PersistenceController: ObservableObject {
             }
         case .export:
             if event.endDate != nil {
-                debugLog("☁️ CloudKit: Export completed ✅ - Data is now in iCloud!")
                 isSyncing = false
-                lastExportTime = Date()
                 pendingExport = false
+                // A finished export can still carry an error — only an error-free
+                // completion counts as "synced" (otherwise "Last synced" lies)
+                if event.error == nil {
+                    debugLog("☁️ CloudKit: Export completed ✅ - Data is now in iCloud!")
+                    lastExportTime = Date()
+                } else {
+                    debugLog("☁️ CloudKit: Export finished with error - data NOT confirmed in iCloud")
+                }
             } else {
                 debugLog("☁️ CloudKit: Export started...")
                 isSyncing = true
@@ -147,6 +156,17 @@ class PersistenceController: ObservableObject {
         // Handle errors
         if let error = event.error {
             debugLog("☁️ CloudKit error: \(error.localizedDescription)")
+            // "Failed to modify some records" is a partial failure whose real
+            // reasons live per-item — log them or the error is undiagnosable
+            if let partialErrors = (error as? CKError)?.partialErrorsByItemID, !partialErrors.isEmpty {
+                for (itemID, itemError) in partialErrors.prefix(5) {
+                    let code = (itemError as? CKError).map { "CKError \($0.code.rawValue)" } ?? "non-CKError"
+                    debugLog("☁️   ↳ \(itemID): [\(code)] \(itemError.localizedDescription)")
+                }
+                if partialErrors.count > 5 {
+                    debugLog("☁️   ↳ … and \(partialErrors.count - 5) more item error(s)")
+                }
+            }
             lastSyncError = error
         } else if event.endDate != nil {
             // A later successful completion supersedes any earlier failure.
@@ -157,6 +177,39 @@ class PersistenceController: ObservableObject {
                 lastSyncError = nil
             }
         }
+    }
+
+    /// A user-actionable explanation for the current sync error, when the
+    /// CloudKit error code has a known remedy (nil = show the raw description)
+    var syncErrorGuidance: String? {
+        Self.syncErrorGuidance(for: lastSyncError)
+    }
+
+    nonisolated static func syncErrorGuidance(for error: Error?) -> String? {
+        guard let error else { return nil }
+
+        // A partial failure buries the real reason per-item — collect every code
+        var codes: [CKError.Code] = []
+        if let ckError = error as? CKError {
+            codes.append(ckError.code)
+            if let partialErrors = ckError.partialErrorsByItemID {
+                codes.append(contentsOf: partialErrors.values.compactMap { ($0 as? CKError)?.code })
+            }
+        }
+
+        if codes.contains(.quotaExceeded) {
+            return "Your iCloud storage is full. Free up space or upgrade your storage plan — syncing resumes automatically."
+        }
+        if codes.contains(.notAuthenticated) {
+            return "Sign in to iCloud in the Settings app to resume syncing."
+        }
+        if codes.contains(where: { $0 == .networkUnavailable || $0 == .networkFailure }) {
+            return "No network connection — syncing will retry automatically."
+        }
+        if codes.contains(where: { $0 == .requestRateLimited || $0 == .zoneBusy || $0 == .serviceUnavailable }) {
+            return "iCloud is busy — syncing will retry automatically."
+        }
+        return nil
     }
 
     func attemptDatabaseRecovery(storeURL: URL) {

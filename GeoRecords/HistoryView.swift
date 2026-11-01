@@ -4,9 +4,13 @@ import CoreLocation
 
 struct HistoryView: View {
     @EnvironmentObject var settings: SettingsManager
+    @EnvironmentObject var recordManager: RecordManager
     @State private var searchText = ""
     @State private var selectedRecordTypeFilter: String = "All Types"
     @State private var selectedTimeFrameFilter: String = "All Timeframes"
+    @State private var selectedSource: HistorySourceFilter = .all
+    @State private var includeHome = false
+    @State private var pendingDelete: RecordHistoryEntry?
 
     // Fetch history entries sorted by timestamp (newest first)
     @FetchRequest(
@@ -22,8 +26,8 @@ struct HistoryView: View {
         // Filter out daily records (internal use only for "This Month" charts)
         entries = entries.filter { $0.timeFrame != TimeFrame.daily.rawValue }
 
-        // Filter out records at home (likely test/bogus data)
-        if let homeCoord = settings.homeCoordinate {
+        // Filter out records at home (likely test/bogus data) unless asked to show them
+        if !includeHome, let homeCoord = settings.homeCoordinate {
             let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
             entries = entries.filter { entry in
                 let entryLocation = CLLocation(latitude: entry.latitude, longitude: entry.longitude)
@@ -32,9 +36,13 @@ struct HistoryView: View {
             }
         }
 
-        // Apply database-level filters first (record type and time frame)
+        // Apply database-level filters first (record type, time frame, source)
         if selectedRecordTypeFilter != "All Types" {
             entries = entries.filter { $0.recordType == selectedRecordTypeFilter }
+        }
+
+        if selectedSource != .all {
+            entries = entries.filter { selectedSource.matches($0.source) }
         }
 
         if selectedTimeFrameFilter != "All Timeframes" {
@@ -99,6 +107,27 @@ struct HistoryView: View {
         return ["All Timeframes"] + sortedFrames
     }
 
+    /// Month sections over the flat filtered list (rows keep their pager index)
+    private var sections: [HistorySection] {
+        HistorySections.group(filteredEntries)
+    }
+
+    private var hasActiveFilters: Bool {
+        !searchText.isEmpty || selectedRecordTypeFilter != "All Types"
+            || selectedTimeFrameFilter != "All Timeframes" || selectedSource != .all
+    }
+
+    /// Everything is hidden only by the at-home rule: say so instead of "No Results"
+    private var onlyHomeRowsRemain: Bool {
+        filteredEntries.isEmpty && !includeHome && !hasActiveFilters
+            && historyEntries.contains { $0.timeFrame != TimeFrame.daily.rawValue }
+    }
+
+    private func deleteEntry(_ entry: RecordHistoryEntry) {
+        guard let detail = RecordDetail(from: entry) else { return }
+        deleteRecordFromStorage(detail, recordManager: recordManager)
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -133,22 +162,21 @@ struct HistoryView: View {
                         }
                     }
 
-                    // Search field
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.secondary)
-                        TextField("Search by type or location", text: $searchText)
-                            .textFieldStyle(.plain)
-                        if !searchText.isEmpty {
-                            Button(action: { searchText = "" }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.secondary)
+                    // Source filter and the at-home rows, normally hidden
+                    HStack(spacing: 12) {
+                        Picker("Source", selection: $selectedSource) {
+                            ForEach(HistorySourceFilter.menuOrder, id: \.self) { source in
+                                Text(source.title).tag(source)
                             }
                         }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity)
+
+                        Toggle("Include home", isOn: $includeHome)
+                            .toggleStyle(.switch)
+                            .font(.subheadline)
+                            .frame(maxWidth: .infinity)
                     }
-                    .padding(8)
-                    .background(Color(UIColor.systemGray6))
-                    .cornerRadius(8)
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 12)
@@ -170,6 +198,20 @@ struct HistoryView: View {
                                 .foregroundColor(.secondary)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if onlyHomeRowsRemain {
+                        VStack(spacing: 16) {
+                            Image(systemName: "house")
+                                .font(.system(size: 48))
+                                .foregroundColor(.secondary)
+                            Text("Everything Is at Home")
+                                .font(.headline)
+                            Text("All of your records are at home. Turn on Include home to see them.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding(.horizontal, 32)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else if filteredEntries.isEmpty {
                         VStack(spacing: 16) {
                             Image(systemName: "magnifyingglass")
@@ -183,17 +225,44 @@ struct HistoryView: View {
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        List(Array(filteredEntries.enumerated()), id: \.element.id) { index, entry in
-                            NavigationLink(destination: HistoryDetailPager(entries: filteredEntries, initialIndex: index)) {
-                                CompactHistoryRow(entry: entry)
+                        let entries = filteredEntries
+                        List {
+                            ForEach(sections) { section in
+                                Section(header: Text(section.title)) {
+                                    ForEach(section.rows) { row in
+                                        NavigationLink(destination: HistoryDetailPager(entries: entries, initialIndex: row.index)) {
+                                            CompactHistoryRow(entry: row.entry)
+                                        }
+                                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                            Button(role: .destructive) {
+                                                pendingDelete = row.entry
+                                            } label: {
+                                                Label("Delete", systemImage: "trash")
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                            .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                         }
                         .listStyle(.plain)
                     }
                 }
             }
+            .searchable(text: $searchText, prompt: "Type or place")
             .navigationTitle("History (\(filteredEntries.count))")
+            .alert("Delete Record?", isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ), presenting: pendingDelete) { entry in
+                Button("Delete", role: .destructive) {
+                    deleteEntry(entry)
+                    pendingDelete = nil
+                }
+                Button("Cancel", role: .cancel) { pendingDelete = nil }
+            } message: { entry in
+                Text(RecordDeleteCopy.message(recordType: entry.recordType))
+            }
         }
     }
 }

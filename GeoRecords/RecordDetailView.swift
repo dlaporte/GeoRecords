@@ -7,6 +7,14 @@ import Photos
 
 /// Deletes a record and all related records (same photo/timestamp) from Core Data
 /// Also updates daily statistics for the affected day
+/// The one delete confirmation, shared by every detail host and the History list
+enum RecordDeleteCopy {
+    static func message(recordType: String?) -> String {
+        let what = recordType.map { "\($0) record" } ?? "record"
+        return "Are you sure you want to delete this \(what)? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone."
+    }
+}
+
 /// - Parameters:
 ///   - record: The record to delete
 ///   - recordManager: The record manager to update
@@ -172,7 +180,7 @@ struct RecordDetailPager: View {
                 }
             }
         } message: {
-            Text("Are you sure you want to delete this \(currentRecord?.recordType ?? "record")? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
+            Text(RecordDeleteCopy.message(recordType: currentRecord?.recordType))
         }
     }
 
@@ -205,7 +213,7 @@ private struct RecordDetailContent: View {
                 onDelete()
             }
         } message: {
-            Text("Are you sure you want to delete this \(record.recordType) record? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
+            Text(RecordDeleteCopy.message(recordType: record.recordType))
         }
     }
 
@@ -260,7 +268,7 @@ struct RecordDetailView: View {
                 deleteRecord()
             }
         } message: {
-            Text("Are you sure you want to delete this \(record.recordType) record? This also removes the monthly, yearly, and lifetime entries saved from the same moment. This action cannot be undone.")
+            Text(RecordDeleteCopy.message(recordType: record.recordType))
         }
     }
 

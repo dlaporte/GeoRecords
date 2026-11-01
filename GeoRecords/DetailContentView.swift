@@ -145,6 +145,20 @@ struct DetailContentView: View {
                 FullScreenPhotoView(image: image, isPresented: $showFullScreenPhoto)
             }
         }
+        .toolbar {
+            // Merges with each host's own toolbar (Records pager, Maps, History)
+            if !isRegionRecord {
+                ToolbarItem(placement: .primaryAction) {
+                    ShareLink(
+                        item: RecordShareItem(record: record, unitSystem: settings.unitSystem,
+                                              homeCoordinate: settings.homeCoordinate),
+                        preview: SharePreview("\(record.recordType) record", image: Image(systemName: recordIcon))
+                    ) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Photo Loading

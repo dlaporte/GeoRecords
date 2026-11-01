@@ -915,6 +915,13 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         return distanceBetween(from: location.coordinate, to: homeCoord)
     }
     
+    /// "69.6492° N at Tromsø, Norway", or the value alone when the place is unknown
+    /// (geocoding stores "" while throttled and a placeholder on failure)
+    nonisolated static func recordNotificationBody(value: String, locationName: String?) -> String {
+        guard let name = locationName, !name.isEmpty, name != unknownLocationString else { return value }
+        return "\(value) at \(name)"
+    }
+
     // MARK: - Send Notification with Deep Link Info
     func sendRecordNotification(recordType: String, detail: RecordDetail) {
         // Check notification authorization before attempting to send
@@ -935,7 +942,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             // Updated notification: Split text into title and body for better wrapping.
             // Include the timeframe so simultaneous monthly/yearly/lifetime records read as distinct.
             content.title = "You've set a new \(detail.timeFrame.rawValue.lowercased()) \(recordType) record"
-            content.body = "(\(formattedValue))"
+            content.body = Self.recordNotificationBody(value: formattedValue, locationName: detail.locationName)
             content.sound = .default
 
             content.userInfo = ["recordType": recordType, "timeFrame": detail.timeFrame.rawValue]

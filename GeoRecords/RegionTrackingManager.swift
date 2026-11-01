@@ -941,8 +941,10 @@ class RegionTrackingManager: ObservableObject {
 
         debugLog("📍 RegionTrackingManager: Created new region record for \(name) (\(recordTypeString))")
 
-        // Send notification (unless suppressed)
+        // Send notification (unless suppressed). Counts are refreshed first so the
+        // body can say "15 of 50 states" including this one.
         if !suppressNotifications && SettingsManager.shared.notifyOnNewRegion {
+            loadVisitedRegions()
             sendNewRegionNotification(name: name, type: type)
         }
 
@@ -1043,8 +1045,9 @@ class RegionTrackingManager: ObservableObject {
 
         debugLog("📍 RegionTrackingManager: Created new continent record for \(continent)")
 
-        // Send notification (unless suppressed)
+        // Send notification (unless suppressed), with counts refreshed first
         if !suppressNotifications && SettingsManager.shared.notifyOnNewRegion {
+            loadVisitedRegions()
             sendNewContinentNotification(name: continent)
         }
 
@@ -1094,8 +1097,20 @@ class RegionTrackingManager: ObservableObject {
         return seen.values.sorted { $0.timestamp < $1.timestamp }
     }
 
-    /// Send a notification when entering a new region
+    /// "Welcome to Nevada. That's 15 of 50 states."
+    nonisolated static func newRegionBody(name: String, count: Int, total: Int, kind: String) -> String {
+        "Welcome to \(name). That's \(count) of \(total) \(kind)."
+    }
+
+    /// Send a notification when entering a new region. The count is read here, on
+    /// the main actor, after `loadVisitedRegions()` has run for the new row.
     private func sendNewRegionNotification(name: String, type: RegionType) {
+        let body: String
+        switch type {
+        case .state: body = Self.newRegionBody(name: name, count: stateCount, total: 50, kind: "states")
+        case .country: body = Self.newRegionBody(name: name, count: countryCount, total: 195, kind: "countries")
+        }
+
         Task {
             let center = UNUserNotificationCenter.current()
             let settings = await center.notificationSettings()
@@ -1110,11 +1125,10 @@ class RegionTrackingManager: ObservableObject {
             switch type {
             case .state:
                 content.title = "New State Visited!"
-                content.body = "Welcome to \(name)"
             case .country:
                 content.title = "New Country Visited!"
-                content.body = "Welcome to \(name)"
             }
+            content.body = body
 
             content.sound = .default
             content.categoryIdentifier = "NEW_REGION"
@@ -1141,6 +1155,8 @@ class RegionTrackingManager: ObservableObject {
 
     /// Send a notification when entering a new continent
     private func sendNewContinentNotification(name: String) {
+        let body = Self.newRegionBody(name: name, count: continentCount, total: 7, kind: "continents")
+
         Task {
             let center = UNUserNotificationCenter.current()
             let settings = await center.notificationSettings()
@@ -1152,7 +1168,7 @@ class RegionTrackingManager: ObservableObject {
 
             let content = UNMutableNotificationContent()
             content.title = "New Continent Visited!"
-            content.body = "Welcome to \(name)"
+            content.body = body
             content.sound = .default
             content.categoryIdentifier = "NEW_REGION"
             // Deep link to the continents section of the Regions tab

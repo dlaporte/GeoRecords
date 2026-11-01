@@ -28,6 +28,9 @@ struct SettingsView: View {
     @State private var showImportResult = false
     @State private var importResultMessage = ""
     @State private var importSucceeded = false
+    @State private var showImportConfirm = false
+    @State private var pendingBackupURL: URL?
+    @State private var pendingBackupInfo: (recordCount: Int, regionCount: Int, exportDate: Date, deviceName: String)?
     @State private var isExporting = false
     @State private var notificationPermissionStatus: UNAuthorizationStatus = .notDetermined
 
@@ -537,23 +540,16 @@ struct SettingsView: View {
                 case .success(let urls):
                     guard let url = urls.first else { return }
 
-                    // Need to access security-scoped resource
-                    guard url.startAccessingSecurityScopedResource() else {
+                    // Copy while the picker's security scope is still valid, then
+                    // confirm like the other restore paths do
+                    do {
+                        let staged = try BackupManager.stageImportedFile(from: url)
+                        pendingBackupURL = staged
+                        pendingBackupInfo = BackupManager.shared.getBackupInfo(from: staged)
+                        showImportConfirm = true
+                    } catch {
                         importSucceeded = false
-                        importResultMessage = "Could not access the selected file."
-                        showImportResult = true
-                        return
-                    }
-                    defer { url.stopAccessingSecurityScopedResource() }
-
-                    Task {
-                        if let result = await BackupManager.shared.importBackup(from: url) {
-                            importSucceeded = true
-                            importResultMessage = BackupManager.importResultMessage(for: result)
-                        } else {
-                            importSucceeded = false
-                            importResultMessage = "Failed to import backup. The file may be corrupted or incompatible."
-                        }
+                        importResultMessage = "Could not read the selected file: \(error.localizedDescription)"
                         showImportResult = true
                     }
                 case .failure(let error):
@@ -567,12 +563,42 @@ struct SettingsView: View {
             } message: {
                 Text("Failed to create backup. Please try again.")
             }
+            .alert("Restore from Backup?", isPresented: $showImportConfirm) {
+                Button("Restore") { performBackupImport() }
+                Button("Cancel", role: .cancel) { discardPendingBackup() }
+            } message: {
+                Text(BackupManager.restoreConfirmationMessage(for: pendingBackupInfo))
+            }
             .alert(BackupManager.importAlertTitle(succeeded: importSucceeded), isPresented: $showImportResult) {
                 Button("OK") {}
             } message: {
                 Text(importResultMessage)
             }
         }
+    }
+
+    private func performBackupImport() {
+        guard let url = pendingBackupURL else { return }
+
+        Task {
+            if let result = await BackupManager.shared.importBackup(from: url) {
+                importSucceeded = true
+                importResultMessage = BackupManager.importResultMessage(for: result)
+            } else {
+                importSucceeded = false
+                importResultMessage = "Failed to import backup. The file may be corrupted or incompatible."
+            }
+            showImportResult = true
+            discardPendingBackup()
+        }
+    }
+
+    private func discardPendingBackup() {
+        if let url = pendingBackupURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        pendingBackupURL = nil
+        pendingBackupInfo = nil
     }
 
     private func requestPhotoAccess() {

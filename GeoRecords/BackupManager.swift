@@ -396,6 +396,42 @@ class BackupManager {
         succeeded ? "Import Complete" : "Import Failed"
     }
 
+    /// Copies a user-picked backup into a private temp file while the picker's
+    /// security scope is still held, so the import can read it later (reading the
+    /// original after the scope ends fails for iCloud Drive files). Caller removes it.
+    nonisolated static func stageImportedFile(from url: URL) throws -> URL {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let staged = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("georecords")
+        try FileManager.default.copyItem(at: url, to: staged)
+        return staged
+    }
+
+    /// Body of the "Restore from Backup?" confirmation
+    nonisolated static func restoreConfirmationMessage(
+        for info: (recordCount: Int, regionCount: Int, exportDate: Date, deviceName: String)?
+    ) -> String {
+        guard let info = info else { return "Restore from this backup file? This replaces the records on this device." }
+
+        var contents: [String] = []
+        if info.recordCount > 0 {
+            contents.append("\(info.recordCount) record\(info.recordCount == 1 ? "" : "s")")
+        }
+        if info.regionCount > 0 {
+            contents.append("\(info.regionCount) visited region\(info.regionCount == 1 ? "" : "s")")
+        }
+        let contentsString = contents.isEmpty ? "no data" : contents.joined(separator: " and ")
+        let dateString = info.exportDate.formatted(date: .abbreviated, time: .shortened)
+        return "This backup contains \(contentsString) from \(info.deviceName), exported on \(dateString). Restoring replaces the records on this device."
+    }
+
     /// Builds the user-facing summary for a completed restore.
     /// Centralized here so the three restore entry points (Settings, ContentView, NoRecordsView)
     /// report results identically, including partial failures.

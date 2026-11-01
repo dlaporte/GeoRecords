@@ -283,7 +283,7 @@ struct ContentView: View {
             PhotoPicker(
                 recordType: pending.type,
                 onPhotoSelected: { photoData in
-                    recordManager.attachPhotoToRecord(recordType: pending.type, photoData: photoData)
+                    recordManager.attachPhoto(to: pending.detail, photoData: photoData)
                 },
                 onDismiss: {
                     recordManager.showPhotoPrompt = false

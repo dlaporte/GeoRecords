@@ -952,15 +952,32 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
     }
     
     // MARK: - Photo Attachment
+
+    /// Attach a photo to the record that triggered the prompt — by id, not by slot.
+    /// A confirmed pending region (Nevada from a 2022 photo) is not the record in
+    /// the in-memory "New State" slot, so writing by slot put the photo on whichever
+    /// state happened to be current.
+    func attachPhoto(to detail: RecordDetail, photoData: Data?) {
+        RecordHistoryManager.shared.updateRecordPhoto(recordId: detail.id, photoData: photoData)
+
+        if let type = RecordType.from(string: detail.recordType), type.isRegionVisit {
+            RegionTrackingManager.shared.loadVisitedRegions()
+            return
+        }
+
+        // Mirror into whichever in-memory slots hold this same record
+        for timeFrame in TimeFrame.allCases {
+            if var slot = getRecord(type: detail.recordType, timeFrame: timeFrame), slot.id == detail.id {
+                slot.photoData = photoData
+                setRecord(type: detail.recordType, timeFrame: timeFrame, record: slot)
+            }
+        }
+    }
+
+    /// Slot-based variant kept for the RecordManaging protocol; prefer attachPhoto(to:)
     func attachPhotoToRecord(recordType: String, photoData: Data?) {
-        // Only all-time records can have photos (since we only prompt for all-time records)
-        guard var record = getRecord(type: recordType, timeFrame: .allTime) else { return }
-
-        record.photoData = photoData
-        setRecord(type: recordType, timeFrame: .allTime, record: record)
-
-        // Update Core Data with photo
-        RecordHistoryManager.shared.updateRecordPhoto(recordId: record.id, photoData: photoData)
+        guard let record = getRecord(type: recordType, timeFrame: .allTime) else { return }
+        attachPhoto(to: record, photoData: photoData)
     }
 
     // MARK: - Trigger Photo Prompt

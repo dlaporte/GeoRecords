@@ -138,11 +138,14 @@ class RegionTrackingManager: ObservableObject {
         let pending = pendingRegions.remove(at: index)
         persistPendingRegions()
 
+        // The user just tapped confirm: no "New State Visited!" banner (nor the
+        // chained country/continent ones) for an action they performed themselves
         recordVisit(
             coordinate: CLLocationCoordinate2D(latitude: pending.latitude, longitude: pending.longitude),
             date: pending.date,
             source: .photo,
-            altitude: pending.altitude
+            altitude: pending.altitude,
+            suppressNotifications: true
         )
     }
 
@@ -160,7 +163,8 @@ class RegionTrackingManager: ObservableObject {
     ///   - coordinate: The location
     ///   - date: When the visit occurred
     ///   - source: How the visit was recorded (photo, location, manual)
-    func recordVisit(coordinate: CLLocationCoordinate2D, date: Date, source: VisitSource, altitude: Double? = nil) {
+    ///   - suppressNotifications: Skip the new-region banners (user-initiated confirmations)
+    func recordVisit(coordinate: CLLocationCoordinate2D, date: Date, source: VisitSource, altitude: Double? = nil, suppressNotifications: Bool = false) {
         // Data-restore gate: no region records until the user completes a restore path
         guard !SettingsManager.shared.needsDataRestore else { return }
 
@@ -194,6 +198,7 @@ class RegionTrackingManager: ObservableObject {
             date: date,
             coordinate: coordinate,
             altitude: alt,
+            suppressNotifications: suppressNotifications,
             source: source
         )
 

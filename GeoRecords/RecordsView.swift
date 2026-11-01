@@ -522,7 +522,7 @@ struct RecordCardView: View {
                             Text("Coordinates")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text(FormatUtils.formatCoordinates(record.coordinate))
+                            Text(FormatUtils.formatCoordinatesWithCardinals(record.coordinate))
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }

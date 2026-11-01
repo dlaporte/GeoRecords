@@ -92,7 +92,7 @@ struct SettingsView: View {
                                         .multilineTextAlignment(.trailing)
                                 }
                                 if let coord = settings.homeCoordinate {
-                                    Text("(\(coord.latitude, specifier: "%.4f"), \(coord.longitude, specifier: "%.4f"))")
+                                    Text(FormatUtils.formatCoordinatesWithCardinals(coord))
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 } else {

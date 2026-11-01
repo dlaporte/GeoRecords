@@ -206,7 +206,7 @@ enum FormatUtils {
 
         switch type {
         case .north, .south, .east, .west:
-            return String(format: "%.4f°", value)
+            return "\(String(format: "%.4f", abs(value)))° \(hemisphere(for: type, value: value))"
 
         case .up:
             // Value is stored in meters
@@ -229,6 +229,42 @@ enum FormatUtils {
             let date = Date(timeIntervalSince1970: value)
             return numericDateFormatter.string(from: date)
         }
+    }
+
+    /// "N"/"S" for the latitude types, "E"/"W" for the longitude types, by sign
+    static func hemisphere(for type: RecordType, value: Double) -> String {
+        switch type {
+        case .north, .south: return value >= 0 ? "N" : "S"
+        case .east, .west: return value >= 0 ? "E" : "W"
+        default: return ""
+        }
+    }
+
+    /// A record value as Siri should say it: "69.65 degrees north", "1,000 feet",
+    /// "300 miles". The display form ("69.6492° N") reads the letter aloud.
+    static func spokenValue(_ value: Double, recordType: String, unitSystem: UnitSystem) -> String {
+        guard let type = RecordType.from(string: recordType) else { return "\(value)" }
+
+        switch type {
+        case .north, .south:
+            return String(format: "%.2f degrees %@", abs(value), value >= 0 ? "north" : "south")
+        case .east, .west:
+            return String(format: "%.2f degrees %@", abs(value), value >= 0 ? "east" : "west")
+        case .up:
+            return unitSystem == .imperial
+                ? spokenCount(value * metersToFeet, singular: "foot", plural: "feet")
+                : spokenCount(value, singular: "meter", plural: "meters")
+        case .fromHome:
+            return unitSystem == .imperial
+                ? spokenCount(value / metersPerMile, singular: "mile", plural: "miles")
+                : spokenCount(value / metersPerKm, singular: "kilometer", plural: "kilometers")
+        case .state, .country, .continent:
+            return formatValue(value: value, recordType: recordType, unitSystem: unitSystem)
+        }
+    }
+
+    private static func spokenCount(_ amount: Double, singular: String, plural: String) -> String {
+        "\(formatWholeNumber(amount)) \(amount.rounded() == 1 ? singular : plural)"
     }
 
     // MARK: - Distance Formatting
@@ -326,7 +362,7 @@ enum FormatUtils {
 
         switch type {
         case .north, .south, .east, .west:
-            return String(format: "%.\(coordinatePrecision)f°", value)
+            return "\(String(format: "%.\(coordinatePrecision)f", abs(value)))° \(hemisphere(for: type, value: value))"
 
         case .up:
             if unitSystem == .imperial {

@@ -15,51 +15,11 @@ import UIKit
 
 // MARK: - Constants
 
-/// Conversion constants for unit display
-private enum UnitConversion {
-    static let metersToFeet = 3.28084
-    static let metersToMiles = 1.0 / 1609.344
-    static let metersToKilometers = 1.0 / 1000.0
-}
-
-/// Shared value formatter for widget display
-// MARK: - Locale-Aware Number Formatting
-
-private let wholeNumberFormatter: NumberFormatter = {
-    let formatter = NumberFormatter()
-    formatter.numberStyle = .decimal
-    formatter.maximumFractionDigits = 0
-    formatter.minimumFractionDigits = 0
-    return formatter
-}()
-
-private func formatWholeNumber(_ value: Double) -> String {
-    wholeNumberFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.0f", value)
-}
-
+/// Record values use the app's formatter (FormatUtils.swift is compiled into this
+/// target), so the widget and the app always show the same string
 private func formatRecordValue(_ value: Double, recordType: String, unitSystem: String) -> String {
-    guard let type = WidgetRecordType.from(string: recordType) else {
-        return "\(value)"
-    }
-
-    switch type {
-    case .north, .south, .east, .west:
-        return String(format: "%.4f°", value)
-    case .up:
-        if unitSystem == "imperial" {
-            return "\(formatWholeNumber(value * UnitConversion.metersToFeet)) ft"
-        } else {
-            return "\(formatWholeNumber(value)) m"
-        }
-    case .fromHome:
-        // Whole numbers to match FormatUtils.formatValue in the main app
-        // (decimals: 0 there) — the widget and app must show the same value
-        if unitSystem == "imperial" {
-            return "\(formatWholeNumber(value * UnitConversion.metersToMiles)) mi"
-        } else {
-            return "\(formatWholeNumber(value * UnitConversion.metersToKilometers)) km"
-        }
-    }
+    FormatUtils.formatValue(value: value, recordType: recordType,
+                            unitSystem: unitSystem == "metric" ? .metric : .imperial)
 }
 
 // MARK: - Shared Constants
@@ -1755,10 +1715,10 @@ struct RegionMapWidget: Widget {
     RecordsEntry(
         date: .now,
         records: [
-            WidgetRecordData(type: "Furthest North", value: "45.5231°", location: "Portland, OR", timestamp: .now),
-            WidgetRecordData(type: "Furthest South", value: "25.7617°", location: "Miami, FL", timestamp: .now),
-            WidgetRecordData(type: "Furthest East", value: "122.6765°", location: "Seattle, WA", timestamp: .now),
-            WidgetRecordData(type: "Furthest West", value: "158.0001°", location: "Honolulu, HI", timestamp: .now)
+            WidgetRecordData(type: "Furthest North", value: "45.5231° N", location: "Portland, OR", timestamp: .now),
+            WidgetRecordData(type: "Furthest South", value: "25.7617° N", location: "Miami, FL", timestamp: .now),
+            WidgetRecordData(type: "Furthest East", value: "122.6765° W", location: "Seattle, WA", timestamp: .now),
+            WidgetRecordData(type: "Furthest West", value: "158.0001° W", location: "Honolulu, HI", timestamp: .now)
         ],
         configuration: GeoRecordsWidgetIntent()
     )
@@ -1770,10 +1730,10 @@ struct RegionMapWidget: Widget {
     RecordsEntry(
         date: .now,
         records: [
-            WidgetRecordData(type: "Furthest North", value: "45.5231°", location: "Portland, OR", timestamp: .now),
-            WidgetRecordData(type: "Furthest South", value: "25.7617°", location: "Miami, FL", timestamp: .now),
-            WidgetRecordData(type: "Furthest East", value: "122.6765°", location: "Seattle, WA", timestamp: .now),
-            WidgetRecordData(type: "Furthest West", value: "158.0001°", location: "Honolulu, HI", timestamp: .now),
+            WidgetRecordData(type: "Furthest North", value: "45.5231° N", location: "Portland, OR", timestamp: .now),
+            WidgetRecordData(type: "Furthest South", value: "25.7617° N", location: "Miami, FL", timestamp: .now),
+            WidgetRecordData(type: "Furthest East", value: "122.6765° W", location: "Seattle, WA", timestamp: .now),
+            WidgetRecordData(type: "Furthest West", value: "158.0001° W", location: "Honolulu, HI", timestamp: .now),
             WidgetRecordData(type: "Furthest Up", value: "14,505 ft", location: "Mt. Whitney, CA", timestamp: .now)
         ],
         configuration: GeoRecordsWidgetIntent()

@@ -201,7 +201,7 @@ struct HomeLocationStepView: View {
                             .fontWeight(.semibold)
                             .multilineTextAlignment(.center)
                     }
-                    Text(FormatUtils.formatCoordinates(coord))
+                    Text(FormatUtils.formatCoordinatesWithCardinals(coord))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }

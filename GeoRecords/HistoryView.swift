@@ -240,7 +240,9 @@ struct CompactHistoryRow: View {
             }
             return name
         }
-        return FormatUtils.formatCoordinates(entry.latitude, entry.longitude)
+        return FormatUtils.formatCoordinatesWithCardinals(
+            CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude)
+        )
     }
 
     private var formattedDate: String {

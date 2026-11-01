@@ -77,7 +77,7 @@ struct DetailContentView: View {
     }
 
     private var formattedCoordinates: String {
-        FormatUtils.formatCoordinates(record.coordinate)
+        FormatUtils.formatCoordinatesWithCardinals(record.coordinate)
     }
 
     private var locationName: String {

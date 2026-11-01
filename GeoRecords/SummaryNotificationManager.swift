@@ -58,7 +58,8 @@ class SummaryNotificationManager: ObservableObject {
         monthlyContent.title = "Monthly Summary"
         monthlyContent.body = "Your monthly travel summary is ready — see which records you set!"
         monthlyContent.sound = .default
-        monthlyContent.userInfo = ["deepLink": "stats"]
+        // Repeating trigger can't know which month it fires for — resolved at tap time
+        monthlyContent.userInfo = ["deepLink": "stats", "statsPeriod": "previousMonth"]
 
         center.add(UNNotificationRequest(
             identifier: NotificationIdentifier.monthlySummaryFallback,
@@ -76,7 +77,7 @@ class SummaryNotificationManager: ObservableObject {
         yearlyContent.title = "Year in Review"
         yearlyContent.body = "Your yearly travel summary is ready — see every record you set!"
         yearlyContent.sound = .default
-        yearlyContent.userInfo = ["deepLink": "stats"]
+        yearlyContent.userInfo = ["deepLink": "stats", "statsPeriod": "previousYear"]
 
         center.add(UNNotificationRequest(
             identifier: NotificationIdentifier.yearlySummaryFallback,
@@ -99,12 +100,19 @@ class SummaryNotificationManager: ObservableObject {
         let fireDate = trigger.nextTriggerDate() ?? Date()
         let summaryMonth = Calendar.current.date(byAdding: .month, value: -1, to: fireDate) ?? fireDate
         let monthName = summaryMonth.formatted(.dateTime.month(.wide))
+        let summaryComponents = Calendar.current.dateComponents([.year, .month], from: summaryMonth)
 
         let content = UNMutableNotificationContent()
         content.title = "\(monthName) Summary"
         content.body = "Your \(monthName) travel summary is ready — see which records you set!"
         content.sound = .default
-        content.userInfo = ["deepLink": "stats"]  // Deep link to stats page
+        // Deep link to the stats page showing the month this summary is about
+        var userInfo: [String: Any] = ["deepLink": "stats"]
+        if let year = summaryComponents.year, let month = summaryComponents.month {
+            userInfo["statsYear"] = year
+            userInfo["statsMonth"] = month
+        }
+        content.userInfo = userInfo
 
         let request = UNNotificationRequest(identifier: NotificationIdentifier.monthlySummary, content: content, trigger: trigger)
 
@@ -134,7 +142,8 @@ class SummaryNotificationManager: ObservableObject {
         content.title = "\(summaryYear) Year in Review"
         content.body = "Your \(summaryYear) travel summary is ready — see every record you set!"
         content.sound = .default
-        content.userInfo = ["deepLink": "stats"]  // Deep link to stats page
+        // Deep link to the stats page showing the year this summary is about
+        content.userInfo = ["deepLink": "stats", "statsYear": summaryYear]
 
         let request = UNNotificationRequest(identifier: NotificationIdentifier.yearlySummary, content: content, trigger: trigger)
 

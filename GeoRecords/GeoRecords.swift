@@ -6,6 +6,7 @@ class DeepLinkManager: ObservableObject {
     static let shared = DeepLinkManager()
     @Published var recordType: String? = nil
     @Published var navigateToStats = false
+    @Published var statsPeriod: StatsDeepLinkPeriod? = nil  // Period a summary notification promises
     @Published var pendingBackupURL: URL? = nil  // For incoming backup files
     @Published var navigateToRegions: String? = nil  // "states", "countries", or "continents"
     @Published var navigateToRecordsTimeFrame: TimeFrame? = nil
@@ -51,9 +52,18 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             Task { @MainActor in
                 switch deepLink {
                 case "stats":
+                    // Summary notifications say which period they're about;
+                    // without one, Stats opens on its default (Lifetime)
+                    DeepLinkManager.shared.statsPeriod = StatsDeepLinkPeriod.resolve(
+                        period: userInfo["statsPeriod"] as? String,
+                        year: userInfo["statsYear"] as? Int,
+                        month: userInfo["statsMonth"] as? Int
+                    )
                     DeepLinkManager.shared.navigateToStats = true
                 case "regions":
-                    DeepLinkManager.shared.navigateToRegions = "countries"
+                    // Region notifications say which section they're about;
+                    // the photo catch-up digest doesn't, so default to countries
+                    DeepLinkManager.shared.navigateToRegions = (userInfo["regionSection"] as? String) ?? "countries"
                 case "records":
                     DeepLinkManager.shared.navigateToRecordsTab = true
                 default:

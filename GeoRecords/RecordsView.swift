@@ -281,11 +281,14 @@ struct RecordsView: View {
         // Handle record type deep link from notifications
         guard let recordType = deepLinkManager.recordType else { return }
 
-        // Deep links from notifications - find the record in allRecords
+        // Deep links from notifications - find the record in allRecords.
+        // Consume the link either way: a record that no longer exists (e.g. a
+        // monthly record after the month rolled over) must not leave a stale
+        // link that pops open an unrelated detail view on a later visit
+        deepLinkManager.recordType = nil
         if let index = allRecords.firstIndex(where: { $0.recordType == recordType }) {
             selectedRecordIndex = index
             navigateToDetail = true
-            deepLinkManager.recordType = nil
         }
     }
 

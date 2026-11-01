@@ -114,9 +114,12 @@ private func shouldShowXAxisLabel(for value: AxisValue, dataCount: Int, timeFram
 
 struct StatisticsView: View {
     @EnvironmentObject var settings: SettingsManager
+    @EnvironmentObject var deepLinkManager: DeepLinkManager
     @State private var selectedTimeFrame: TimeFrame = .allTime
     @State private var selectedYear: Int?
     @State private var availableYears: [Int] = []
+    @State private var selectedMonth: MonthSelection?  // Past-month browsing (e.g. from the monthly summary notification)
+    @State private var availableMonths: [MonthSelection] = []
     @State private var dailyRecordsCache: [Int: [RecordHistoryEntry]] = [:]  // Day -> Records
     @State private var monthlyAggregates: [MonthlyAggregate] = []
     @State private var yearlyAggregates: [YearlyAggregate] = []
@@ -132,9 +135,9 @@ struct StatisticsView: View {
                     TimeFramePickerWithBadges(
                         selectedTimeFrame: $selectedTimeFrame,
                         selectedYear: $selectedYear,
-                        selectedMonth: .constant(nil),
+                        selectedMonth: $selectedMonth,
                         availableYears: availableYears,
-                        availableMonths: [],
+                        availableMonths: availableMonths,
                         timeFrameLabel: { timeFrame in
                             switch timeFrame {
                             case .allTime:
@@ -144,7 +147,8 @@ struct StatisticsView: View {
                                     return String(format: "%d", year)
                                 }
                                 return "This Year"
-                            case .month: return "This Month"
+                            case .month:
+                                return selectedMonth?.displayName ?? "This Month"
                             case .daily: return "Daily"  // Not shown in UI
                             }
                         }
@@ -244,13 +248,17 @@ struct StatisticsView: View {
             }
             .navigationTitle("Statistics")
             .onAppear {
-                // Reset year selection when returning to this tab
+                // Reset historical selections when returning to this tab
                 selectedYear = nil
+                selectedMonth = nil
 
-                // Clean up old daily records (older than current month)
+                // Clean up old daily records (keeps current + previous month)
                 RecordHistoryManager.shared.cleanupOldDailyRecords()
 
                 loadAvailableYears()
+                loadAvailableMonths()
+                // After the resets: a pending summary-notification period wins
+                applyPendingStatsPeriod()
                 loadStatistics()
 
                 // Check geocoding status and trigger if needed
@@ -267,18 +275,35 @@ struct StatisticsView: View {
                 }
             }
             .onChange(of: selectedTimeFrame) { _, newValue in
-                // Reset year selection when switching away from This Year
+                // Reset historical selections when switching away from their timeframe
                 if newValue != .year {
                     selectedYear = nil
+                }
+                if newValue != .month {
+                    selectedMonth = nil
                 }
                 loadStatistics()
             }
             .onChange(of: selectedYear) { _, _ in
                 loadStatistics()
             }
+            .onChange(of: selectedMonth) { _, _ in
+                loadStatistics()
+            }
+            .onChange(of: deepLinkManager.statsPeriod) { _, _ in
+                // Summary notification tapped while the Stats tab is already up
+                applyPendingStatsPeriod()
+            }
+            .task(id: deepLinkManager.statsPeriod) {
+                // Also handle via task to catch cases where onChange doesn't fire
+                if deepLinkManager.statsPeriod != nil {
+                    applyPendingStatsPeriod()
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .statisticsDidChange)) { _ in
                 // Reload statistics when data changes (e.g., record deleted)
                 loadAvailableYears()
+                loadAvailableMonths()
                 loadStatistics()
             }
         }
@@ -291,6 +316,38 @@ struct StatisticsView: View {
         availableYears = RecordHistoryManager.shared.getAvailableYears()
     }
 
+    /// Months with surviving daily rows (current month excluded) — with the
+    /// retention policy this is at most the previous month
+    private func loadAvailableMonths() {
+        availableMonths = RecordHistoryManager.shared.getAvailableDailyMonths()
+    }
+
+    /// Jump to the period a tapped summary notification promised (the month or
+    /// year that just ended). Falls back to the default view when that period's
+    /// data no longer exists (e.g. a stale notification tapped weeks later).
+    private func applyPendingStatsPeriod() {
+        guard let period = deepLinkManager.statsPeriod else { return }
+        deepLinkManager.statsPeriod = nil
+        loadAvailableMonths()  // May be stale when arriving via onChange, and it gates the fallback
+
+        switch period {
+        case .month(let month):
+            selectedTimeFrame = .month
+            if month == MonthSelection.containing(Date()) {
+                selectedMonth = nil  // "This Month" already shows it
+            } else if availableMonths.contains(month) {
+                selectedMonth = month
+            } else {
+                selectedMonth = nil
+                debugLog("📊 Stats deep link: no daily data left for \(month.displayName), showing current month")
+            }
+        case .year(let year):
+            selectedTimeFrame = .year
+            selectedYear = availableYears.contains(year) ? year : nil
+        }
+        loadStatistics()
+    }
+
     private func loadStatistics() {
         isLoading = true
 
@@ -299,8 +356,12 @@ struct StatisticsView: View {
 
             switch selectedTimeFrame {
             case .month:
-                // Current month uses daily records for day-by-day granularity
-                dailyRecordsCache = historyManager.getDailyRecordsForCurrentMonth()
+                // Day-by-day granularity; selectedMonth browses the previous month
+                if let month = selectedMonth {
+                    dailyRecordsCache = historyManager.getDailyRecords(for: month)
+                } else {
+                    dailyRecordsCache = historyManager.getDailyRecordsForCurrentMonth()
+                }
                 monthlyAggregates = []
                 yearlyAggregates = []
                 monthlyAggregatesCache = [:]
@@ -383,6 +444,9 @@ struct StatisticsView: View {
     private func getFurthestRecord(type: String) -> (value: Double, locationName: String?)? {
         if selectedTimeFrame == .year, let year = selectedYear {
             return RecordHistoryManager.shared.getFurthestRecordForYear(type: type, year: year)
+        }
+        if selectedTimeFrame == .month, let month = selectedMonth {
+            return RecordHistoryManager.shared.getFurthestRecordForMonth(type: type, month: month)
         }
         return RecordHistoryManager.shared.getFurthestRecord(type: type, timeFrame: selectedTimeFrame)
     }
@@ -529,12 +593,13 @@ struct StatisticsView: View {
         switch selectedTimeFrame {
         case .month:
             let calendar = Calendar.current
-            let now = Date()
+            // Anchor to the browsed month (summary notification) or the current one
+            let anchor = selectedMonth?.startDate ?? Date()
 
             // Get month range using DateUtilities with fallback
-            guard let (monthStart, _) = calendar.currentMonthRange(for: now),
-                  let monthRange = calendar.range(of: .day, in: .month, for: now) else {
-                debugLog("⚠️ Failed to calculate current month range, returning empty chart data")
+            guard let (monthStart, _) = calendar.currentMonthRange(for: anchor),
+                  let monthRange = calendar.range(of: .day, in: .month, for: anchor) else {
+                debugLog("⚠️ Failed to calculate month range, returning empty chart data")
                 return []
             }
 
@@ -618,12 +683,13 @@ struct StatisticsView: View {
         switch selectedTimeFrame {
         case .month:
             let calendar = Calendar.current
-            let now = Date()
+            // Anchor to the browsed month (summary notification) or the current one
+            let anchor = selectedMonth?.startDate ?? Date()
 
             // Get month range using DateUtilities with fallback
-            guard let (monthStart, _) = calendar.currentMonthRange(for: now),
-                  let monthRange = calendar.range(of: .day, in: .month, for: now) else {
-                debugLog("⚠️ Failed to calculate current month range, returning empty chart data")
+            guard let (monthStart, _) = calendar.currentMonthRange(for: anchor),
+                  let monthRange = calendar.range(of: .day, in: .month, for: anchor) else {
+                debugLog("⚠️ Failed to calculate month range, returning empty chart data")
                 return []
             }
 

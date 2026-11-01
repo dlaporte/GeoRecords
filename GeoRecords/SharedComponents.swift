@@ -203,6 +203,52 @@ struct MonthSelection: Hashable {
         guard let date = startDate else { return "\(year)-\(month)" }
         return date.formatted(.dateTime.month(.abbreviated).year())
     }
+
+    /// The month containing the given date
+    static func containing(_ date: Date) -> MonthSelection? {
+        let components = Calendar.current.dateComponents([.year, .month], from: date)
+        guard let year = components.year, let month = components.month else { return nil }
+        return MonthSelection(year: year, month: month)
+    }
+}
+
+/// The stats period a summary notification promises to show.
+/// Precise notifications embed the concrete year/month at scheduling time; the
+/// repeating fallback notifications can only say "previousMonth"/"previousYear",
+/// which resolve relative to when the user taps.
+enum StatsDeepLinkPeriod: Equatable {
+    case month(MonthSelection)
+    case year(Int)
+
+    static func resolve(period: String?, year: Int?, month: Int?, now: Date = Date()) -> StatsDeepLinkPeriod? {
+        if let month {
+            guard (1...12).contains(month), let year else { return nil }
+            return .month(MonthSelection(year: year, month: month))
+        }
+        if let year {
+            return .year(year)
+        }
+
+        let calendar = Calendar.current
+        switch period {
+        case "previousMonth":
+            guard let previous = calendar.date(byAdding: .month, value: -1, to: now) else { return nil }
+            return MonthSelection.containing(previous).map { .month($0) }
+        case "previousYear":
+            return .year(calendar.component(.year, from: now) - 1)
+        default:
+            return nil
+        }
+    }
+}
+
+/// Cutoff for keeping daily stat rows: the start of the PREVIOUS month.
+/// The monthly summary notification on the 1st links to the month that just
+/// ended, so that month's day-by-day data must survive its cleanup.
+func dailyStatsRetentionCutoff(for date: Date = Date()) -> Date? {
+    let calendar = Calendar.current
+    guard let monthStart = calendar.dateInterval(of: .month, for: date)?.start else { return nil }
+    return calendar.date(byAdding: .month, value: -1, to: monthStart)
 }
 
 /// Segmented timeframe picker shared by RecordsView and StatisticsView.

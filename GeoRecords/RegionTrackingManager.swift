@@ -1107,6 +1107,11 @@ class RegionTrackingManager: ObservableObject {
 
             content.sound = .default
             content.categoryIdentifier = "NEW_REGION"
+            // Deep link to the matching section of the Regions tab
+            content.userInfo = [
+                "deepLink": "regions",
+                "regionSection": type == .state ? "states" : "countries"
+            ]
 
             let request = UNNotificationRequest(
                 identifier: "new-region-\(UUID().uuidString)",
@@ -1139,6 +1144,8 @@ class RegionTrackingManager: ObservableObject {
             content.body = "Welcome to \(name)"
             content.sound = .default
             content.categoryIdentifier = "NEW_REGION"
+            // Deep link to the continents section of the Regions tab
+            content.userInfo = ["deepLink": "regions", "regionSection": "continents"]
 
             let request = UNNotificationRequest(
                 identifier: "new-continent-\(UUID().uuidString)",

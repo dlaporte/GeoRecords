@@ -399,6 +399,58 @@ class RecordHistoryManager: ObservableObject {
         return nil
     }
 
+    /// Get the furthest record for a specific past month (Stats browsing a month
+    /// other than the current one, e.g. from the monthly summary notification)
+    func getFurthestRecordForMonth(type: String, month: MonthSelection) -> (value: Double, locationName: String?)? {
+        let calendar = Calendar.current
+        guard let monthStart = month.startDate,
+              let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart) else {
+            return nil
+        }
+
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(
+            format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
+            type, TimeFrame.month.rawValue, monthStart as NSDate, monthEnd as NSDate
+        )
+
+        do {
+            let results = try context.fetch(request)
+            // Same slot rule as everywhere else — see getFurthestRecord
+            if let recordType = RecordType.from(string: type),
+               let record = recordType.displayRecord(of: results, slotTimeFrame: .month) {
+                return (value: record.value, locationName: record.locationName)
+            }
+        } catch {
+            debugLog("❌ Failed to get furthest record for month: \(error.localizedDescription)")
+        }
+
+        return nil
+    }
+
+    /// Distinct months that still have daily stat rows, excluding the current
+    /// month (which the Stats "This Month" view covers), newest first.
+    /// With the retention policy this is at most the previous month.
+    func getAvailableDailyMonths() -> [MonthSelection] {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "timeFrame == %@", TimeFrame.daily.rawValue)
+
+        do {
+            let entries = try context.fetch(request)
+            let current = MonthSelection.containing(Date())
+            let months = Set(entries.compactMap { entry -> MonthSelection? in
+                guard let timestamp = entry.timestamp else { return nil }
+                return MonthSelection.containing(timestamp)
+            })
+            return months
+                .filter { $0 != current }
+                .sorted { ($0.year, $0.month) > ($1.year, $1.month) }
+        } catch {
+            debugLog("❌ Failed to load available daily months: \(error.localizedDescription)")
+            return []
+        }
+    }
+
     /// Update location name for all records at the same coordinates
     /// This ensures records at the same location (e.g., yearly and all-time) share the same name
     /// - Parameters:
@@ -1445,9 +1497,17 @@ class RecordHistoryManager: ObservableObject {
     /// Fetch daily records for the current month (for "This Month" charts)
     /// - Returns: Dictionary mapping day of month to array of records for that day
     func getDailyRecordsForCurrentMonth() -> [Int: [RecordHistoryEntry]] {
+        guard let current = MonthSelection.containing(Date()) else { return [:] }
+        return getDailyRecords(for: current)
+    }
+
+    /// Daily records for a specific month, grouped by day of month.
+    /// Only the current and previous month have daily rows (older ones are
+    /// cleaned up), so callers should offer months from getAvailableDailyMonths().
+    func getDailyRecords(for month: MonthSelection) -> [Int: [RecordHistoryEntry]] {
         let calendar = Calendar.current
-        guard let monthStart = calendar.dateInterval(of: .month, for: Date())?.start,
-              let monthEnd = calendar.dateInterval(of: .month, for: Date())?.end else {
+        guard let monthStart = month.startDate,
+              let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStart) else {
             return [:]
         }
 
@@ -1476,11 +1536,12 @@ class RecordHistoryManager: ObservableObject {
         }
     }
 
-    /// Clean up old daily records (older than current month)
-    /// Called on Stats tab appearance and app launch
+    /// Clean up old daily records, keeping the current AND previous month
+    /// (the monthly summary notification on the 1st links to the month that
+    /// just ended, so its day-by-day data must survive).
+    /// Called on Stats tab appearance and after backup imports.
     func cleanupOldDailyRecords() {
-        let calendar = Calendar.current
-        guard let monthStart = calendar.dateInterval(of: .month, for: Date())?.start else {
+        guard let cutoff = dailyStatsRetentionCutoff() else {
             return
         }
 
@@ -1488,7 +1549,7 @@ class RecordHistoryManager: ObservableObject {
         request.predicate = NSPredicate(
             format: "timeFrame == %@ AND timestamp < %@",
             TimeFrame.daily.rawValue,
-            monthStart as NSDate
+            cutoff as NSDate
         )
 
         do {
@@ -1500,7 +1561,7 @@ class RecordHistoryManager: ObservableObject {
                 context.delete(record)
             }
             try context.save()
-            debugLog("🧹 Cleaned up \(count) old daily records (before \(monthStart))")
+            debugLog("🧹 Cleaned up \(count) old daily records (before \(cutoff))")
         } catch {
             debugLog("❌ Error cleaning up old daily records: \(error.localizedDescription)")
         }

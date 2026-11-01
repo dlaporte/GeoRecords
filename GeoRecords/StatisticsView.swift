@@ -618,13 +618,7 @@ struct StatisticsView: View {
     private func ewDistanceFromHome(longitude: Double) -> Double {
         guard longitude != 0 else { return 0 }
         let destination = CLLocationCoordinate2D(latitude: homeCoord.latitude, longitude: longitude)
-        let distanceMeters = distanceBetween(from: homeCoord, to: destination)
-
-        // Determine direction based on simple longitude comparison
-        // East = higher longitude, West = lower longitude
-        // This is more intuitive for users (Japan is "east" of US on a map)
-        let isEast = longitude > homeCoord.longitude
-        return (isEast ? distanceMeters : -distanceMeters) * distanceUnitFactor
+        return eastWestDistance(from: homeCoord, to: destination) * distanceUnitFactor
     }
 
     // MARK: - Generic Chart Data Generation
@@ -1230,7 +1224,9 @@ struct StatChartCard: View {
         if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
             return name
         }
-        return FormatUtils.formatCoordinates(record.latitude, record.longitude)
+        return FormatUtils.formatCoordinatesWithCardinals(
+            CLLocationCoordinate2D(latitude: record.latitude, longitude: record.longitude)
+        )
     }
 
     private func formatValue(_ value: Double) -> String {
@@ -1608,7 +1604,9 @@ struct BidirectionalStatChartCard: View {
         if let name = record.locationName, !name.isEmpty, name != unknownLocationString {
             return name
         }
-        return FormatUtils.formatCoordinates(record.latitude, record.longitude)
+        return FormatUtils.formatCoordinatesWithCardinals(
+            CLLocationCoordinate2D(latitude: record.latitude, longitude: record.longitude)
+        )
     }
 
     private func formatDistance(_ value: Double) -> String {
@@ -1629,9 +1627,7 @@ struct BidirectionalStatChartCard: View {
         } else {
             // Same convention as the chart bars: east = higher longitude
             let destination = CLLocationCoordinate2D(latitude: home.latitude, longitude: record.longitude)
-            let distanceMeters = distanceBetween(from: home, to: destination)
-            let isEast = record.longitude > home.longitude
-            return (isEast ? distanceMeters : -distanceMeters) * distanceUnitFactor
+            return eastWestDistance(from: home, to: destination) * distanceUnitFactor
         }
     }
 

@@ -1,158 +1,132 @@
 import Foundation
 import UserNotifications
 
+/// One summary request, planned ahead of time so the schedule is testable without
+/// UNUserNotificationCenter. Each becomes a single (repeats: false) calendar trigger.
+struct PlannedSummary: Equatable {
+    let identifier: String
+    let title: String
+    let body: String
+    let statsYear: Int
+    let statsMonth: Int?          // nil for the yearly summary
+    let fireDate: DateComponents  // year / month / day / hour / minute
+
+    /// Deep-link payload: the Stats tab opens on exactly this period
+    var userInfo: [String: Any] {
+        var info: [String: Any] = ["deepLink": "stats", "statsYear": statsYear]
+        if let month = statsMonth {
+            info["statsMonth"] = month
+        }
+        return info
+    }
+}
+
 @MainActor
 class SummaryNotificationManager: ObservableObject {
     static let shared = SummaryNotificationManager()
 
     private init() {}
 
+    /// Upcoming month boundaries that get a precise request. Twelve keeps a user who
+    /// never relaunches covered for a year, well under iOS's 64 pending-request cap.
+    nonisolated static let monthlyWindow = 12
+
+    /// Identifiers used before 1.8.6: one precise request per period plus repeating
+    /// generic fallbacks. Both stayed pending at once, so the 1st brought two banners
+    /// five minutes apart. Cleared on every schedule so an upgrade starts clean.
+    nonisolated static let legacyIdentifiers = [
+        NotificationIdentifier.legacyMonthlySummary,
+        NotificationIdentifier.legacyYearlySummary,
+        NotificationIdentifier.legacyMonthlySummaryFallback,
+        NotificationIdentifier.legacyYearlySummaryFallback
+    ]
+
     // MARK: - Schedule Summary Notifications
 
     /// Schedule monthly and yearly summary notifications.
     ///
-    /// Local notification content is frozen at schedule time, so these are scheduled
-    /// repeats:false for the next period boundary only, with the period name derived
-    /// from the actual fire date. Rescheduling happens on every app launch
-    /// (GeoRecords.init) and whenever the Settings toggle changes — a user who never
-    /// launches gets at most one correctly-labeled summary instead of the same stale
-    /// text repeating forever. The body deliberately has no record count: the period
+    /// Local notification content is frozen at schedule time, so each request is a
+    /// precise one-shot for a specific period, named for the month/year that will
+    /// just have ended when it fires. A rolling window of them is scheduled on every
+    /// app launch (GeoRecords.init) and whenever the Settings toggle changes.
+    /// Identifiers are deterministic per period, so rescheduling replaces in place
+    /// and never stacks. The body deliberately has no record count: the period
     /// hasn't ended at schedule time, so any count would be wrong.
     func scheduleSummaryNotifications() {
-        let settings = SettingsManager.shared
-
-        // Remove existing summary notifications
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [
-            NotificationIdentifier.monthlySummary,
-            NotificationIdentifier.yearlySummary,
-            NotificationIdentifier.monthlySummaryFallback,
-            NotificationIdentifier.yearlySummaryFallback
-        ])
-
-        // Schedule both monthly and yearly summaries if enabled.
-        // Each period gets a precise repeats:false notification (correct month/year in
-        // the text) plus an evergreen repeating fallback with generic text, so a user
-        // who never relaunches still gets summaries after the first one — every launch
-        // clears and reschedules both, so active users always see the precise version.
-        if settings.summaryNotificationsEnabled {
-            scheduleMonthly()
-            scheduleYearly()
-            scheduleEvergreenFallbacks()
-        }
-    }
-
-    /// Generic repeating summaries that fire when the app hasn't relaunched to
-    /// reschedule the precise ones. Their text names no specific period, so it can
-    /// never be wrong. The precise notification always fires first at the same
-    /// boundary; iOS treats these as separate identifiers, and the next launch
-    /// removes both, so at most one generic banner appears per period.
-    private func scheduleEvergreenFallbacks() {
         let center = UNUserNotificationCenter.current()
+        let plan = Self.plannedSummaries(from: Date())
 
-        var monthly = DateComponents()
-        monthly.day = 1
-        monthly.hour = 8
-        monthly.minute = 5  // After the precise one so it reads as the follow-up
+        // Clear the legacy ids and this window (the toggle-off path). Anything an
+        // earlier launch scheduled outside this window has already fired.
+        center.removePendingNotificationRequests(withIdentifiers: Self.legacyIdentifiers + plan.map { $0.identifier })
 
-        let monthlyContent = UNMutableNotificationContent()
-        monthlyContent.title = "Monthly Summary"
-        monthlyContent.body = "Your monthly travel summary is ready — see which records you set!"
-        monthlyContent.sound = .default
-        // Repeating trigger can't know which month it fires for — resolved at tap time
-        monthlyContent.userInfo = ["deepLink": "stats", "statsPeriod": "previousMonth"]
+        guard SettingsManager.shared.summaryNotificationsEnabled else { return }
 
-        center.add(UNNotificationRequest(
-            identifier: NotificationIdentifier.monthlySummaryFallback,
-            content: monthlyContent,
-            trigger: UNCalendarNotificationTrigger(dateMatching: monthly, repeats: true)
-        ))
+        for summary in plan {
+            let content = UNMutableNotificationContent()
+            content.title = summary.title
+            content.body = summary.body
+            content.sound = .default
+            content.userInfo = summary.userInfo
 
-        var yearly = DateComponents()
-        yearly.month = 1
-        yearly.day = 1
-        yearly.hour = 8
-        yearly.minute = 5
-
-        let yearlyContent = UNMutableNotificationContent()
-        yearlyContent.title = "Year in Review"
-        yearlyContent.body = "Your yearly travel summary is ready — see every record you set!"
-        yearlyContent.sound = .default
-        yearlyContent.userInfo = ["deepLink": "stats", "statsPeriod": "previousYear"]
-
-        center.add(UNNotificationRequest(
-            identifier: NotificationIdentifier.yearlySummaryFallback,
-            content: yearlyContent,
-            trigger: UNCalendarNotificationTrigger(dateMatching: yearly, repeats: true)
-        ))
-    }
-
-    private func scheduleMonthly() {
-        // Trigger: first day of next month at 8:00 AM (single firing; rescheduled on launch)
-        var dateComponents = DateComponents()
-        dateComponents.day = 1
-        dateComponents.hour = 8
-        dateComponents.minute = 0
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
-
-        // Name the month that will just have ENDED when the notification fires.
-        // Derived from the fire date, not from "now": scheduling on March 10 must
-        // produce "March Summary" for the April 1 firing.
-        let fireDate = trigger.nextTriggerDate() ?? Date()
-        let summaryMonth = Calendar.current.date(byAdding: .month, value: -1, to: fireDate) ?? fireDate
-        let monthName = summaryMonth.formatted(.dateTime.month(.wide))
-        let summaryComponents = Calendar.current.dateComponents([.year, .month], from: summaryMonth)
-
-        let content = UNMutableNotificationContent()
-        content.title = "\(monthName) Summary"
-        content.body = "Your \(monthName) travel summary is ready — see which records you set!"
-        content.sound = .default
-        // Deep link to the stats page showing the month this summary is about
-        var userInfo: [String: Any] = ["deepLink": "stats"]
-        if let year = summaryComponents.year, let month = summaryComponents.month {
-            userInfo["statsYear"] = year
-            userInfo["statsMonth"] = month
-        }
-        content.userInfo = userInfo
-
-        let request = UNNotificationRequest(identifier: NotificationIdentifier.monthlySummary, content: content, trigger: trigger)
-
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                debugLog("Failed to schedule monthly summary: \(error)")
-            } else {
-                debugLog("Monthly summary notification scheduled: \(monthName)")
+            let trigger = UNCalendarNotificationTrigger(dateMatching: summary.fireDate, repeats: false)
+            let request = UNNotificationRequest(identifier: summary.identifier, content: content, trigger: trigger)
+            center.add(request) { error in
+                if let error = error {
+                    debugLog("Failed to schedule \(summary.identifier): \(error)")
+                }
             }
         }
+        debugLog("Scheduled \(plan.count) summary notifications (through \(plan.last?.identifier ?? "none"))")
     }
 
-    private func scheduleYearly() {
-        // Trigger: January 1st at 8:00 AM (single firing; rescheduled on launch)
-        var dateComponents = DateComponents()
-        dateComponents.month = 1
-        dateComponents.day = 1
-        dateComponents.hour = 8
-        dateComponents.minute = 0
-        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
+    // MARK: - Planning
 
-        // Name the year that will just have ended when the notification fires
-        let fireDate = trigger.nextTriggerDate() ?? Date()
-        let summaryYear = Calendar.current.component(.year, from: fireDate) - 1
+    /// The summaries that should be pending as of `now`: the next twelve monthly ones
+    /// (each fires on the 1st at 08:00 and names the month that just ended) and the
+    /// next yearly one (Jan 1 at 08:05, staggered after December's monthly). A
+    /// boundary earlier today that has already passed is skipped.
+    nonisolated static func plannedSummaries(from now: Date, calendar: Calendar = .current) -> [PlannedSummary] {
+        var plan: [PlannedSummary] = []
 
-        let content = UNMutableNotificationContent()
-        content.title = "\(summaryYear) Year in Review"
-        content.body = "Your \(summaryYear) travel summary is ready — see every record you set!"
-        content.sound = .default
-        // Deep link to the stats page showing the year this summary is about
-        content.userInfo = ["deepLink": "stats", "statsYear": summaryYear]
-
-        let request = UNNotificationRequest(identifier: NotificationIdentifier.yearlySummary, content: content, trigger: trigger)
-
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                debugLog("Failed to schedule yearly summary: \(error)")
-            } else {
-                debugLog("Yearly summary notification scheduled: \(summaryYear)")
-            }
+        // Monthly: the first "1st at 08:00" strictly after now, then the following months
+        let monthlyBoundary = DateComponents(day: 1, hour: 8, minute: 0)
+        guard var fireAt = calendar.nextDate(after: now, matching: monthlyBoundary, matchingPolicy: .nextTime) else {
+            return []
         }
+        for _ in 0..<monthlyWindow {
+            guard let summarized = calendar.date(byAdding: .month, value: -1, to: fireAt) else { break }
+            let components = calendar.dateComponents([.year, .month], from: summarized)
+            guard let year = components.year, let month = components.month else { break }
+            let monthName = summarized.formatted(.dateTime.month(.wide))
+
+            plan.append(PlannedSummary(
+                identifier: NotificationIdentifier.monthlySummary(year: year, month: month),
+                title: "\(monthName) Summary",
+                body: "Your \(monthName) travel summary is ready — see which records you set!",
+                statsYear: year,
+                statsMonth: month,
+                fireDate: calendar.dateComponents([.year, .month, .day, .hour, .minute], from: fireAt)
+            ))
+
+            guard let next = calendar.date(byAdding: .month, value: 1, to: fireAt) else { break }
+            fireAt = next
+        }
+
+        // Yearly: the first "Jan 1 at 08:05" strictly after now
+        let yearlyBoundary = DateComponents(month: 1, day: 1, hour: 8, minute: 5)
+        if let yearlyFireAt = calendar.nextDate(after: now, matching: yearlyBoundary, matchingPolicy: .nextTime) {
+            let summarizedYear = calendar.component(.year, from: yearlyFireAt) - 1
+            plan.append(PlannedSummary(
+                identifier: NotificationIdentifier.yearlySummary(year: summarizedYear),
+                title: "\(summarizedYear) Year in Review",
+                body: "Your \(summarizedYear) travel summary is ready — see every record you set!",
+                statsYear: summarizedYear,
+                statsMonth: nil,
+                fireDate: calendar.dateComponents([.year, .month, .day, .hour, .minute], from: yearlyFireAt)
+            ))
+        }
+
+        return plan
     }
 }

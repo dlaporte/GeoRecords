@@ -2,8 +2,8 @@
 //  UXReviewFixTests.swift
 //  GeoRecordsTests
 //
-//  Regression tests for the bugs found in the November 2026 UX review
-//  (docs/UX_REVIEW_2026-11.md). Each test names the user-visible symptom.
+//  Regression tests for the small copy/list fixes from the November 2026 UX
+//  review (docs/UX_REVIEW_2026-11.md). Each test names the user-visible symptom.
 //
 
 import Testing

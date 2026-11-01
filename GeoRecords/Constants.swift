@@ -757,11 +757,22 @@ let widgetMapAspectRatio: CGFloat = 680.0 / 600.0
 
 /// Notification identifier constants for consistent deduplication
 enum NotificationIdentifier {
-    static let monthlySummary = "monthly-summary"
-    static let yearlySummary = "yearly-summary"
-    static let monthlySummaryFallback = "monthly-summary-fallback"
-    static let yearlySummaryFallback = "yearly-summary-fallback"
+    // Pre-1.8.6 summary ids (one precise request + repeating fallbacks). Still
+    // removed on every schedule so devices upgrading never keep both pending.
+    static let legacyMonthlySummary = "monthly-summary"
+    static let legacyYearlySummary = "yearly-summary"
+    static let legacyMonthlySummaryFallback = "monthly-summary-fallback"
+    static let legacyYearlySummaryFallback = "yearly-summary-fallback"
     static let photoCatchUpDigest = "photo-catchup-digest"
+
+    /// One deterministic id per summarized period, so rescheduling replaces in place
+    static func monthlySummary(year: Int, month: Int) -> String {
+        String(format: "monthly-summary-%04d-%02d", year, month)
+    }
+
+    static func yearlySummary(year: Int) -> String {
+        "yearly-summary-\(year)"
+    }
 
     /// Creates a notification identifier for a new record notification.
     /// One identifier per record type: only ONE notification is ever posted per type per

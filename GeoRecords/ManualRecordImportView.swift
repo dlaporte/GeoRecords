@@ -3,6 +3,27 @@ import MapKit
 import CoreLocation
 import PhotosUI
 
+// MARK: - Period Planning
+
+/// Which record slots a hand-entered location competes for. Every entry is judged
+/// against its own month, its own year, and lifetime — a 2015 trip gets 2015's rows,
+/// not just a shot at the lifetime record (which silently discarded it before) — and
+/// only CURRENT periods are read from the in-memory slots the Records tab shows.
+enum ManualEntryPlanner {
+    struct PeriodSlot: Equatable {
+        let timeFrame: TimeFrame
+        let isCurrentPeriod: Bool
+    }
+
+    static func periodSlots(for date: Date, now: Date = Date(), calendar: Calendar = .current) -> [PeriodSlot] {
+        [
+            PeriodSlot(timeFrame: .month, isCurrentPeriod: calendar.isDate(date, equalTo: now, toGranularity: .month)),
+            PeriodSlot(timeFrame: .year, isCurrentPeriod: calendar.isDate(date, equalTo: now, toGranularity: .year)),
+            PeriodSlot(timeFrame: .allTime, isCurrentPeriod: true)
+        ]
+    }
+}
+
 struct ManualRecordImportView: View {
     @EnvironmentObject var settings: SettingsManager
     @Environment(\.dismiss) var dismiss
@@ -227,18 +248,10 @@ struct ManualRecordImportView: View {
             // Get altitude (use 0 if not specified)
             let altitude = parsedAltitude ?? 0
 
-            // Get time frame boundaries
-            let (startOfMonth, startOfYear) = Date.timeFrameBoundaries()
-
-            // Determine applicable timeframes based on date
-            let timeFrames: [TimeFrame]
-            if selectedDate >= startOfMonth {
-                timeFrames = [.month, .year, .allTime]
-            } else if selectedDate >= startOfYear {
-                timeFrames = [.year, .allTime]
-            } else {
-                timeFrames = [.allTime]
-            }
+            // Every entry competes in its own month, its own year, and lifetime
+            let slots = ManualEntryPlanner.periodSlots(for: selectedDate)
+            let entryMonth = MonthSelection.containing(selectedDate)
+            let entryYear = Calendar.current.component(.year, from: selectedDate)
 
             // Check and add records for each type
             for recordType in RecordType.allCases {
@@ -276,45 +289,48 @@ struct ManualRecordImportView: View {
 
                 guard shouldCheck else { continue }
 
-                // Check each applicable timeframe
-                for timeFrame in timeFrames {
-                    let existingRecord = RecordManager.shared.getRecord(type: recordType.rawValue, timeFrame: timeFrame)
-
-                    // Determine if this beats the existing record (or if no record exists)
-                    let shouldAdd: Bool
-                    if let existing = existingRecord {
-                        shouldAdd = recordType.shouldReplace(newValue: value, oldValue: existing.value)
-                    } else {
-                        shouldAdd = true // No existing record
+                for slot in slots {
+                    // Baseline: the in-memory slot for a current period; for a past
+                    // month/year, the record history already shows for that period
+                    let existingValue: Double?
+                    switch (slot.isCurrentPeriod, slot.timeFrame) {
+                    case (true, _):
+                        existingValue = RecordManager.shared.getRecord(type: recordType.rawValue, timeFrame: slot.timeFrame)?.value
+                    case (false, .month):
+                        existingValue = entryMonth.flatMap {
+                            RecordHistoryManager.shared.getFurthestRecordForMonth(type: recordType.rawValue, month: $0)?.value
+                        }
+                    case (false, .year):
+                        existingValue = RecordHistoryManager.shared.getFurthestRecordForYear(type: recordType.rawValue, year: entryYear)?.value
+                    case (false, _):
+                        existingValue = nil
                     }
 
-                    if shouldAdd {
-                        let detail = RecordDetail(
-                            value: value,
-                            timestamp: selectedDate,
-                            coordinate: location,
-                            altitude: altitude,
-                            locationName: locationName,
-                            recordType: recordType.rawValue,
-                            timeFrame: timeFrame,
-                            photoAssetIdentifier: selectedPhotoAssetIdentifier,
-                            photoCloudIdentifier: selectedPhotoCloudIdentifier
-                        )
+                    let shouldAdd = existingValue.map { recordType.shouldReplace(newValue: value, oldValue: $0) } ?? true
+                    guard shouldAdd else { continue }
 
-                        // Update in-memory and save to Core Data
-                        RecordManager.shared.updateRecordIfBetter(
-                            recordType: recordType.rawValue,
-                            detail: detail,
-                            timeFrame: timeFrame
-                        )
-                        RecordHistoryManager.shared.addRecord(recordType: recordType.rawValue, detail: detail)
+                    let detail = RecordDetail(
+                        value: value,
+                        timestamp: selectedDate,
+                        coordinate: location,
+                        altitude: altitude,
+                        locationName: locationName,
+                        recordType: recordType.rawValue,
+                        timeFrame: slot.timeFrame,
+                        photoAssetIdentifier: selectedPhotoAssetIdentifier,
+                        photoCloudIdentifier: selectedPhotoCloudIdentifier,
+                        source: .manual
+                    )
+                    RecordHistoryManager.shared.addRecord(recordType: recordType.rawValue, detail: detail)
 
-                        // Track what was added
-                        recordsByType[recordType.rawValue, default: []].append(timeFrame)
-                        createdRecordIds.append(detail.id)
-                    }
+                    recordsByType[recordType.rawValue, default: []].append(slot.timeFrame)
+                    createdRecordIds.append(detail.id)
                 }
             }
+
+            // Rebuild the in-memory slots from history: current periods pick up the new
+            // rows, and a past month in this year feeds "This Year" through the normal rule
+            RecordManager.shared.loadRecordsFromHistory()
 
             // Save a thumbnail for each created record (thumbnails are keyed by record ID;
             // saving under a fresh UUID produced an orphan file no record could ever load)

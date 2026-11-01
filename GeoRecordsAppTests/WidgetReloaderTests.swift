@@ -10,6 +10,17 @@ import CoreData
 
 struct WidgetReloaderTests {
 
+    /// Poll instead of a fixed sleep for the positive checks: the release workflow
+    /// runs these on shared CI runners where a slow scheduler would turn a fixed
+    /// 200 ms wait into a flaky failure
+    @MainActor
+    private func waitUntil(timeout: Duration = .seconds(2), _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     // Record and region saves never reloaded the widgets (only map generation
     // at launch did). Saves come in bursts (imports, border crossings), so the
     // reload is coalesced.
@@ -19,11 +30,13 @@ struct WidgetReloaderTests {
         let reloader = WidgetReloader(delay: .milliseconds(50)) { reloads += 1 }
 
         for _ in 0..<5 { reloader.requestReload() }
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil { reloads >= 1 }
+        // Generous settle time: a burst must never produce a second reload
+        try await Task.sleep(for: .milliseconds(300))
         #expect(reloads == 1)
 
         reloader.requestReload()
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil { reloads >= 2 }
         #expect(reloads == 2)
     }
 
@@ -53,7 +66,7 @@ struct WidgetReloaderTests {
         entry.value = 60
         entry.timestamp = Date()
         try context.save()
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil { reloads >= 1 }
         #expect(reloads == 1)
 
         let stat = DailyStatistic(context: context)
@@ -61,7 +74,8 @@ struct WidgetReloaderTests {
         stat.date = Date()
         stat.maxNorth = 60
         try context.save()
-        try await Task.sleep(for: .milliseconds(200))
+        // Generous settle time: a daily-stat save must never trigger a reload
+        try await Task.sleep(for: .milliseconds(300))
         #expect(reloads == 1)
     }
 }

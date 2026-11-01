@@ -34,10 +34,11 @@ final class WidgetReloader {
         }
     }
 
-    /// Reload after any save that touches record/region rows. Daily-stat rows are
-    /// saved on every location fix and the widgets never show them, so those saves
-    /// are ignored. (Rows arriving via iCloud sync merge without a local save; the
-    /// widgets' hourly refresh covers that.)
+    /// Reload after any save that touches record/region rows. The per-day extremes
+    /// are RecordHistoryEntry rows with the "Daily" timeframe, saved on every
+    /// location fix, and the widgets never show them, so those saves are ignored.
+    /// (Rows arriving via iCloud sync merge without a local save; the widgets'
+    /// hourly refresh covers that.)
     func observeSaves(of context: NSManagedObjectContext) {
         saveObserver = NotificationCenter.default.addObserver(
             forName: .NSManagedObjectContextDidSave, object: context, queue: .main
@@ -52,10 +53,20 @@ final class WidgetReloader {
     private nonisolated static func changedRecordRows(in notification: Notification) -> Bool {
         for key in [NSInsertedObjectsKey, NSUpdatedObjectsKey, NSDeletedObjectsKey] {
             if let objects = notification.userInfo?[key] as? Set<NSManagedObject>,
-               objects.contains(where: { $0.entity.name == "RecordHistoryEntry" }) {
+               objects.contains(where: isWidgetVisibleRow) {
                 return true
             }
         }
         return false
+    }
+
+    /// Record and region rows the widgets can show: any RecordHistoryEntry except
+    /// the per-day extremes. A deleted row's attributes may no longer be readable,
+    /// so deletions always count (a spurious reload beats a fault).
+    private nonisolated static func isWidgetVisibleRow(_ object: NSManagedObject) -> Bool {
+        guard object.entity.name == "RecordHistoryEntry" else { return false }
+        if object.isDeleted { return true }
+        let timeFrame = object.value(forKey: "timeFrame") as? String
+        return timeFrame != TimeFrame.daily.rawValue
     }
 }

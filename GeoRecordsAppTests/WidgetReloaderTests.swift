@@ -41,8 +41,9 @@ struct WidgetReloaderTests {
     }
 
     // Every record/region write goes through a context save, so one observer
-    // covers them all — but daily-stat rows are saved on every location fix
-    // and the widgets don't show them, so those must not trigger reloads
+    // covers them all — but the per-day extremes are RecordHistoryEntry rows
+    // with the "Daily" timeframe, saved on every location fix, and the widgets
+    // never show them, so those saves must not trigger reloads
     @MainActor
     @Test func widgetReloaderReactsOnlyToRecordRowSaves() async throws {
         let model = PersistenceController.shared.container.managedObjectModel
@@ -69,12 +70,14 @@ struct WidgetReloaderTests {
         try await waitUntil { reloads >= 1 }
         #expect(reloads == 1)
 
-        let stat = DailyStatistic(context: context)
-        stat.id = UUID()
-        stat.date = Date()
-        stat.maxNorth = 60
+        let daily = RecordHistoryEntry(context: context)
+        daily.id = UUID()
+        daily.recordType = "Furthest North"
+        daily.timeFrame = TimeFrame.daily.rawValue
+        daily.value = 61
+        daily.timestamp = Date()
         try context.save()
-        // Generous settle time: a daily-stat save must never trigger a reload
+        // Generous settle time: a Daily-row save must never trigger a reload
         try await Task.sleep(for: .milliseconds(300))
         #expect(reloads == 1)
     }

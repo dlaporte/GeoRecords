@@ -343,6 +343,7 @@ class BackupManager {
             case "icloud-restore": return "Before iCloud restore"
             case "restore": return "Before backup restore"
             case "start-fresh": return "Before Start Fresh"
+            case "home-change": return "Before recalculating from-home records"
             default: return "Automatic snapshot"
             }
         }
@@ -381,6 +382,11 @@ class BackupManager {
                                   deviceName: info.deviceName)
         }
         .sorted { $0.exportDate > $1.exportDate }
+    }
+
+    /// Remove one automatic snapshot (swipe to delete in Automatic Snapshots)
+    func deleteSafetySnapshot(_ snapshot: SafetySnapshot) throws {
+        try FileManager.default.removeItem(at: snapshot.url)
     }
 
     // MARK: - Import

@@ -128,4 +128,11 @@ extension RecordHistoryManager {
     func recalculateFromHomeRecords(home: CLLocationCoordinate2D) throws -> Int {
         try Self.recalculateFromHomeRecords(home: home, in: PersistenceController.shared.container.viewContext)
     }
+
+    /// How many "Furthest from Home" rows exist (whether the recalculate prompt applies)
+    func fromHomeRowCount() -> Int {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "recordType == %@", RecordType.fromHome.rawValue)
+        return (try? PersistenceController.shared.container.viewContext.count(for: request)) ?? 0
+    }
 }

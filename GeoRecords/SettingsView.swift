@@ -17,6 +17,7 @@ struct SettingsView: View {
     // State for confirmation alerts
     @State private var showClearRecordsSheet = false
     @State private var showHomePicker = false  // pushed from Stats' "Set Home Location"
+    @State private var showWidgetMapSheet = false
     @State private var deleteFromiCloud = false
     @State private var showImportView = false
     @State private var showPermissionAlert = false
@@ -287,10 +288,34 @@ struct SettingsView: View {
                                 }
                             }
                         }
+
+                    if settings.inactivityReminderEnabled {
+                        Stepper("Remind after \(settings.inactivityReminderDays) day\(settings.inactivityReminderDays == 1 ? "" : "s")",
+                                value: $settings.inactivityReminderDays, in: 1...30)
+                            .onChange(of: settings.inactivityReminderDays) { _, _ in
+                                settings.saveSettings()
+                                Task { @MainActor in
+                                    LocationManager.shared.scheduleInactivityReminder()
+                                }
+                            }
+                    }
                 } header: {
                     Text("Notifications")
                 } footer: {
                     Text("Record alerts fire when you set a new record or enter a new region (one alert per record, for the biggest achievement). Photo prompts appear when you set an all-time record. Summaries arrive at month/year end. The inactivity reminder fires if you haven't opened the app in \(settings.inactivityReminderDays) days.")
+                }
+
+                // MARK: - Widgets Section
+                Section {
+                    Button {
+                        showWidgetMapSheet = true
+                    } label: {
+                        Label("Widget Map View", systemImage: "widget.small")
+                    }
+                } header: {
+                    Text("Widgets")
+                } footer: {
+                    Text("Frame the map the Region Map widget shows. Lock Screen widgets are added from the Lock Screen editor.")
                 }
 
                 // MARK: - iCloud Sync Section
@@ -467,6 +492,9 @@ struct SettingsView: View {
             }
             .navigationDestination(isPresented: $showHomePicker) {
                 HomePickerView()
+            }
+            .sheet(isPresented: $showWidgetMapSheet) {
+                WidgetViewSetterSheet(mapType: "states", visitedRegions: [], allowsMapTypeChange: true)
             }
             } // ScrollViewReader
             .navigationTitle("Settings")

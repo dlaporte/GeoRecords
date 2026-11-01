@@ -76,6 +76,7 @@ struct MapsTabView: View {
 /// Confirming records the visit through the normal path; dismissing forgets it.
 private struct PendingRegionsBanner: View {
     @ObservedObject var regionManager: RegionTrackingManager
+    @State private var confirmCount = 0  // haptic trigger
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -98,6 +99,7 @@ private struct PendingRegionsBanner: View {
                     }
                     Spacer()
                     Button {
+                        confirmCount += 1
                         withAnimation {
                             regionManager.confirmPendingRegion(code: pending.code)
                         }
@@ -107,6 +109,7 @@ private struct PendingRegionsBanner: View {
                             .foregroundColor(.green)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Confirm \(pending.name)")
                     Button {
                         withAnimation {
                             regionManager.dismissPendingRegion(code: pending.code)
@@ -125,6 +128,7 @@ private struct PendingRegionsBanner: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(UIColor.secondarySystemBackground))
         )
+        .sensoryFeedback(.success, trigger: confirmCount)
     }
 }
 
@@ -1058,20 +1062,29 @@ private struct StyledSegmentedPicker<T: Hashable>: View {
 
 /// Sheet for setting the widget map view by panning/zooming
 struct WidgetViewSetterSheet: View {
-    let mapType: String  // "states", "countries", or "continents"
-    let visitedRegions: [RecordDetail]
-    var visitedContinents: Set<Continent>? = nil
+    @State private var mapType: String  // "states", "countries", or "continents"
+    private let passedRegions: [RecordDetail]
+    private let passedContinents: Set<Continent>?
+    /// From Settings: a map-type picker at the top, with the visited lists loaded here
+    let allowsMapTypeChange: Bool
 
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var regionManager = RegionTrackingManager.shared
     @State private var mapRegion: MKCoordinateRegion
     @State private var showingSavedConfirmation = false
 
-    init(mapType: String, visitedRegions: [RecordDetail], visitedContinents: Set<Continent>? = nil) {
-        self.mapType = mapType
-        self.visitedRegions = visitedRegions
-        self.visitedContinents = visitedContinents
+    private static let mapTypes = ["states", "countries", "continents"]
 
-        // Initialize with saved region or default
+    init(mapType: String, visitedRegions: [RecordDetail], visitedContinents: Set<Continent>? = nil, allowsMapTypeChange: Bool = false) {
+        _mapType = State(initialValue: mapType)
+        self.passedRegions = visitedRegions
+        self.passedContinents = visitedContinents
+        self.allowsMapTypeChange = allowsMapTypeChange
+        _mapRegion = State(initialValue: Self.savedOrDefaultRegion(for: mapType))
+    }
+
+    /// The saved framing for a map type, else a sensible default
+    private static func savedOrDefaultRegion(for mapType: String) -> MKCoordinateRegion {
         let settings = SettingsManager.shared
         let savedRegion: MKCoordinateRegion?
         switch mapType {
@@ -1084,44 +1097,70 @@ struct WidgetViewSetterSheet: View {
         default:
             savedRegion = nil
         }
+        if let saved = savedRegion { return saved }
 
-        // Use saved region or fallback to defaults
-        if let saved = savedRegion {
-            _mapRegion = State(initialValue: saved)
-        } else {
-            let defaultRegion: MKCoordinateRegion
-            switch mapType {
-            case "states":
-                defaultRegion = MKCoordinateRegion(
-                    center: CLLocationCoordinate2D(latitude: 45, longitude: -120),
-                    span: MKCoordinateSpan(latitudeDelta: 75, longitudeDelta: 100)
-                )
-            default:
-                defaultRegion = MKCoordinateRegion(
-                    center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
-                    span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 280)
-                )
-            }
-            _mapRegion = State(initialValue: defaultRegion)
+        switch mapType {
+        case "states":
+            return MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 45, longitude: -120),
+                span: MKCoordinateSpan(latitudeDelta: 75, longitudeDelta: 100)
+            )
+        default:
+            return MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
+                span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 280)
+            )
         }
+    }
+
+    private var visitedRegions: [RecordDetail] {
+        guard allowsMapTypeChange else { return passedRegions }
+        let regions: [RecordDetail]
+        switch mapType {
+        case "states": regions = regionManager.visitedStates
+        case "countries": regions = regionManager.visitedCountries
+        default: regions = regionManager.visitedContinents
+        }
+        return regions.sorted { ($0.locationName ?? "") < ($1.locationName ?? "") }
+    }
+
+    private var visitedContinents: Set<Continent>? {
+        guard allowsMapTypeChange else { return passedContinents }
+        guard mapType == "continents" else { return nil }
+        return Set(regionManager.visitedContinents.compactMap { Continent(rawValue: $0.locationName ?? "") })
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                if allowsMapTypeChange {
+                    Picker("Map", selection: $mapType) {
+                        Text("States").tag("states")
+                        Text("Countries").tag("countries")
+                        Text("Continents").tag("continents")
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    .onChange(of: mapType) { _, newType in
+                        mapRegion = Self.savedOrDefaultRegion(for: newType)
+                    }
+                }
+
                 // Instructions
                 Text("Pan and zoom to set the widget map view")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .padding(.vertical, 8)
 
-                // Interactive map with aspect ratio matching widget
+                // Interactive map with aspect ratio matching widget (recreated per map type)
                 InteractiveWidgetMapView(
                     mapType: mapType,
                     visitedRegions: visitedRegions,
                     visitedContinents: visitedContinents,
                     region: $mapRegion
                 )
+                .id(mapType)
                 .aspectRatio(mapAspectRatio, contentMode: .fit)
                 .cornerRadius(12)
                 .padding(.horizontal)

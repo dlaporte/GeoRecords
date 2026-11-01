@@ -12,6 +12,8 @@ struct HomePickerView: View {
     @State private var showLocationUnavailableAlert = false
     @State private var locationName: String?
     @State private var isGeocoding = false
+    @State private var showRecalculatePrompt = false
+    @State private var movedMeters: Double = 0
 
     init() {
         let defaultCoord = CLLocationCoordinate2D(latitude: 38.897957, longitude: -77.036560)
@@ -145,6 +147,12 @@ struct HomePickerView: View {
         } message: {
             Text("We could not determine your current location. Please ensure Location Services are enabled and try again.")
         }
+        .alert("Recalculate Furthest from Home records?", isPresented: $showRecalculatePrompt) {
+            Button("Recalculate") { recalculateFromHomeRecords() }
+            Button("Keep Existing", role: .cancel) { dismiss() }
+        } message: {
+            Text(HomeChangePrompt.message(movedMeters: movedMeters, unitSystem: settings.unitSystem))
+        }
         .onAppear {
             initializeFromSettings()
         }
@@ -170,6 +178,7 @@ struct HomePickerView: View {
     }
 
     private func setHomeLocation() {
+        let previousHome = settings.homeCoordinate
         settings.homeCoordinate = currentCoordinate
         settings.homeLocationName = locationName
         settings.saveSettings()
@@ -177,7 +186,28 @@ struct HomePickerView: View {
         // Create region records for the home location (state, country, continent)
         RegionTrackingManager.shared.addHomeRegionRecords()
 
-        dismiss()
+        // Existing "Furthest from Home" rows keep their old distance unless the user
+        // opts in (home syncs across devices; this is the one place that asks)
+        let fromHomeRows = RecordHistoryManager.shared.fromHomeRowCount()
+        if let previousHome,
+           HomeChangePrompt.shouldOffer(oldHome: previousHome, newHome: currentCoordinate, fromHomeRowCount: fromHomeRows) {
+            movedMeters = distanceBetween(from: previousHome, to: currentCoordinate)
+            showRecalculatePrompt = true
+        } else {
+            dismiss()
+        }
+    }
+
+    /// Snapshot first, then rewrite every from-home row and rebuild the slots
+    private func recalculateFromHomeRecords() {
+        let home = currentCoordinate
+        Task { @MainActor in
+            await BackupManager.shared.writeSafetySnapshot(reason: "home-change")
+            let count = (try? RecordHistoryManager.shared.recalculateFromHomeRecords(home: home)) ?? 0
+            RecordManager.shared.loadRecordsFromHistory()
+            debugLog("🏠 Recalculated \(count) Furthest from Home records for the new home")
+            dismiss()
+        }
     }
 
     private func initializeFromSettings() {

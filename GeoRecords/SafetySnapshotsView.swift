@@ -44,8 +44,9 @@ struct SafetySnapshotsView: View {
                         }
                         .disabled(isRestoring)
                     }
+                    .onDelete(perform: deleteSnapshots)
                 } footer: {
-                    Text("Restoring replaces the records currently on this device with the snapshot's contents, then syncs them to iCloud.")
+                    Text("Restoring replaces the records currently on this device with the snapshot's contents, then syncs them to iCloud. Swipe left to delete a snapshot.")
                 }
             }
         }
@@ -68,6 +69,13 @@ struct SafetySnapshotsView: View {
         } message: {
             Text(resultMessage)
         }
+    }
+
+    private func deleteSnapshots(at offsets: IndexSet) {
+        for index in offsets {
+            try? BackupManager.shared.deleteSafetySnapshot(snapshots[index])
+        }
+        snapshots = BackupManager.shared.listSafetySnapshots()
     }
 
     private func restore(_ snapshot: BackupManager.SafetySnapshot) {

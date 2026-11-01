@@ -546,11 +546,10 @@ struct ContinentMapView: UIViewRepresentable {
             rebuildOverlays(on: mapView, coordinator: coordinator)
         } else if previousContinent != currentContinent {
             for continent in [previousContinent, currentContinent].compactMap({ $0 }) {
-                for polygon in coordinator.polygonsByContinent[continent] ?? [] {
-                    if let renderer = mapView.renderer(for: polygon) as? MKPolygonRenderer {
-                        Coordinator.applyStyle(to: renderer, isCurrent: continent == currentContinent)
-                        renderer.setNeedsDisplay()
-                    }
+                if let overlay = coordinator.overlayByContinent[continent],
+                   let renderer = mapView.renderer(for: overlay) as? MKOverlayPathRenderer {
+                    Coordinator.applyStyle(to: renderer, isCurrent: continent == currentContinent)
+                    renderer.setNeedsDisplay()
                 }
             }
         }
@@ -565,15 +564,13 @@ struct ContinentMapView: UIViewRepresentable {
 
     private func rebuildOverlays(on mapView: MKMapView, coordinator: Coordinator) {
         mapView.removeOverlays(mapView.overlays)
-        coordinator.polygonsByContinent = [:]
+        coordinator.overlayByContinent = [:]
         coordinator.renderedContinents = visitedContinents
 
         for continent in visitedContinents {
-            let polygons = RegionOverlayCache.shared.polygons(for: continent)
-            coordinator.polygonsByContinent[continent] = polygons
-            for polygon in polygons {
-                mapView.addOverlay(polygon)
-            }
+            let overlay = RegionOverlayCache.shared.multiPolygon(for: continent)
+            coordinator.overlayByContinent[continent] = overlay
+            mapView.addOverlay(overlay)
         }
     }
 
@@ -588,7 +585,7 @@ struct ContinentMapView: UIViewRepresentable {
 
         // Overlay bookkeeping for incremental updates (see updateUIView)
         var renderedContinents: Set<Continent> = []
-        var polygonsByContinent: [Continent: [MKPolygon]] = [:]
+        var overlayByContinent: [Continent: MKMultiPolygon] = [:]
         var lastCameraTarget: MKCoordinateRegion?
 
         init(_ parent: ContinentMapView) {
@@ -605,7 +602,7 @@ struct ContinentMapView: UIViewRepresentable {
         }
 
         /// Single source of styling truth: used at renderer creation AND for in-place restyles
-        static func applyStyle(to renderer: MKPolygonRenderer, isCurrent: Bool) {
+        static func applyStyle(to renderer: MKOverlayPathRenderer, isCurrent: Bool) {
             if isCurrent {
                 // Current continent - red fill and stroke
                 renderer.fillColor = UIColor.systemRed.withAlphaComponent(0.4)
@@ -626,9 +623,9 @@ struct ContinentMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            if let polygon = overlay as? MKPolygon {
-                let renderer = MKPolygonRenderer(polygon: polygon)
-                Self.applyStyle(to: renderer, isCurrent: polygon.title == currentContinent?.rawValue)
+            if let multiPolygon = overlay as? MKMultiPolygon {
+                let renderer = MKMultiPolygonRenderer(multiPolygon: multiPolygon)
+                Self.applyStyle(to: renderer, isCurrent: multiPolygon.title == currentContinent?.rawValue)
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)
@@ -1037,18 +1034,9 @@ struct InteractiveWidgetMapView: UIViewRepresentable {
 
     private func addOverlays(to mapView: MKMapView) {
         if let continents = visitedContinents {
-            // Continent mode
+            // Continent mode: one multipolygon overlay per continent
             for continent in continents {
-                let polygonArrays = RegionLookupService.shared.continentPolygons(for: continent)
-                for polygonGroup in polygonArrays {
-                    for coordinates in polygonGroup {
-                        guard coordinates.count > 2 else { continue }
-                        var coords = coordinates
-                        let polygon = MKPolygon(coordinates: &coords, count: coords.count)
-                        polygon.title = continent.rawValue
-                        mapView.addOverlay(polygon)
-                    }
-                }
+                mapView.addOverlay(RegionOverlayCache.shared.multiPolygon(for: continent))
             }
         } else {
             // States/Countries mode
@@ -1088,25 +1076,29 @@ struct InteractiveWidgetMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            let renderer: MKOverlayPathRenderer
             if let polygon = overlay as? MKPolygon {
-                let renderer = MKPolygonRenderer(polygon: polygon)
-                let color: UIColor
-                switch parent.mapType {
-                case "states":
-                    color = .systemBlue
-                case "countries":
-                    color = .systemGreen
-                case "continents":
-                    color = .systemOrange
-                default:
-                    color = .systemBlue
-                }
-                renderer.fillColor = color.withAlphaComponent(0.4)
-                renderer.strokeColor = color
-                renderer.lineWidth = 1
-                return renderer
+                renderer = MKPolygonRenderer(polygon: polygon)
+            } else if let multiPolygon = overlay as? MKMultiPolygon {
+                renderer = MKMultiPolygonRenderer(multiPolygon: multiPolygon)
+            } else {
+                return MKOverlayRenderer(overlay: overlay)
             }
-            return MKOverlayRenderer(overlay: overlay)
+            let color: UIColor
+            switch parent.mapType {
+            case "states":
+                color = .systemBlue
+            case "countries":
+                color = .systemGreen
+            case "continents":
+                color = .systemOrange
+            default:
+                color = .systemBlue
+            }
+            renderer.fillColor = color.withAlphaComponent(0.4)
+            renderer.strokeColor = color
+            renderer.lineWidth = 1
+            return renderer
         }
     }
 }

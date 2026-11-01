@@ -29,23 +29,27 @@ func calculateMapRegion(
 
     var minLat = Double.infinity
     var maxLat = -Double.infinity
-    var minLon = Double.infinity
-    var maxLon = -Double.infinity
+    var longitudes: [Double] = []
 
     for polygon in polygons {
         for ring in polygon {
             for coord in ring {
                 minLat = min(minLat, coord.latitude)
                 maxLat = max(maxLat, coord.latitude)
-                minLon = min(minLon, coord.longitude)
-                maxLon = max(maxLon, coord.longitude)
+                longitudes.append(coord.longitude)
             }
         }
     }
 
+    guard let (minLon, maxLon) = longitudeExtent(of: longitudes) else {
+        return defaultRegion
+    }
+
+    var centerLon = (minLon + maxLon) / 2
+    if centerLon > 180 { centerLon -= 360 }
     let center = CLLocationCoordinate2D(
         latitude: (minLat + maxLat) / 2,
-        longitude: (minLon + maxLon) / 2
+        longitude: centerLon
     )
 
     let spanLat = max((maxLat - minLat) * padding, minSpan)
@@ -61,6 +65,35 @@ func calculateMapRegion(
     )
 }
 
+/// The longitude range covering a set of points, measured around the globe rather
+/// than on the -180…180 number line. The United States (Aleutians), Russia, Fiji,
+/// New Zealand and the North America mainland all cross the antimeridian; a plain
+/// min/max on those spans the whole world and centers the camera on the prime
+/// meridian. The covered range is the complement of the largest empty gap between
+/// the sorted longitudes, so a range that wraps is returned with `max` above 180
+/// (e.g. 170…308 for a region from the Aleutians to Greenland).
+func longitudeExtent(of longitudes: [Double]) -> (min: Double, max: Double)? {
+    let sorted = longitudes.sorted()
+    guard let first = sorted.first, let last = sorted.last else { return nil }
+
+    var largestGap = first + 360 - last   // the gap across the antimeridian
+    var gapStartIndex: Int? = nil         // nil = the largest gap is the wrap-around one
+    for i in 0..<(sorted.count - 1) {
+        let gap = sorted[i + 1] - sorted[i]
+        if gap > largestGap {
+            largestGap = gap
+            gapStartIndex = i
+        }
+    }
+
+    guard let i = gapStartIndex else {
+        return (first, last)  // no wrap: the plain bounding box is right
+    }
+    // The points live everywhere except (sorted[i], sorted[i+1]); cover them eastward
+    // from the gap's far side around to its near side
+    return (sorted[i + 1], sorted[i] + 360)
+}
+
 // MARK: - Region Overlay Cache
 
 /// Process-wide cache of display-ready map overlays and camera regions, keyed by
@@ -73,7 +106,7 @@ final class RegionOverlayCache {
     static let shared = RegionOverlayCache()
 
     private var polygonsByCode: [String: [MKPolygon]] = [:]
-    private var polygonsByContinent: [Continent: [MKPolygon]] = [:]
+    private var multiPolygonByContinent: [Continent: MKMultiPolygon] = [:]
     private var cameraByCode: [String: MKCoordinateRegion] = [:]
     private var cameraByContinent: [Continent: MKCoordinateRegion] = [:]
     private var usOutline: [MKPolyline]?
@@ -98,20 +131,23 @@ final class RegionOverlayCache {
         return result
     }
 
-    /// Display polygons for a continent (title = continent name, matching the renderer)
-    func polygons(for continent: Continent) -> [MKPolygon] {
-        if let cached = polygonsByContinent[continent] { return cached }
-        var result: [MKPolygon] = []
+    /// Display overlay for a continent (title = continent name, matching the renderer).
+    /// A continent is the land of every country attributed to it, over a thousand
+    /// polygons for North America, so it is one MKMultiPolygon: one overlay and one
+    /// renderer per continent instead of one per polygon.
+    func multiPolygon(for continent: Continent) -> MKMultiPolygon {
+        if let cached = multiPolygonByContinent[continent] { return cached }
+        var polygons: [MKPolygon] = []
         for polygonGroup in RegionLookupService.shared.continentPolygons(for: continent) {
             for coordinates in polygonGroup where coordinates.count > 2 {
                 var coords = coordinates
-                let polygon = MKPolygon(coordinates: &coords, count: coords.count)
-                polygon.title = continent.rawValue
-                result.append(polygon)
+                polygons.append(MKPolygon(coordinates: &coords, count: coords.count))
             }
         }
-        polygonsByContinent[continent] = result
-        return result
+        let multiPolygon = MKMultiPolygon(polygons)
+        multiPolygon.title = continent.rawValue
+        multiPolygonByContinent[continent] = multiPolygon
+        return multiPolygon
     }
 
     /// Camera region framing a region code's polygons (computed once per code)
@@ -124,10 +160,10 @@ final class RegionOverlayCache {
         return region
     }
 
-    /// Camera region framing a continent (wider padding and minimum span)
+    /// Camera region framing a continent's mainland (wider padding and minimum span)
     func cameraRegion(for continent: Continent, defaultRegion: MKCoordinateRegion) -> MKCoordinateRegion {
         if let cached = cameraByContinent[continent] { return cached }
-        let polygonArrays = RegionLookupService.shared.continentPolygons(for: continent)
+        let polygonArrays = RegionLookupService.shared.continentExtentPolygons(for: continent)
         guard !polygonArrays.isEmpty else { return defaultRegion }
         let region = calculateMapRegion(
             for: polygonArrays,

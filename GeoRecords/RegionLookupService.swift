@@ -254,10 +254,29 @@ class RegionLookupService {
         return countries.map { RegionInfo(code: $0.code, name: $0.name, type: .country, continent: $0.continent) }
     }
 
-    /// Get polygon coordinates for a continent (for map overlays)
+    /// Polygon coordinates for drawing a continent overlay: the land of every country
+    /// attributed to that continent. Natural Earth's own "Continent" features are
+    /// mainland masses only (no Yucatán, Central America, Caribbean, British Isles,
+    /// Philippines, Madagascar or New Zealand), and the country polygons tile the land
+    /// without overlapping, so the translucent fill stays even. Each country is drawn
+    /// in the continent its visits are attributed to (so all of Russia is Europe, as
+    /// in the country data).
     /// - Parameter continent: The continent enum value
     /// - Returns: Array of polygon coordinate arrays
     func continentPolygons(for continent: Continent) -> [[[CLLocationCoordinate2D]]] {
+        loadBoundaries()
+
+        var result: [[[CLLocationCoordinate2D]]] = []
+        for country in countries where country.continent == continent {
+            result.append(contentsOf: convertToCoordinates(polygons: country.polygons))
+        }
+        return result
+    }
+
+    /// Mainland extent of a continent, for framing a camera. The drawing overlay
+    /// can't be used for this: the United States, Russia, Fiji and New Zealand
+    /// cross the antimeridian, so their bounding box spans the globe.
+    func continentExtentPolygons(for continent: Continent) -> [[[CLLocationCoordinate2D]]] {
         loadBoundaries()
 
         if let continentBoundary = continents.first(where: { $0.continent == continent }) {
@@ -265,6 +284,21 @@ class RegionLookupService {
         }
 
         return []
+    }
+
+    /// Whether the drawn overlay for a continent covers a coordinate
+    func continentPolygonsContain(_ coordinate: CLLocationCoordinate2D, continent: Continent) -> Bool {
+        loadBoundaries()
+
+        let lat = coordinate.latitude
+        let lon = coordinate.longitude
+        for country in countries where country.continent == continent {
+            guard country.containsInBoundingBox(latitude: lat, longitude: lon) else { continue }
+            if country.polygons.contains(where: { pointInPolygon(latitude: lat, longitude: lon, polygon: $0) }) {
+                return true
+            }
+        }
+        return false
     }
 
     /// Get US outline polylines (for map overlays)
@@ -386,9 +420,11 @@ class RegionLookupService {
             let boundingBox = calculateBoundingBox(polygons: polygons)
 
             // Get continent from the file if available, otherwise use our lookup
+            // (the file labels a few island nations "Seven seas (open ocean)")
             let continent: Continent?
-            if let continentStr = properties["CONTINENT"] as? String {
-                continent = continentFromString(continentStr)
+            if let continentStr = properties["CONTINENT"] as? String,
+               let fromFile = continentFromString(continentStr) {
+                continent = fromFile
             } else {
                 continent = continentForCountry(code: finalCode, name: name)
             }

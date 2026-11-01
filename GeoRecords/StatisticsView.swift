@@ -23,6 +23,33 @@ private let chartYAxisPadding = 0.1
 /// Y-axis padding percentage for bidirectional charts
 private let bidirectionalChartYAxisPadding = 0.15
 
+// MARK: - Direction Rows
+
+/// Rows of an N/S or E/W pair to show, given SIGNED distances from home
+/// (positive = north/east side, negative = south/west side). A record on the wrong
+/// side of home, or within the noise threshold, shows a dash. The summary row and
+/// the scrub rows both go through this so they agree with the bars, which only
+/// draw a bar on the side the place really is.
+/// - Returns: magnitudes in display units, nil where the row shows a dash
+func directionRowMagnitudes(positiveSigned: Double?, negativeSigned: Double?, threshold: Double) -> (positive: Double?, negative: Double?) {
+    let positive = positiveSigned.flatMap { $0 > threshold ? $0 : nil }
+    let negative = negativeSigned.flatMap { $0 < -threshold ? -$0 : nil }
+    return (positive, negative)
+}
+
+// MARK: - Empty States
+
+/// What to show when the selected period has no statistics
+enum StatsEmptyState: Equatable {
+    case firstRun      // nothing recorded ever: onboarding copy
+    case emptyPeriod   // a veteran browsing a period with no fixes yet
+}
+
+func statsEmptyState(hasPeriodData: Bool, hasAnyData: Bool) -> StatsEmptyState? {
+    guard !hasPeriodData else { return nil }
+    return hasAnyData ? .emptyPeriod : .firstRun
+}
+
 // MARK: - Shared Chart Helpers
 
 /// Fetches the most extreme record for a given type and date range
@@ -66,14 +93,14 @@ private func fetchMostExtremeRecord(recordType: String, from startDate: Date, to
 
         guard !allRecords.isEmpty else { return nil }
 
-        // Find the most recently added record for this period (respects wizard selections)
-        let mostRecent = allRecords.max { r1, r2 in
-            let date1 = r1.dateAdded ?? r1.timestamp ?? Date.distantPast
-            let date2 = r2.dateAdded ?? r2.timestamp ?? Date.distantPast
-            return date1 < date2
+        // Same slot rule as the Records tab and the summary rows (a wizard choice for
+        // the slot's timeframe wins, else most extreme). The Lifetime view scrubs
+        // year bars; every other view scrubs month bars.
+        let slot: TimeFrame = (timeFrameFilter == "Lifetime") ? .year : .month
+        if let type = RecordType.from(string: recordType) {
+            return type.displayRecord(of: allRecords, slotTimeFrame: slot)
         }
-
-        return mostRecent
+        return allRecords.first
     } catch {
         debugLog("Error fetching record for chart: \(error.localizedDescription)")
         return nil
@@ -126,6 +153,7 @@ struct StatisticsView: View {
     @State private var monthlyAggregatesCache: [Int: MonthlyAggregate] = [:]
     @State private var yearlyAggregatesCache: [Int: YearlyAggregate] = [:]
     @State private var isLoading = true
+    @State private var hasAnyData = false  // any record history at all (set in loadStatistics)
 
     var body: some View {
         NavigationStack {
@@ -158,8 +186,15 @@ struct StatisticsView: View {
                     if isLoading {
                         ProgressView("Loading statistics...")
                             .padding(.top, 40)
-                    } else if hasNoData {
-                        NoDataView()
+                    } else if let emptyState = statsEmptyState(hasPeriodData: !hasNoData, hasAnyData: hasAnyData) {
+                        switch emptyState {
+                        case .firstRun:
+                            NoDataView()
+                        case .emptyPeriod:
+                            // A veteran on the 1st before the month's first fix, or in
+                            // early January: not a new user, just an empty period
+                            NoPeriodDataView(periodName: currentPeriodName)
+                        }
                     } else {
                         // Distance Section (relative to home)
                         VStack(alignment: .leading, spacing: 16) {
@@ -353,6 +388,8 @@ struct StatisticsView: View {
 
         Task { @MainActor in
             let historyManager = RecordHistoryManager.shared
+            // availableYears is loaded from the full record history before this runs
+            hasAnyData = !availableYears.isEmpty
 
             switch selectedTimeFrame {
             case .month:
@@ -402,6 +439,16 @@ struct StatisticsView: View {
     private var effectiveTimeFrame: TimeFrame {
         // selectedYear is only relevant when in .year mode now
         return selectedTimeFrame
+    }
+
+    /// "this month" / "October 2026" / "this year" / "2024" / "lifetime", for empty-state copy
+    private var currentPeriodName: String {
+        switch selectedTimeFrame {
+        case .month: return selectedMonth?.displayName ?? "this month"
+        case .year: return selectedYear.map { String($0) } ?? "this year"
+        case .allTime: return "lifetime"
+        case .daily: return "today"
+        }
     }
 
     /// The timeFrame filter string for Core Data queries
@@ -458,19 +505,19 @@ struct StatisticsView: View {
 
         guard northRecord != nil || southRecord != nil else { return nil }
 
-        // Calculate great-circle distances from home
-        let northDistance = northRecord.map { nsDistanceFromHome(latitude: $0.value) } ?? 0
-        let southDistance = southRecord.map { -nsDistanceFromHome(latitude: $0.value) } ?? 0
-
-        // Show records if they have significant distance
-        let validNorth = abs(northDistance) > chartMinDistanceThreshold
-        let validSouth = abs(southDistance) > chartMinDistanceThreshold
+        // Signed distances (positive = north of home): a "south" record that is
+        // actually north of home must not fill the S row
+        let rows = directionRowMagnitudes(
+            positiveSigned: northRecord.map { nsDistanceFromHome(latitude: $0.value) },
+            negativeSigned: southRecord.map { nsDistanceFromHome(latitude: $0.value) },
+            threshold: chartMinDistanceThreshold
+        )
 
         return DirectionSummary(
-            positiveLocationName: validNorth ? northRecord?.locationName : nil,
-            positiveDistance: validNorth ? FormatUtils.formatDistance(abs(northDistance), unitSystem: settings.unitSystem) : "—",
-            negativeLocationName: validSouth ? southRecord?.locationName : nil,
-            negativeDistance: validSouth ? FormatUtils.formatDistance(abs(southDistance), unitSystem: settings.unitSystem) : "—"
+            positiveLocationName: rows.positive != nil ? northRecord?.locationName : nil,
+            positiveDistance: rows.positive.map { FormatUtils.formatDistance($0, unitSystem: settings.unitSystem) } ?? "—",
+            negativeLocationName: rows.negative != nil ? southRecord?.locationName : nil,
+            negativeDistance: rows.negative.map { FormatUtils.formatDistance($0, unitSystem: settings.unitSystem) } ?? "—"
         )
     }
 
@@ -481,19 +528,18 @@ struct StatisticsView: View {
 
         guard eastRecord != nil || westRecord != nil else { return nil }
 
-        // Calculate great-circle distances from home
-        let eastDistance = eastRecord.map { ewDistanceFromHome(longitude: $0.value) } ?? 0
-        let westDistance = westRecord.map { -ewDistanceFromHome(longitude: $0.value) } ?? 0
-
-        // Show records if they have significant distance
-        let validEast = abs(eastDistance) > chartMinDistanceThreshold
-        let validWest = abs(westDistance) > chartMinDistanceThreshold
+        // Signed distances (positive = east of home); same side-of-home rule as N/S
+        let rows = directionRowMagnitudes(
+            positiveSigned: eastRecord.map { ewDistanceFromHome(longitude: $0.value) },
+            negativeSigned: westRecord.map { ewDistanceFromHome(longitude: $0.value) },
+            threshold: chartMinDistanceThreshold
+        )
 
         return DirectionSummary(
-            positiveLocationName: validEast ? eastRecord?.locationName : nil,
-            positiveDistance: validEast ? FormatUtils.formatDistance(abs(eastDistance), unitSystem: settings.unitSystem) : "—",
-            negativeLocationName: validWest ? westRecord?.locationName : nil,
-            negativeDistance: validWest ? FormatUtils.formatDistance(abs(westDistance), unitSystem: settings.unitSystem) : "—"
+            positiveLocationName: rows.positive != nil ? eastRecord?.locationName : nil,
+            positiveDistance: rows.positive.map { FormatUtils.formatDistance($0, unitSystem: settings.unitSystem) } ?? "—",
+            negativeLocationName: rows.negative != nil ? westRecord?.locationName : nil,
+            negativeDistance: rows.negative.map { FormatUtils.formatDistance($0, unitSystem: settings.unitSystem) } ?? "—"
         )
     }
 
@@ -1300,10 +1346,16 @@ struct BidirectionalStatChartCard: View {
                     let isNS = positiveRecordType == RecordType.north.rawValue
                     let posRecord = positiveRecordCache[point.label]
                     let negRecord = negativeRecordCache[point.label]
-                    let posValue = distanceFromRecord(posRecord, isNorthSouth: isNS) ?? abs(point.positiveValue)
-                    let negValue = distanceFromRecord(negRecord, isNorthSouth: isNS) ?? abs(point.negativeValue)
-                    let validPos = posRecord != nil && posValue > chartMinDistanceThreshold
-                    let validNeg = negRecord != nil && negValue > chartMinDistanceThreshold
+                    // Signed distances through the same side-of-home rule as the summary rows
+                    let rows = directionRowMagnitudes(
+                        positiveSigned: distanceFromRecord(posRecord, isNorthSouth: isNS),
+                        negativeSigned: distanceFromRecord(negRecord, isNorthSouth: isNS),
+                        threshold: chartMinDistanceThreshold
+                    )
+                    let validPos = rows.positive != nil
+                    let validNeg = rows.negative != nil
+                    let posValue = rows.positive ?? 0
+                    let negValue = rows.negative ?? 0
 
                     VStack(spacing: 4) {
                         // Positive direction row (N or E)
@@ -1512,34 +1564,37 @@ struct BidirectionalStatChartCard: View {
             do {
                 let allRecords = try context.fetch(request)
 
-                // For each data point, find the records with the most extreme coordinates
+                // For each bar, pick the record the Records tab would show for that
+                // period (wizard choice for the slot, else most extreme), so the scrub
+                // row agrees with the summary row. With no typed row in the period,
+                // fall back to the most extreme coordinate among all rows.
                 let isNS = positiveRecordType == RecordType.north.rawValue
+                let slot: TimeFrame = (timeFrame == .allTime && timeFrameFilter == "Lifetime") ? .year : .month
+                let positiveType = RecordType.from(string: positiveRecordType)
+                let negativeType = RecordType.from(string: negativeRecordType)
 
                 for point in data {
-                    // Find all records in this period
                     let periodRecords = allRecords.filter { record in
                         guard let timestamp = record.timestamp else { return false }
                         return timestamp >= point.startDate && timestamp <= point.endDate
                     }
+                    guard !periodRecords.isEmpty else { continue }
 
-                    if !periodRecords.isEmpty {
-                        if isNS {
-                            // For N/S: find record with highest latitude (north) and lowest latitude (south)
-                            if let northRecord = periodRecords.max(by: { $0.latitude < $1.latitude }) {
-                                positiveRecordCache[point.label] = northRecord
-                            }
-                            if let southRecord = periodRecords.min(by: { $0.latitude < $1.latitude }) {
-                                negativeRecordCache[point.label] = southRecord
-                            }
-                        } else {
-                            // For E/W: find record with highest longitude (east) and lowest longitude (west)
-                            if let eastRecord = periodRecords.max(by: { $0.longitude < $1.longitude }) {
-                                positiveRecordCache[point.label] = eastRecord
-                            }
-                            if let westRecord = periodRecords.min(by: { $0.longitude < $1.longitude }) {
-                                negativeRecordCache[point.label] = westRecord
-                            }
-                        }
+                    let positiveRows = periodRecords.filter { $0.recordType == positiveRecordType }
+                    let negativeRows = periodRecords.filter { $0.recordType == negativeRecordType }
+
+                    let positiveFallback = isNS
+                        ? periodRecords.max(by: { $0.latitude < $1.latitude })
+                        : periodRecords.max(by: { $0.longitude < $1.longitude })
+                    if let record = positiveType?.displayRecord(of: positiveRows, slotTimeFrame: slot) ?? positiveFallback {
+                        positiveRecordCache[point.label] = record
+                    }
+
+                    let negativeFallback = isNS
+                        ? periodRecords.min(by: { $0.latitude < $1.latitude })
+                        : periodRecords.min(by: { $0.longitude < $1.longitude })
+                    if let record = negativeType?.displayRecord(of: negativeRows, slotTimeFrame: slot) ?? negativeFallback {
+                        negativeRecordCache[point.label] = record
                     }
                 }
             } catch {
@@ -1560,23 +1615,23 @@ struct BidirectionalStatChartCard: View {
         FormatUtils.formatDistance(value, unitSystem: unitSystem)
     }
 
-    /// Calculate N/S or E/W distance from record's coordinates to home
-    /// Uses the record's actual latitude/longitude rather than DailyStatistic aggregates
+    /// SIGNED N/S or E/W distance from home to the record's coordinates, in display
+    /// units (positive = north/east of home). Uses the record's actual
+    /// latitude/longitude rather than DailyStatistic aggregates.
     private func distanceFromRecord(_ record: RecordHistoryEntry?, isNorthSouth: Bool) -> Double? {
         guard let record = record, let home = homeCoordinate else { return nil }
 
         let distanceUnitFactor = unitSystem == .imperial ? 1.0 / metersPerMile : 1.0 / metersPerKm
 
         if isNorthSouth {
-            // N/S distance based on latitude
             let destination = CLLocationCoordinate2D(latitude: record.latitude, longitude: home.longitude)
-            let distanceMeters = northSouthDistance(from: home, to: destination)
-            return abs(distanceMeters) * distanceUnitFactor
+            return northSouthDistance(from: home, to: destination) * distanceUnitFactor
         } else {
-            // E/W distance based on longitude
+            // Same convention as the chart bars: east = higher longitude
             let destination = CLLocationCoordinate2D(latitude: home.latitude, longitude: record.longitude)
             let distanceMeters = distanceBetween(from: home, to: destination)
-            return distanceMeters * distanceUnitFactor
+            let isEast = record.longitude > home.longitude
+            return (isEast ? distanceMeters : -distanceMeters) * distanceUnitFactor
         }
     }
 
@@ -1606,6 +1661,29 @@ struct NoDataView: View {
                 .font(.headline)
 
             Text("Start tracking your location or import photos to see your geographic footprint over time.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+        .padding(.top, 60)
+    }
+}
+
+/// Empty state for a period with no statistics when the user has data elsewhere
+struct NoPeriodDataView: View {
+    let periodName: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "calendar.badge.minus")
+                .font(.system(size: 40))
+                .foregroundColor(.secondary)
+
+            Text("No Records Yet")
+                .font(.headline)
+
+            Text("Nothing recorded for \(periodName).")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)

@@ -36,6 +36,18 @@ struct RecordsView: View {
     @State private var selectedMonth: MonthSelection?
     @State private var availableMonths: [MonthSelection] = []
 
+    /// Which slot the cards stand in, so a card can say "15 mi short of your yearly…"
+    /// only on This Month and compute progression against the right period
+    private var cardContext: RecordCardContext {
+        let isCurrentPeriod: Bool
+        switch selectedTimeFrame {
+        case .month: isCurrentPeriod = selectedMonth == nil
+        case .year: isCurrentPeriod = selectedYear == nil
+        default: isCurrentPeriod = true
+        }
+        return RecordCardContext(slotTimeFrame: selectedTimeFrame, isCurrentPeriod: isCurrentPeriod)
+    }
+
     // Computed property to get all non-nil records in order for the selected timeframe
     // Only includes geographic extreme records (N/S/E/W/Up/FromHome), not region records
     // (recomputes via recordManager's objectWillChange - no manual invalidation needed)
@@ -155,7 +167,7 @@ struct RecordsView: View {
                     // Swipeable cards in lower portion
                     TabView(selection: $currentRecordIndex) {
                         ForEach(Array(allRecords.enumerated()), id: \.element.id) { index, record in
-                            RecordCardView(record: record)
+                            RecordCardView(record: record, context: cardContext)
                                 .tag(index)
                                 .onTapGesture {
                                     selectedRecordIndex = index
@@ -380,7 +392,7 @@ struct RecordsView: View {
 
                 if let entry = recordType.displayRecord(of: entries, slotTimeFrame: .month),
                    var record = RecordDetail(from: entry) {
-                    record.timeFrame = .allTime  // Display as plain records (no timeframe chip)
+                    record.timeFrame = .month  // The slot it stands in, as loadRecordsFromHistory does
                     monthRecords.append(record)
                 }
             } catch {
@@ -437,7 +449,7 @@ struct RecordsView: View {
                 // Same slot-selection rule as "This Year" (wizard choice, else extreme)
                 if let entry = recordType.displayRecord(of: entries, slotTimeFrame: .year),
                    var record = RecordDetail(from: entry) {
-                    record.timeFrame = .allTime  // Display as all-time records
+                    record.timeFrame = .year  // The slot it stands in, as loadRecordsFromHistory does
                     yearRecords.append(record)
                 }
             } catch {
@@ -455,6 +467,7 @@ private struct RecordValueDisplay: View {
     let value: String
     let recordType: String
     let sizing: CardSizing
+    var caption: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: sizing.isCompact ? 2 : 4) {
@@ -468,6 +481,13 @@ private struct RecordValueDisplay: View {
                 .foregroundColor(FormatUtils.colorForRecordType(recordType))
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
+            if let caption {
+                Text(caption)
+                    .font(sizing.isCompact ? .caption2 : .caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
         }
     }
 }
@@ -478,9 +498,28 @@ private struct RecordValueDisplay: View {
 
 struct RecordCardView: View {
     let record: RecordDetail
+    var context: RecordCardContext? = nil
     @EnvironmentObject var settings: SettingsManager
 
+    @State private var caption: String?
     private let sizing = CardSizing()
+
+    /// Within-reach on This Month cards, else progression, else nothing
+    @MainActor
+    private func loadCaption() {
+        let unitSystem = settings.unitSystem
+        if let context, context.isCurrentPeriod, context.slotTimeFrame == .month,
+           let text = RecordCaption.withinReach(
+                month: record,
+                year: RecordManager.shared.getRecord(type: record.recordType, timeFrame: .year),
+                lifetime: RecordManager.shared.getRecord(type: record.recordType, timeFrame: .allTime),
+                unitSystem: unitSystem) {
+            caption = text
+            return
+        }
+        let previous = RecordHistoryManager.shared.previousRecord(before: record)
+        caption = RecordCaption.progression(current: record, previous: previous, unitSystem: unitSystem)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: sizing.cardSpacing) {
@@ -501,7 +540,8 @@ struct RecordCardView: View {
                     RecordValueDisplay(
                         value: record.formattedValue(unitSystem: settings.unitSystem),
                         recordType: record.recordType,
-                        sizing: sizing
+                        sizing: sizing,
+                        caption: caption
                     )
 
                     // Location
@@ -516,14 +556,15 @@ struct RecordCardView: View {
                         }
                     }
 
-                    // Coordinates (only on full-size)
+                    // "312 mi north of home", or cardinal coordinates (only on full-size)
                     if !sizing.isCompact {
+                        let framing = HomeFraming.text(for: record, home: settings.homeCoordinate, unitSystem: settings.unitSystem)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Coordinates")
+                            Text(framing.label)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text(FormatUtils.formatCoordinatesWithCardinals(record.coordinate))
-                                .font(.system(.caption, design: .monospaced))
+                            Text(framing.value)
+                                .font(framing.label == "Coordinates" ? .system(.caption, design: .monospaced) : .caption)
                                 .foregroundColor(.secondary)
                         }
                     }
@@ -554,5 +595,8 @@ struct RecordCardView: View {
                 .fill(Color(UIColor.secondarySystemBackground))
         )
         .padding(.horizontal, sizing.horizontalPadding)
+        .task(id: "\(record.id)-\(record.value)-\(context?.slotTimeFrame.rawValue ?? "")") {
+            loadCaption()
+        }
     }
 }

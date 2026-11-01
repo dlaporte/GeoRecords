@@ -24,6 +24,7 @@ struct DetailContentView: View {
     @State private var showMapOptions = false
     @State private var showPhotoPicker = false
     @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var beatPreviousText: String?
 
     // MARK: - Computed Properties
 
@@ -131,6 +132,11 @@ struct DetailContentView: View {
             displayedLocationName = record.locationName
         }
         .task {
+            beatPreviousText = RecordCaption.progressionDetail(
+                current: record,
+                previous: RecordHistoryManager.shared.previousRecord(before: record),
+                unitSystem: settings.unitSystem
+            )
             await loadPhoto()
             await prioritizeGeocoding()
         }
@@ -561,6 +567,17 @@ struct DetailContentView: View {
                     iconColor: .purple,
                     label: "From Home",
                     value: distance
+                )
+            }
+
+            if let beatPreviousText {
+                Divider().padding(.leading, 44)
+
+                DetailRow(
+                    icon: "arrow.up.right.circle",
+                    iconColor: .green,
+                    label: "Beat previous by",
+                    value: beatPreviousText
                 )
             }
 

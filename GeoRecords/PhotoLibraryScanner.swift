@@ -178,6 +178,33 @@ struct RecordToDelete {
     let month: Int?
 }
 
+extension PhotoLibraryScanner {
+    /// One line per record the import will remove ("Furthest Up (2024)"), for the
+    /// confirmation shown before anything is deleted. Toggling an existing record
+    /// off in the wizard means "delete it", which is not what "don't import" reads as.
+    nonisolated static func removalSummary(for deletions: [RecordToDelete]) -> [String] {
+        deletions.map { deletion in
+            let period: String
+            switch deletion.timeFrame {
+            case .allTime:
+                period = "Lifetime"
+            case .year:
+                period = deletion.year.map { String($0) } ?? "Yearly"
+            case .month:
+                if let year = deletion.year, let month = deletion.month,
+                   let date = Calendar.current.date(from: DateComponents(year: year, month: month, day: 1)) {
+                    period = date.formatted(.dateTime.month(.abbreviated).year())
+                } else {
+                    period = "Monthly"
+                }
+            case .daily:
+                period = "Daily"
+            }
+            return "\(deletion.recordType) (\(period))"
+        }
+    }
+}
+
 @MainActor
 class PhotoLibraryScanner: ObservableObject {
     @Published var isScanning = false

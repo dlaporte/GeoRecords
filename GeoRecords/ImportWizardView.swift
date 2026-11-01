@@ -10,6 +10,8 @@ struct ImportWizardView: View {
 
     let onImport: () -> Void
 
+    @State private var showRemovalConfirm = false
+
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
@@ -88,6 +90,24 @@ struct ImportWizardView: View {
             }
         }
         .background(Color(UIColor.systemGroupedBackground))
+        .alert("Remove Existing Records?", isPresented: $showRemovalConfirm) {
+            Button("Remove and Import", role: .destructive) { startImport() }
+            Button("Keep Them and Import") {
+                scanner.recordsToDelete = []
+                startImport()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(removalMessage)
+        }
+    }
+
+    private var removalMessage: String {
+        let lines = PhotoLibraryScanner.removalSummary(for: scanner.recordsToDelete)
+        let intro = lines.count == 1
+            ? "You switched off a record that already exists. Importing will delete it:"
+            : "You switched off \(lines.count) records that already exist. Importing will delete them:"
+        return intro + "\n\n" + lines.joined(separator: "\n")
     }
 
     private func goToPreviousStep() {
@@ -104,7 +124,16 @@ struct ImportWizardView: View {
 
     private func finishWizard() {
         scanner.buildConfirmedRecordsFromSelections()
-        // Confirm the selected regions
+        // An existing record toggled off is deleted on import — confirm that first
+        if scanner.recordsToDelete.isEmpty {
+            startImport()
+        } else {
+            showRemovalConfirm = true
+        }
+    }
+
+    /// Region confirmation writes immediately, so it only runs once the import is a go
+    private func startImport() {
         scanner.confirmDiscoveredRegions()
         onImport()
     }

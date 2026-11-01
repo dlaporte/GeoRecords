@@ -673,11 +673,17 @@ struct SingleRecordWidgetIntent: WidgetConfigurationIntent {
     @Parameter(title: "Time Frame", default: .allTime)
     var timeFrame: WidgetTimeFrame
 
+    /// Ignore the record and timeframe above and show whatever was set last
+    /// (any type, new regions included): the natural Lock Screen mode
+    @Parameter(title: "Show Most Recent Record", default: false)
+    var showMostRecent: Bool
+
     init() {}
 
-    init(selectedRecord: WidgetRecordType, timeFrame: WidgetTimeFrame = .allTime) {
+    init(selectedRecord: WidgetRecordType, timeFrame: WidgetTimeFrame = .allTime, showMostRecent: Bool = false) {
         self.selectedRecord = selectedRecord
         self.timeFrame = timeFrame
+        self.showMostRecent = showMostRecent
     }
 }
 
@@ -688,6 +694,11 @@ struct SingleRecordData {
     let location: String
     let timestamp: Date
     let thumbnailImage: UIImage?  // Pre-resized thumbnail, not raw data
+    /// The record's own timeframe ("Lifetime", "Yearly", "Monthly") when showing
+    /// the most recent record; empty means "use the configured timeframe"
+    var timeFrameLabel: String = ""
+
+    var isRegionRecord: Bool { type.hasPrefix("New ") }
 
     static let placeholder = SingleRecordData(
         type: "Furthest North",
@@ -735,6 +746,7 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
     private func fetchRecord(for configuration: SingleRecordWidgetIntent) -> SingleRecordData {
         let recordType = configuration.selectedRecord.rawValue
         let timeFrame = configuration.timeFrame
+        let showMostRecent = configuration.showMostRecent
 
         var result: SingleRecordData = SingleRecordData.placeholder
         let semaphore = DispatchSemaphore(value: 0)
@@ -743,6 +755,36 @@ struct SingleRecordProvider: AppIntentTimelineProvider {
             defer { semaphore.signal() }
 
             guard let context = context else { return }
+
+            if showMostRecent {
+                // Whatever was set last, of any type (shared rule in Constants.swift)
+                let request = NSFetchRequest<NSFetchRequestResult>(entityName: "RecordHistoryEntry")
+                request.sortDescriptors = [NSSortDescriptor(key: "dateAdded", ascending: false)]
+                request.fetchLimit = 500
+                guard let rows = try? context.fetch(request) as? [RecordHistoryEntry],
+                      let row = mostRecentlyAddedRecord(rows: rows, home: getHomeCoordinate()),
+                      let type = row.recordType,
+                      let timestamp = row.timestamp else { return }
+
+                let unitSystem = getUnitSystem()
+                var thumbnail: UIImage?
+                if let recordId = row.id {
+                    thumbnail = self.loadThumbnailFromCache(for: recordId)
+                }
+                if thumbnail == nil, let photoData = row.photoData {
+                    thumbnail = self.createThumbnailFromData(photoData, maxSize: 300)
+                }
+                let rowTimeFrame = row.timeFrame ?? ""
+                result = SingleRecordData(
+                    type: type,
+                    value: formatRecordValue(row.value, recordType: type, unitSystem: unitSystem),
+                    location: row.locationName ?? "Unknown",
+                    timestamp: timestamp,
+                    thumbnailImage: thumbnail,
+                    timeFrameLabel: lifetimeTimeFrameVariations.contains(rowTimeFrame) ? "Lifetime" : rowTimeFrame
+                )
+                return
+            }
 
             let request = NSFetchRequest<NSFetchRequestResult>(entityName: "RecordHistoryEntry")
             request.predicate = NSPredicate(format: "recordType == %@", recordType)
@@ -878,15 +920,15 @@ struct SingleRecordContentView: View {
         VStack(alignment: .leading, spacing: 4) {
             // Header: icon left, timeframe right
             HStack {
-                Image(systemName: recordType?.iconName ?? "location.circle.fill")
+                Image(systemName: recordType?.iconName ?? FormatUtils.iconForRecordType(record.type))
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(hasPhoto ? .white : (recordType?.color ?? .gray))
+                    .foregroundColor(hasPhoto ? .white : (recordType?.color ?? FormatUtils.colorForRecordType(record.type)))
                     .modifier(shadowModifier())
 
                 Spacer()
 
-                // Timeframe indicator
-                Text(timeFrame.rawValue)
+                // Timeframe indicator (the record's own when showing the most recent)
+                Text(record.timeFrameLabel.isEmpty ? timeFrame.rawValue : record.timeFrameLabel)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(hasPhoto ? .white.opacity(0.8) : .secondary)
                     .padding(.horizontal, 6)
@@ -902,16 +944,16 @@ struct SingleRecordContentView: View {
 
             // Bottom content - centered
             VStack(spacing: 2) {
-                // Value
-                Text(record.value)
+                // Value (a region record's "value" is its date; lead with the name)
+                Text(record.isRegionRecord ? record.location : record.value)
                     .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .foregroundColor(hasPhoto ? .white : (recordType?.color ?? .gray))
+                    .foregroundColor(hasPhoto ? .white : (recordType?.color ?? FormatUtils.colorForRecordType(record.type)))
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
                     .modifier(shadowModifier())
 
-                // Location
-                Text(record.location)
+                // Location (for a region record, the type: "New State")
+                Text(record.isRegionRecord ? record.type : record.location)
                     .font(.system(size: 13))
                     .foregroundColor(hasPhoto ? .white.opacity(0.95) : .secondary)
                     .lineLimit(2)
@@ -973,42 +1015,77 @@ struct SingleRecordBackgroundView: View {
     }
 }
 
+/// Lock Screen (accessoryRectangular) layout: type, value, place on three lines
+struct SingleRecordAccessoryView: View {
+    let record: SingleRecordData
+    let timeFrame: WidgetTimeFrame
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 4) {
+                Image(systemName: FormatUtils.iconForRecordType(record.type))
+                    .font(.system(size: 11, weight: .semibold))
+                    .widgetAccentable()
+                Text(record.type)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            Text(record.isRegionRecord ? record.location : record.value)
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .widgetAccentable()
+            Text(record.isRegionRecord ? record.timestamp.formatted(date: .abbreviated, time: .omitted) : record.location)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .widgetURL(URL(string: "georecords://records?timeframe=\(timeFrame.deepLinkParam)"))
+    }
+}
+
+/// Picks the layout for the widget family (the configuration closure cannot read
+/// the environment itself)
+struct SingleRecordEntryView: View {
+    let entry: SingleRecordEntry
+    @Environment(\.widgetFamily) private var family
+
+    var body: some View {
+        let hasPhoto = entry.record.thumbnailImage != nil
+        let timeFrame = entry.configuration.timeFrame
+
+        if family == .accessoryRectangular {
+            SingleRecordAccessoryView(record: entry.record, timeFrame: timeFrame)
+                .containerBackground(for: .widget) { Color.clear }
+        } else {
+            SingleRecordContentView(record: entry.record, hasPhoto: hasPhoto, timeFrame: timeFrame)
+                .containerBackground(for: .widget) {
+                    if let thumbnail = entry.record.thumbnailImage {
+                        SingleRecordBackgroundView(thumbnail: thumbnail)
+                    } else {
+                        Color(.systemBackground).opacity(0.8)
+                    }
+                }
+        }
+    }
+}
+
 /// Single record widget configuration
 struct SingleRecordWidget: Widget {
     let kind: String = "SingleRecordWidget"
 
     var body: some WidgetConfiguration {
         AppIntentConfiguration(kind: kind, intent: SingleRecordWidgetIntent.self, provider: SingleRecordProvider()) { entry in
-            let hasPhoto = entry.record.thumbnailImage != nil
-            let timeFrame = entry.configuration.timeFrame
-
-            if #available(iOS 17.0, *) {
-                SingleRecordContentView(record: entry.record, hasPhoto: hasPhoto, timeFrame: timeFrame)
-                    .containerBackground(for: .widget) {
-                        if let thumbnail = entry.record.thumbnailImage {
-                            SingleRecordBackgroundView(thumbnail: thumbnail)
-                        } else {
-                            Color(.systemBackground).opacity(0.8)
-                        }
-                    }
-            } else {
-                ZStack {
-                    if let thumbnail = entry.record.thumbnailImage {
-                        SingleRecordBackgroundView(thumbnail: thumbnail)
-                    }
-                    SingleRecordContentView(record: entry.record, hasPhoto: hasPhoto, timeFrame: timeFrame)
-                }
-                .padding()
-                .background()
-            }
+            SingleRecordEntryView(entry: entry)
         }
         .configurationDisplayName("Single Record")
-        .description("Display one record with its photo.")
-        .supportedFamilies([.systemSmall])
+        .description("Display one record with its photo, or whatever you set most recently.")
+        .supportedFamilies([.systemSmall, .accessoryRectangular])
     }
 }
 
-// MARK: - Region Statistics Widget (Large)
+// MARK: - Region Statistics Widget (Small and Medium, plus Lock Screen)
 
 /// Region type for statistics widget configuration
 enum WidgetRegionDisplayType: String, CaseIterable, Codable, AppEnum {
@@ -1179,11 +1256,39 @@ struct RegionStatsWidgetView: View {
                 smallWidgetView
             case .systemMedium:
                 mediumWidgetView
+            case .accessoryCircular:
+                accessoryCircularView
+            case .accessoryInline:
+                accessoryInlineView
             default:
                 mediumWidgetView
             }
         }
         .widgetURL(deepLinkURL)
+    }
+
+    // MARK: - Lock Screen
+
+    /// "14/50" under the kind's icon, for the first selected region kind
+    private var accessoryCircularView: some View {
+        let region = selectedRegions.first ?? .states
+        return ZStack {
+            AccessoryWidgetBackground()
+            VStack(spacing: 0) {
+                Image(systemName: region.iconName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .widgetAccentable()
+                Text("\(countFor(region))/\(totalFor(region))")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+        }
+    }
+
+    /// "14 states · 9 countries"
+    private var accessoryInlineView: some View {
+        Text(selectedRegions.map { "\(countFor($0)) \($0.rawValue.lowercased())" }.joined(separator: " · "))
     }
 
     private var deepLinkURL: URL? {
@@ -1441,7 +1546,7 @@ struct RegionStatsWidget: Widget {
         }
         .configurationDisplayName("Region Statistics")
         .description("See how many states, countries, and continents you've visited.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline])
     }
 }
 

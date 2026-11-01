@@ -642,6 +642,25 @@ let nullIslandAltitudeThreshold = 1.0
 /// Records within this distance of home are considered bogus/test data
 let atHomeRadiusMeters: Double = 100.0
 
+/// The record row added most recently (Monthly/Yearly/Lifetime rows only, never
+/// at home): what the Lock Screen's "most recent" shows. `dateAdded` wins over
+/// `timestamp`, so a backfilled 2015 photo record added today counts as recent.
+/// Shared with the widget target.
+func mostRecentlyAddedRecord(rows: [RecordHistoryEntry], home: CLLocationCoordinate2D?) -> RecordHistoryEntry? {
+    let timeFrames = Set([TimeFrame.month.rawValue, TimeFrame.year.rawValue] + lifetimeTimeFrameVariations)
+    func addedDate(_ row: RecordHistoryEntry) -> Date { row.dateAdded ?? row.timestamp ?? .distantPast }
+    return rows
+        .filter { row in
+            guard let timeFrame = row.timeFrame, timeFrames.contains(timeFrame) else { return false }
+            if let home {
+                let coordinate = CLLocationCoordinate2D(latitude: row.latitude, longitude: row.longitude)
+                if distanceBetween(from: coordinate, to: home) <= atHomeRadiusMeters { return false }
+            }
+            return true
+        }
+        .max { addedDate($0) < addedDate($1) }
+}
+
 /// Maximum realistic altitude on Earth (meters) - Mount Everest is 8,849m
 let maxRealisticAltitudeMeters = 9000.0
 

@@ -55,6 +55,16 @@
                ReferencedContainer = "container:GeoRecords.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "C3AD07AD2D81C991009D8681"
+               BuildableName = "GeoRecordsUITests.xctest"
+               BlueprintName = "GeoRecordsUITests"
+               ReferencedContainer = "container:GeoRecords.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

@@ -142,6 +142,7 @@ struct HistoryView: View {
                             }
                         }
                         .pickerStyle(.menu)
+                        .fixedSize(horizontal: true, vertical: false)
                         .frame(maxWidth: .infinity)
 
                         // Time frame picker (disabled for region types which don't have timeframes)
@@ -370,11 +371,13 @@ struct CompactHistoryRow: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Value
+            // Value ("117.4260° W" is wider than the old signed form; never wrap it)
             Text(formattedValue)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.primary)
-                .frame(width: 70, alignment: .trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .frame(width: 82, alignment: .trailing)
         }
         .padding(.vertical, 2)
     }

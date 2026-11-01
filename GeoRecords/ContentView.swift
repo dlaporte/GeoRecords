@@ -268,6 +268,13 @@ struct ContentView: View {
                 NotificationCenter.default.post(name: .scrollToiCloudSync, object: nil)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .navigateToHomePicker)) { _ in
+            selectedTab = 4  // Settings tab, then push the home picker once it is up
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: briefPauseNanos)
+                NotificationCenter.default.post(name: .openHomePicker, object: nil)
+            }
+        }
     }
 
     private var showingSetupWizardBinding: Binding<Bool> {

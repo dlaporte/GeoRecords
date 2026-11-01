@@ -16,6 +16,7 @@ struct SettingsView: View {
 
     // State for confirmation alerts
     @State private var showClearRecordsSheet = false
+    @State private var showHomePicker = false  // pushed from Stats' "Set Home Location"
     @State private var deleteFromiCloud = false
     @State private var showImportView = false
     @State private var showPermissionAlert = false
@@ -460,6 +461,12 @@ struct SettingsView: View {
                 withAnimation {
                     proxy.scrollTo("iCloudSync", anchor: .top)
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openHomePicker)) { _ in
+                showHomePicker = true
+            }
+            .navigationDestination(isPresented: $showHomePicker) {
+                HomePickerView()
             }
             } // ScrollViewReader
             .navigationTitle("Settings")

@@ -7,6 +7,9 @@ import CoreData
 extension Notification.Name {
     static let navigateToiCloudSync = Notification.Name("navigateToiCloudSync")
     static let scrollToiCloudSync = Notification.Name("scrollToiCloudSync")
+    /// Stats' "Set Home Location" button: switch to Settings, then push the home picker
+    static let navigateToHomePicker = Notification.Name("navigateToHomePicker")
+    static let openHomePicker = Notification.Name("openHomePicker")
     static let showSetupWizard = Notification.Name("showSetupWizard")
     static let statisticsDidChange = Notification.Name("statisticsDidChange")
     static let recordsDidChange = Notification.Name("recordsDidChange")

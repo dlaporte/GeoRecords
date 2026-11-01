@@ -155,6 +155,12 @@ struct StatisticsView: View {
     @State private var isLoading = true
     @State private var hasAnyData = false  // any record history at all (set in loadStatistics)
 
+    // Activity for the browsed period: records set and regions (strip and count cards)
+    @State private var periodEvents: [RecordEvent] = []
+    @State private var periodRegionCounts = RegionPeriodCounts(states: 0, countries: 0, continents: 0)
+    @State private var recordsSetPoints: [CountPoint] = []
+    @State private var regionGrowthPoints: [RegionGrowthPoint] = []
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -196,6 +202,9 @@ struct StatisticsView: View {
                             NoPeriodDataView(periodName: currentPeriodName)
                         }
                     } else {
+                        // What the browsed period amounted to
+                        PeriodSummaryStrip(text: periodSummaryText)
+
                         // Distance Section (relative to home)
                         VStack(alignment: .leading, spacing: 16) {
                             Text("Distance")
@@ -277,22 +286,46 @@ struct StatisticsView: View {
                                 timeFrameFilter: currentTimeFrameFilter
                             )
                         }
+
+                        // Activity Section (records set, regions over time)
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("Activity")
+                                .font(.headline)
+                                .padding(.horizontal)
+
+                            RecordsSetCard(points: recordsSetPoints, total: periodEvents.count)
+
+                            if regionGrowthPoints.contains(where: { $0.states + $0.countries > 0 }) {
+                                RegionsGrowthCard(
+                                    points: regionGrowthPoints,
+                                    timeFrame: selectedTimeFrame,
+                                    totalStates: regionGrowthPoints.last?.states ?? 0,
+                                    totalCountries: regionGrowthPoints.last?.countries ?? 0,
+                                    newStates: selectedTimeFrame == .allTime ? 0 : periodRegionCounts.states,
+                                    newCountries: selectedTimeFrame == .allTime ? 0 : periodRegionCounts.countries
+                                )
+                            }
+                        }
                     }
                 }
                 .padding(.vertical)
             }
             .navigationTitle("Statistics")
             .onAppear {
-                // Reset historical selections when returning to this tab
-                selectedYear = nil
-                selectedMonth = nil
-
                 // Clean up old daily records (keeps current + previous month)
                 RecordHistoryManager.shared.cleanupOldDailyRecords()
 
                 loadAvailableYears()
                 loadAvailableMonths()
-                // After the resets: a pending summary-notification period wins
+                // The browsed period survives tab switches (as on Records) unless its
+                // data is gone: the cleanup above can retire a past month
+                if let month = selectedMonth, !availableMonths.contains(month) {
+                    selectedMonth = nil
+                }
+                if let year = selectedYear, !availableYears.contains(year) {
+                    selectedYear = nil
+                }
+                // A pending summary-notification period wins
                 applyPendingStatsPeriod()
                 loadStatistics()
 
@@ -426,8 +459,66 @@ struct StatisticsView: View {
                 break
             }
 
+            loadActivity(historyManager: historyManager)
+
             isLoading = false
         }
+    }
+
+    /// Records set and regions for the browsed period: the summary strip and the
+    /// two count cards
+    private func loadActivity(historyManager: RecordHistoryManager) {
+        let calendar = Calendar.current
+        let now = Date()
+        let regionManager = RegionTrackingManager.shared
+
+        let interval = StatsBuckets.periodInterval(timeFrame: selectedTimeFrame, year: selectedYear,
+                                                   month: selectedMonth, now: now, calendar: calendar)
+        periodEvents = historyManager.recordEvents(in: interval)
+        periodRegionCounts = regionManager.newRegionCounts(in: interval)
+
+        // Lifetime starts at the earliest of: aggregates, region first visits, events
+        let regionYears = (regionManager.visitedStates + regionManager.visitedCountries)
+            .map { calendar.component(.year, from: $0.timestamp) }
+        let eventYears = periodEvents.map { calendar.component(.year, from: $0.timestamp) }
+        let earliestYear = [yearlyAggregates.map(\.year).min(), regionYears.min(), eventYears.min()]
+            .compactMap { $0 }.min()
+
+        let starts = StatsBuckets.bucketStarts(timeFrame: selectedTimeFrame, year: selectedYear, month: selectedMonth,
+                                               now: now, earliestYear: earliestYear, calendar: calendar)
+        let labels = StatsBuckets.labels(for: starts, timeFrame: selectedTimeFrame, calendar: calendar)
+        let component = StatsBuckets.component(for: selectedTimeFrame)
+        let counts = StatsBuckets.counts(dates: periodEvents.map(\.timestamp), bucketStarts: starts,
+                                         component: component, calendar: calendar)
+        recordsSetPoints = zip(labels, counts).map { CountPoint(label: $0, value: $1) }
+
+        let ends = starts.compactMap { calendar.date(byAdding: component, value: 1, to: $0)?.addingTimeInterval(-1) }
+        regionGrowthPoints = zip(starts, regionManager.cumulativeRegionCounts(through: ends))
+            .map { RegionGrowthPoint(date: $0, states: $1.states, countries: $1.countries) }
+    }
+
+    /// Title-case period for the strip ("This Month", "Oct 2026", "2024", "Lifetime")
+    private var periodTitle: String {
+        switch selectedTimeFrame {
+        case .month: return selectedMonth?.displayName ?? "This Month"
+        case .year: return selectedYear.map { String($0) } ?? "This Year"
+        case .allTime: return "Lifetime"
+        case .daily: return "Today"
+        }
+    }
+
+    /// "Oct 2026 · 3 records set · 1 new state" (totals in Lifetime)
+    private var periodSummaryText: String {
+        let lifetime = selectedTimeFrame == .allTime
+        let regionManager = RegionTrackingManager.shared
+        return PeriodSummary.text(
+            title: periodTitle,
+            records: periodEvents.count,
+            states: lifetime ? regionManager.stateCount : periodRegionCounts.states,
+            countries: lifetime ? regionManager.countryCount : periodRegionCounts.countries,
+            continents: lifetime ? regionManager.continentCount : periodRegionCounts.continents,
+            lifetime: lifetime
+        )
     }
 
     /// Get daily aggregate for a specific day from the cache
@@ -1708,6 +1799,16 @@ struct HomeNotSetCard: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
+
+            Button {
+                NotificationCenter.default.post(name: .navigateToHomePicker, object: nil)
+            } label: {
+                Label("Set Home Location", systemImage: "house")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
         }
         .frame(maxWidth: .infinity)
         .padding()

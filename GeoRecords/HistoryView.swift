@@ -133,45 +133,43 @@ struct HistoryView: View {
             VStack(spacing: 0) {
                 // Filter controls
                 VStack(spacing: 12) {
-                    // Pickers row
+                    // Type and source (the two short menus share a row)
                     HStack(spacing: 12) {
-                        // Record type picker
-                        Picker("Type", selection: $selectedRecordTypeFilter) {
-                            ForEach(availableRecordTypes, id: \.self) { type in
-                                Text(type).tag(type)
+                        FilterMenu(title: selectedRecordTypeFilter) {
+                            Picker("Type", selection: $selectedRecordTypeFilter) {
+                                ForEach(availableRecordTypes, id: \.self) { type in
+                                    Text(type).tag(type)
+                                }
                             }
                         }
-                        .pickerStyle(.menu)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .frame(maxWidth: .infinity)
-
-                        // Time frame picker (disabled for region types which don't have timeframes)
-                        Picker("Time Frame", selection: $selectedTimeFrameFilter) {
-                            ForEach(availableTimeFrames, id: \.self) { frame in
-                                Text(frame).tag(frame)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity)
-                        .disabled(isRegionTypeSelected)
-                        .opacity(isRegionTypeSelected ? 0.5 : 1.0)
                         .onChange(of: selectedRecordTypeFilter) { _, newValue in
                             // Reset to All Timeframes when selecting a region type
                             if isRegionType(newValue) {
                                 selectedTimeFrameFilter = "All Timeframes"
                             }
                         }
-                    }
 
-                    // Source filter and the at-home rows, normally hidden
-                    HStack(spacing: 12) {
-                        Picker("Source", selection: $selectedSource) {
-                            ForEach(HistorySourceFilter.menuOrder, id: \.self) { source in
-                                Text(source.title).tag(source)
+                        FilterMenu(title: selectedSource.title) {
+                            Picker("Source", selection: $selectedSource) {
+                                ForEach(HistorySourceFilter.menuOrder, id: \.self) { source in
+                                    Text(source.title).tag(source)
+                                }
                             }
                         }
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity)
+                    }
+
+                    // Timeframe (disabled for region types, which have none) and the
+                    // at-home rows, normally hidden
+                    HStack(spacing: 12) {
+                        FilterMenu(title: selectedTimeFrameFilter) {
+                            Picker("Time Frame", selection: $selectedTimeFrameFilter) {
+                                ForEach(availableTimeFrames, id: \.self) { frame in
+                                    Text(frame).tag(frame)
+                                }
+                            }
+                        }
+                        .disabled(isRegionTypeSelected)
+                        .opacity(isRegionTypeSelected ? 0.5 : 1.0)
 
                         Toggle("Include home", isOn: $includeHome)
                             .toggleStyle(.switch)
@@ -265,6 +263,31 @@ struct HistoryView: View {
                 Text(RecordDeleteCopy.message(recordType: entry.recordType))
             }
         }
+    }
+}
+
+// MARK: - Filter Menu
+
+/// A menu picker whose label is the current choice on one line. A plain
+/// `.pickerStyle(.menu)` sizes itself for its longest option and wraps the label
+/// when it shares a row.
+private struct FilterMenu<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        Menu {
+            content()
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

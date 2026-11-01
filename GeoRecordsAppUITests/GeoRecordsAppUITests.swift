@@ -44,9 +44,11 @@ final class GeoRecordsUITests: XCTestCase {
         tap(app, "This Year"); sleep(2); snap(app, "03-records-year")
 
         app.tabBars.buttons["Stats"].tap(); sleep(3); snap(app, "04-stats-lifetime")
-        app.swipeUp(); sleep(1); snap(app, "05-stats-lifetime-scrolled")
-        app.swipeUp(); sleep(1); snap(app, "06-stats-lifetime-bottom")
-        tap(app, "This Month"); sleep(3); snap(app, "07-stats-month")
+        scrollUp(app); snap(app, "05-stats-lifetime-scrolled")
+        scrollUp(app); scrollUp(app); snap(app, "06-stats-lifetime-bottom")
+        tap(app, "This Year"); sleep(3)
+        scrollUp(app); scrollUp(app); scrollUp(app); snap(app, "07-stats-year-bottom")
+        tap(app, "This Month"); sleep(3); snap(app, "07b-stats-month")
 
         app.tabBars.buttons["Regions"].tap(); sleep(4); snap(app, "08-regions-states")
         if app.buttons["Show regions not yet visited"].waitForExistence(timeout: 3) {
@@ -59,6 +61,15 @@ final class GeoRecordsUITests: XCTestCase {
         app.tabBars.buttons["History"].tap(); sleep(3); snap(app, "12-history")
         app.tabBars.buttons["Settings"].tap(); sleep(2); snap(app, "13-settings")
         app.swipeUp(); sleep(1); snap(app, "14-settings-scrolled")
+    }
+
+    /// Drags upward along the left margin, outside the cards: the Stats charts own a
+    /// scrub gesture that swallows swipes started on them
+    private func scrollUp(_ app: XCUIApplication) {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.85))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.3))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        sleep(1)
     }
 
     /// Taps a control by its visible text, whichever element type the picker exposes

@@ -133,8 +133,24 @@ private struct PendingRegionsBanner: View {
 struct VisitedRegionCard: View {
     let detail: RecordDetail
     @EnvironmentObject var settings: SettingsManager
+    @ObservedObject private var regionManager = RegionTrackingManager.shared
 
     private let sizing = CardSizing()
+
+    /// "State" / "Country" / "Continent" instead of the stored "New State"
+    private var regionKind: String {
+        detail.recordType.replacingOccurrences(of: "New ", with: "")
+    }
+
+    private var firstVisitedText: String {
+        "First visited \(detail.timestamp.formatted(.dateTime.month(.abbreviated).year()))"
+    }
+
+    private var visitsText: String? {
+        guard let code = detail.regionCode, let type = RecordType.from(string: detail.recordType) else { return nil }
+        let summary = regionManager.visitSummary(code: code, type: type)
+        return VisitLog.text(count: summary.count, last: summary.last)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: sizing.cardSpacing) {
@@ -146,11 +162,11 @@ struct VisitedRegionCard: View {
                     .frame(width: sizing.iconSize, height: sizing.iconSize)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(detail.recordType)
+                    Text(regionKind)
                         .font(sizing.isCompact ? .caption : .headline)
                         .fontWeight(.semibold)
                         .lineLimit(1)
-                    Text(detail.locationName ?? "Unknown")
+                    Text(firstVisitedText)
                         .font(sizing.isCompact ? .caption2 : .caption)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
@@ -187,13 +203,13 @@ struct VisitedRegionCard: View {
                         }
                     }
 
-                    // First visit date
-                    if !sizing.isCompact {
+                    // Repeat visits ("3 visits · last Aug 2026")
+                    if !sizing.isCompact, let visitsText {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("First Visit")
+                            Text("Visits")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text(detail.timestamp, style: .date)
+                            Text(visitsText)
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                         }
@@ -248,16 +264,30 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
     let statsIconColor: Color
     let statsText: String
     let widgetButtonHighlighted: Bool
+    /// Every region of this tab's kind that is not visited yet
+    let notYetRegions: [NotYetRegion]
+    let notYetKind: NotYetKind
+    /// Camera when no card is selected; also the fallback for not-yet framing
+    let defaultCamera: MKCoordinateRegion
     /// Maps a tapped map coordinate to the index of the matching card (nil = no card)
     let cardIndex: (CLLocationCoordinate2D) -> Int?
-    @ViewBuilder let mapView: (RecordDetail?, _ onTap: @escaping (CLLocationCoordinate2D) -> Void) -> MapV
+    /// Maps a tapped coordinate to an unvisited region of this tab's kind (nil = none)
+    let unvisitedRegion: (CLLocationCoordinate2D) -> NotYetRegion?
+    /// Builds the map: current card, a camera override (not-yet browsing), whether
+    /// visited regions are dimmed, and the tap handler
+    @ViewBuilder let mapView: (RecordDetail?, MKCoordinateRegion?, Bool, _ onTap: @escaping (CLLocationCoordinate2D) -> Void) -> MapV
     @ViewBuilder let widgetSheet: () -> SheetV
     @ViewBuilder let emptyState: () -> EmptyV
 
+    @EnvironmentObject private var settings: SettingsManager
     @State private var currentCardIndex = 0
     @State private var selectedDetail: RecordDetail?
     @State private var navigateToDetail = false
     @State private var showWidgetViewSetter = false
+    @State private var showNotYet = false
+    @State private var callout: UnvisitedCallout?
+    @State private var cameraOverride: MKCoordinateRegion?
+    @State private var distancesByCode: [String: Double] = [:]
 
     // Current region to display on map
     private var currentRegion: RecordDetail? {
@@ -267,29 +297,124 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
         return regions[currentCardIndex]
     }
 
-    // Tapping a visited region on the map swipes the card carousel to it
+    // Tapping a visited region on the map swipes the card carousel to it; tapping
+    // an unvisited one shows a callout instead
     private func selectCard(at coordinate: CLLocationCoordinate2D) {
-        guard let index = cardIndex(coordinate) else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
-            currentCardIndex = index
+        if let index = cardIndex(coordinate) {
+            callout = nil
+            cameraOverride = nil
+            withAnimation(.easeInOut(duration: 0.2)) {
+                currentCardIndex = index
+            }
+            return
         }
+        if let region = unvisitedRegion(coordinate) {
+            showCallout(for: region)
+        } else {
+            callout = nil
+        }
+    }
+
+    private func showCallout(for region: NotYetRegion) {
+        let distanceText = distancesByCode[region.code].map {
+            RegionDistance.approximateText(meters: $0, unitSystem: settings.unitSystem)
+        }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            callout = UnvisitedCallout(name: region.name, code: region.code, distanceText: distanceText)
+        }
+    }
+
+    private var distanceTaskID: String {
+        let home = settings.homeCoordinate.map { "\($0.latitude),\($0.longitude)" } ?? "none"
+        return "\(home)|\(notYetRegions.count)"
+    }
+
+    /// Nearest-border distances from home for every unvisited region, off the main actor
+    private func loadDistances() async {
+        guard let home = settings.homeCoordinate else {
+            distancesByCode = [:]
+            return
+        }
+        let codes = notYetRegions.map(\.code)
+        let kind = notYetKind
+        let computed = await Task.detached(priority: .utility) { () -> [String: Double] in
+            var result: [String: Double] = [:]
+            for code in codes {
+                if let meters = RegionDistance.nearestMeters(from: home, polygons: kind.polygons(for: code)) {
+                    result[code] = meters
+                }
+            }
+            return result
+        }.value
+        distancesByCode = computed
     }
 
     var body: some View {
         VStack(spacing: 0) {
             // Map showing current region with overlaid stats
             ZStack(alignment: .top) {
-                mapView(currentRegion, selectCard)
+                mapView(currentRegion, cameraOverride, showNotYet, selectCard)
                     .frame(maxWidth: .infinity)
+                    .overlay(alignment: .bottom) {
+                        if let callout {
+                            HStack(spacing: 6) {
+                                Image(systemName: "mappin.circle")
+                                    .foregroundColor(.secondary)
+                                Text(callout.name)
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                Text("· not yet")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                if let distanceText = callout.distanceText {
+                                    Text("· \(distanceText)")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .lineLimit(1)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color(UIColor.systemBackground).opacity(0.9))
+                            .cornerRadius(8)
+                            .padding(.bottom, 12)
+                            .transition(.opacity)
+                            .task(id: callout) {
+                                try? await Task.sleep(for: .seconds(4))
+                                if !Task.isCancelled {
+                                    withAnimation { self.callout = nil }
+                                }
+                            }
+                        }
+                    }
 
                 // Stats header overlaid on map
                 HStack {
                     Image(systemName: statsIcon)
                         .foregroundColor(statsIconColor)
-                    Text(statsText)
+                    Text(showNotYet ? "\(notYetRegions.count) to go" : statsText)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showNotYet.toggle()
+                        }
+                        if !showNotYet {
+                            cameraOverride = nil
+                            callout = nil
+                        }
+                    } label: {
+                        Label("Not yet", systemImage: "list.bullet")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(showNotYet ? .white : .secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(showNotYet ? Color.accentColor : Color(UIColor.tertiarySystemFill)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(showNotYet ? "Show visited" : "Show regions not yet visited")
                     Button {
                         showWidgetViewSetter = true
                     } label: {
@@ -297,6 +422,7 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
                             .font(.system(size: 16))
                             .foregroundColor(.blue)
                     }
+                    .accessibilityLabel("Widget map view")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -308,9 +434,19 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
             .sheet(isPresented: $showWidgetViewSetter) {
                 widgetSheet()
             }
+            .task(id: distanceTaskID) {
+                await loadDistances()
+            }
 
-            // Cards
-            if regions.isEmpty {
+            // Cards, or the list of what is left
+            if showNotYet {
+                NotYetList(regions: notYetRegions, distances: distancesByCode, unitSystem: settings.unitSystem) { region in
+                    cameraOverride = notYetKind.camera(for: region.code, defaultRegion: defaultCamera)
+                    showCallout(for: region)
+                }
+                .frame(height: cardTabViewHeight)
+                .padding(.vertical, 10)
+            } else if regions.isEmpty {
                 Spacer()
                 emptyState()
                 Spacer()
@@ -341,6 +477,47 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
     }
 }
 
+// MARK: - Not Yet List
+
+/// The regions of a kind still unvisited, nearest first when home is set
+private struct NotYetList: View {
+    let regions: [NotYetRegion]
+    let distances: [String: Double]
+    let unitSystem: UnitSystem
+    let onSelect: (NotYetRegion) -> Void
+
+    private var sorted: [NotYetRegion] {
+        guard !distances.isEmpty else { return regions }
+        return regions.sorted { (distances[$0.code] ?? .infinity) < (distances[$1.code] ?? .infinity) }
+    }
+
+    var body: some View {
+        if regions.isEmpty {
+            ContentUnavailableView("Nothing left", systemImage: "checkmark.seal",
+                                   description: Text("You've visited them all."))
+        } else {
+            List(sorted) { region in
+                Button {
+                    onSelect(region)
+                } label: {
+                    HStack {
+                        Text(region.name)
+                            .foregroundColor(.primary)
+                        Spacer()
+                        if let meters = distances[region.code] {
+                            Text(RegionDistance.approximateText(meters: meters, unitSystem: unitSystem))
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            .listStyle(.plain)
+        }
+    }
+}
+
 // MARK: - States Map View
 
 /// Shows visited US states as cards
@@ -365,25 +542,37 @@ struct StatesMapView: View {
     }
 
     var body: some View {
+        let visitedCodes = Set(sortedStates.compactMap { $0.regionCode.map { normalizeRegionCode($0, isState: true) } })
         RegionCardsMapView(
             regions: sortedStates,
             statsIcon: "flag.fill",
             statsIconColor: .orange,
             statsText: "\(regionManager.stateCount) of 50 states visited",
             widgetButtonHighlighted: SettingsManager.shared.widgetMapStatesRegion != nil,
+            notYetRegions: NotYetSet.remaining(all: NotYetSet.allStates, visitedCodes: visitedCodes),
+            notYetKind: .state,
+            defaultCamera: MKCoordinateRegion(center: defaultUSMapCenter, span: defaultUSStateSpan),
             cardIndex: { coordinate in
                 guard let info = RegionLookupService.shared.region(for: coordinate),
                       info.type == .state else { return nil }
                 return sortedStates.firstIndex { $0.regionCode == info.code }
             },
-            mapView: { current, onTap in
-                let region = mapRegion(for: current)
+            unvisitedRegion: { coordinate in
+                guard let info = RegionLookupService.shared.region(for: coordinate),
+                      info.type == .state else { return nil }
+                let code = normalizeRegionCode(info.code, isState: true)
+                return visitedCodes.contains(code) ? nil : NotYetRegion(code: code, name: info.name)
+            },
+            mapView: { current, override, dimVisited, onTap in
+                let region: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) =
+                    override.map { (center: $0.center, span: $0.span) } ?? mapRegion(for: current)
                 RegionMapView(
                     regionType: .state,
                     visitedRegions: sortedStates,
                     currentRegion: current,
                     centerCoordinate: region.center,
                     span: region.span,
+                    dimVisited: dimVisited,
                     onTap: onTap
                 )
             },
@@ -421,26 +610,38 @@ struct CountriesMapView: View {
     }
 
     var body: some View {
+        let visitedCodes = Set(sortedCountries.compactMap(\.regionCode))
         RegionCardsMapView(
             regions: sortedCountries,
             statsIcon: "globe.americas.fill",
             statsIconColor: .blue,
             statsText: "\(regionManager.countryCount) of 195 countries visited",
             widgetButtonHighlighted: SettingsManager.shared.widgetMapCountriesRegion != nil,
+            notYetRegions: NotYetSet.remaining(all: NotYetSet.allCountries, visitedCodes: visitedCodes),
+            notYetKind: .country,
+            defaultCamera: MKCoordinateRegion(center: defaultWorldMapCenter, span: defaultCountrySpan),
             cardIndex: { coordinate in
                 guard let info = RegionLookupService.shared.region(for: coordinate) else { return nil }
                 // A tap on a US state should select the United States card
                 let countryCode = info.type == .state ? "US" : info.code
                 return sortedCountries.firstIndex { $0.regionCode == countryCode }
             },
-            mapView: { current, onTap in
-                let region = mapRegion(for: current)
+            unvisitedRegion: { coordinate in
+                guard let info = RegionLookupService.shared.region(for: coordinate) else { return nil }
+                let code = info.type == .state ? "US" : info.code
+                let name = info.type == .state ? "United States" : info.name
+                return visitedCodes.contains(code) ? nil : NotYetRegion(code: code, name: name)
+            },
+            mapView: { current, override, dimVisited, onTap in
+                let region: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) =
+                    override.map { (center: $0.center, span: $0.span) } ?? mapRegion(for: current)
                 RegionMapView(
                     regionType: .country,
                     visitedRegions: sortedCountries,
                     currentRegion: current,
                     centerCoordinate: region.center,
                     span: region.span,
+                    dimVisited: dimVisited,
                     onTap: onTap
                 )
             },
@@ -483,23 +684,34 @@ struct ContinentsMapView: View {
     }
 
     var body: some View {
+        let visitedCodes = Set(visitedContinentsSet.map(\.rawValue))
         RegionCardsMapView(
             regions: sortedContinents,
             statsIcon: "globe",
             statsIconColor: .purple,
             statsText: "\(regionManager.continentCount) of 7 continents visited",
             widgetButtonHighlighted: SettingsManager.shared.widgetMapContinentsRegion != nil,
+            notYetRegions: NotYetSet.remaining(all: NotYetSet.allContinents, visitedCodes: visitedCodes),
+            notYetKind: .continent,
+            defaultCamera: MKCoordinateRegion(center: defaultWorldMapCenter, span: defaultContinentSpan),
             cardIndex: { coordinate in
                 guard let continent = RegionLookupService.shared.region(for: coordinate)?.continent else { return nil }
                 return sortedContinents.firstIndex { Continent(rawValue: $0.locationName ?? "") == continent }
             },
-            mapView: { current, onTap in
-                let region = mapRegion(for: current)
+            unvisitedRegion: { coordinate in
+                guard let continent = RegionLookupService.shared.region(for: coordinate)?.continent,
+                      !visitedContinentsSet.contains(continent) else { return nil }
+                return NotYetRegion(code: continent.rawValue, name: continent.rawValue)
+            },
+            mapView: { current, override, dimVisited, onTap in
+                let region: (center: CLLocationCoordinate2D, span: MKCoordinateSpan) =
+                    override.map { (center: $0.center, span: $0.span) } ?? mapRegion(for: current)
                 ContinentMapView(
                     visitedContinents: visitedContinentsSet,
                     currentContinent: current.flatMap { Continent(rawValue: $0.locationName ?? "") },
                     centerCoordinate: region.center,
                     span: region.span,
+                    dimVisited: dimVisited,
                     onTap: onTap
                 )
             },
@@ -521,6 +733,8 @@ struct ContinentMapView: UIViewRepresentable {
     let currentContinent: Continent?
     let centerCoordinate: CLLocationCoordinate2D
     let span: MKCoordinateSpan
+    /// Not-yet browsing: visited continents fade to gray
+    var dimVisited: Bool = false
     var onTap: ((CLLocationCoordinate2D) -> Void)? = nil
 
     func makeUIView(context: Context) -> MKMapView {
@@ -539,16 +753,19 @@ struct ContinentMapView: UIViewRepresentable {
         // Set the current continent BEFORE any rebuild so lazily-created renderers style correctly
         let previousContinent = coordinator.currentContinent
         coordinator.currentContinent = currentContinent
+        let dimChanged = coordinator.dimmed != dimVisited
+        coordinator.dimmed = dimVisited
 
         // Rebuild only when the SET of visited continents changes; highlight changes
         // restyle the affected renderers in place (see RegionMapView for rationale)
         if coordinator.renderedContinents != visitedContinents {
             rebuildOverlays(on: mapView, coordinator: coordinator)
-        } else if previousContinent != currentContinent {
-            for continent in [previousContinent, currentContinent].compactMap({ $0 }) {
+        } else if previousContinent != currentContinent || dimChanged {
+            let continents = dimChanged ? Array(coordinator.overlayByContinent.keys) : [previousContinent, currentContinent].compactMap { $0 }
+            for continent in continents {
                 if let overlay = coordinator.overlayByContinent[continent],
                    let renderer = mapView.renderer(for: overlay) as? MKOverlayPathRenderer {
-                    Coordinator.applyStyle(to: renderer, isCurrent: continent == currentContinent)
+                    Coordinator.applyStyle(to: renderer, isCurrent: continent == currentContinent, dimmed: dimVisited)
                     renderer.setNeedsDisplay()
                 }
             }
@@ -581,6 +798,7 @@ struct ContinentMapView: UIViewRepresentable {
     class Coordinator: NSObject, MKMapViewDelegate {
         var parent: ContinentMapView
         var currentContinent: Continent?
+        var dimmed = false
         var onTap: ((CLLocationCoordinate2D) -> Void)?
 
         // Overlay bookkeeping for incremental updates (see updateUIView)
@@ -602,8 +820,13 @@ struct ContinentMapView: UIViewRepresentable {
         }
 
         /// Single source of styling truth: used at renderer creation AND for in-place restyles
-        static func applyStyle(to renderer: MKOverlayPathRenderer, isCurrent: Bool) {
-            if isCurrent {
+        static func applyStyle(to renderer: MKOverlayPathRenderer, isCurrent: Bool, dimmed: Bool = false) {
+            if dimmed {
+                // Not-yet browsing: visited continents recede
+                renderer.fillColor = UIColor.systemGray.withAlphaComponent(0.15)
+                renderer.strokeColor = UIColor.systemGray2
+                renderer.lineWidth = 1
+            } else if isCurrent {
                 // Current continent - red fill and stroke
                 renderer.fillColor = UIColor.systemRed.withAlphaComponent(0.4)
                 renderer.strokeColor = UIColor.systemRed
@@ -625,7 +848,7 @@ struct ContinentMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let multiPolygon = overlay as? MKMultiPolygon {
                 let renderer = MKMultiPolygonRenderer(multiPolygon: multiPolygon)
-                Self.applyStyle(to: renderer, isCurrent: multiPolygon.title == currentContinent?.rawValue)
+                Self.applyStyle(to: renderer, isCurrent: multiPolygon.title == currentContinent?.rawValue, dimmed: dimmed)
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)
@@ -642,6 +865,8 @@ struct RegionMapView: UIViewRepresentable {
     let currentRegion: RecordDetail?
     let centerCoordinate: CLLocationCoordinate2D
     let span: MKCoordinateSpan
+    /// Not-yet browsing: visited regions fade to gray so the gaps stand out
+    var dimVisited: Bool = false
     var onTap: ((CLLocationCoordinate2D) -> Void)? = nil
 
     func makeUIView(context: Context) -> MKMapView {
@@ -661,6 +886,8 @@ struct RegionMapView: UIViewRepresentable {
         let previousCode = coordinator.currentRegionCode
         let newCode = currentRegion?.regionCode
         coordinator.currentRegionCode = newCode
+        let dimChanged = coordinator.dimmed != dimVisited
+        coordinator.dimmed = dimVisited
 
         // Rebuild overlays only when the SET of visited regions changes. A change of
         // highlighted region restyles two renderers in place instead of re-tessellating
@@ -668,11 +895,12 @@ struct RegionMapView: UIViewRepresentable {
         let visitedCodes = visitedRegions.compactMap { $0.regionCode }
         if coordinator.renderedRegionCodes != visitedCodes {
             rebuildOverlays(on: mapView, coordinator: coordinator, visitedCodes: visitedCodes)
-        } else if previousCode != newCode {
-            for code in [previousCode, newCode].compactMap({ $0 }) {
+        } else if previousCode != newCode || dimChanged {
+            let codes = dimChanged ? Array(coordinator.polygonsByCode.keys) : [previousCode, newCode].compactMap { $0 }
+            for code in codes {
                 for polygon in coordinator.polygonsByCode[code] ?? [] {
                     if let renderer = mapView.renderer(for: polygon) as? MKPolygonRenderer {
-                        Coordinator.applyStyle(to: renderer, isCurrent: code == newCode)
+                        Coordinator.applyStyle(to: renderer, isCurrent: code == newCode, dimmed: dimVisited)
                         renderer.setNeedsDisplay()
                     }
                 }
@@ -725,6 +953,7 @@ struct RegionMapView: UIViewRepresentable {
     class Coordinator: NSObject, MKMapViewDelegate {
         var parent: RegionMapView
         var currentRegionCode: String?
+        var dimmed = false
         var onTap: ((CLLocationCoordinate2D) -> Void)?
 
         // Overlay bookkeeping for incremental updates (see updateUIView)
@@ -746,8 +975,13 @@ struct RegionMapView: UIViewRepresentable {
         }
 
         /// Single source of styling truth: used at renderer creation AND for in-place restyles
-        static func applyStyle(to renderer: MKPolygonRenderer, isCurrent: Bool) {
-            if isCurrent {
+        static func applyStyle(to renderer: MKPolygonRenderer, isCurrent: Bool, dimmed: Bool = false) {
+            if dimmed {
+                // Not-yet browsing: visited regions recede
+                renderer.fillColor = UIColor.systemGray.withAlphaComponent(0.15)
+                renderer.strokeColor = UIColor.systemGray2
+                renderer.lineWidth = 1
+            } else if isCurrent {
                 // Current region - red fill and stroke
                 renderer.fillColor = UIColor.systemRed.withAlphaComponent(0.4)
                 renderer.strokeColor = UIColor.systemRed
@@ -776,7 +1010,7 @@ struct RegionMapView: UIViewRepresentable {
             }
             if let polygon = overlay as? MKPolygon {
                 let renderer = MKPolygonRenderer(polygon: polygon)
-                Self.applyStyle(to: renderer, isCurrent: polygon.subtitle == currentRegionCode)
+                Self.applyStyle(to: renderer, isCurrent: polygon.subtitle == currentRegionCode, dimmed: dimmed)
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)

@@ -11,10 +11,11 @@ import CoreData
 struct WidgetReloaderTests {
 
     /// Poll instead of a fixed sleep for the positive checks: the release workflow
-    /// runs these on shared CI runners where a slow scheduler would turn a fixed
-    /// 200 ms wait into a flaky failure
+    /// runs these on shared CI runners where the first save on a cold machine has
+    /// taken over two seconds to produce a reload. A long timeout costs nothing
+    /// when the machine is fast.
     @MainActor
-    private func waitUntil(timeout: Duration = .seconds(2), _ condition: () -> Bool) async throws {
+    private func waitUntil(timeout: Duration = .seconds(15), _ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + timeout
         while !condition() && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))

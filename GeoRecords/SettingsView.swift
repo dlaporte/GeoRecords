@@ -359,6 +359,25 @@ struct SettingsView: View {
                         Text(persistenceController.syncErrorGuidance ?? error.localizedDescription)
                             .font(.caption)
                             .foregroundColor(.orange)
+
+                        // The buried per-record reasons, and a way to send them
+                        if !persistenceController.syncErrorDetails.isEmpty {
+                            DisclosureGroup("Details") {
+                                ForEach(persistenceController.syncErrorDetails, id: \.self) { line in
+                                    Text(line)
+                                        .font(.caption2.monospaced())
+                                        .foregroundColor(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            .font(.caption)
+                        }
+                        Button {
+                            UIPasteboard.general.string = persistenceController.syncDiagnosticsReport()
+                        } label: {
+                            Label("Copy Sync Diagnostics", systemImage: "doc.on.doc")
+                                .font(.caption)
+                        }
                     }
 
                     // Export freshness: the signal that matters before deleting the app

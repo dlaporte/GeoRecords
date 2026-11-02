@@ -27,6 +27,8 @@ class PersistenceController: ObservableObject {
         debugLog("♻️ Persistent store replaced - invalidating all fetched objects")
     }
     @Published var lastSyncError: Error?
+    /// The current sync error broken down per CloudKit error code (see syncErrorDetails)
+    @Published var syncErrorDetails: [String] = []
     @Published var lastExportTime: Date?
     @Published var lastImportTime: Date?
     @Published var pendingExport = false
@@ -168,6 +170,12 @@ class PersistenceController: ObservableObject {
                 }
             }
             lastSyncError = error
+            // Release builds print nothing, so keep the breakdown where Settings can
+            // show it and a tester can copy it
+            syncErrorDetails = Self.syncErrorDetails(for: error)
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            UserDefaults.standard.set(([stamp, "\(event.type) event"] + syncErrorDetails).joined(separator: "\n"),
+                                      forKey: UserDefaultsKey.lastSyncFailureSummary.rawValue)
         } else if event.endDate != nil {
             // A later successful completion supersedes any earlier failure.
             // Without this, one transient CloudKit hiccup (common right after an
@@ -175,7 +183,94 @@ class PersistenceController: ObservableObject {
             if lastSyncError != nil {
                 debugLog("☁️ CloudKit recovered - clearing previous sync error")
                 lastSyncError = nil
+                syncErrorDetails = []
             }
+        }
+    }
+
+    /// The sync error as lines a user can read and copy: the top-level error, then
+    /// each buried CloudKit code with its count, an example message and a few record
+    /// names. "Failed to modify some records" alone says nothing; the codes do.
+    nonisolated static func syncErrorDetails(for error: Error?) -> [String] {
+        guard let error else { return [] }
+        let nsError = error as NSError
+        var lines: [String] = []
+        if nsError.domain == CKErrorDomain {
+            lines.append("CloudKit \(ckErrorName(nsError.code)) (\(nsError.code)): \(nsError.localizedDescription)")
+        } else {
+            lines.append("\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)")
+        }
+        guard let partial = nsError.userInfo[CKPartialErrorsByItemIDKey] as? [CKRecord.ID: Error], !partial.isEmpty else {
+            return lines
+        }
+        var byCode: [Int: [(name: String, message: String)]] = [:]
+        for (recordID, itemError) in partial {
+            let item = itemError as NSError
+            byCode[item.code, default: []].append((recordID.recordName, item.localizedDescription))
+        }
+        for (code, items) in byCode.sorted(by: { $0.value.count > $1.value.count || ($0.value.count == $1.value.count && $0.key < $1.key) }) {
+            let names = items.map(\.name).sorted().prefix(3).map { String($0.prefix(8)) }.joined(separator: ", ")
+            let more = items.count > 3 ? ", …" : ""
+            lines.append("\(items.count) × \(ckErrorName(code)) (\(code)): \(items[0].message) — records \(names)\(more)")
+        }
+        return lines
+    }
+
+    /// Everything a bug report needs, for the Settings "Copy" button
+    func syncDiagnosticsReport() -> String {
+        let formatter = ISO8601DateFormatter()
+        var lines = ["GeoRecords \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))",
+                     "Now: \(formatter.string(from: Date()))",
+                     "Last export: \(lastExportTime.map(formatter.string) ?? "never this session")",
+                     "Last import: \(lastImportTime.map(formatter.string) ?? "never this session")",
+                     "Current error: \(lastSyncError?.localizedDescription ?? "none")"]
+        lines.append(contentsOf: syncErrorDetails)
+        if let stored = UserDefaults.standard.string(forKey: UserDefaultsKey.lastSyncFailureSummary.rawValue) {
+            lines.append("Last recorded failure:")
+            lines.append(stored)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// CKError.Code names for the codes CloudKit sync actually produces
+    nonisolated static func ckErrorName(_ code: Int) -> String {
+        switch CKError.Code(rawValue: code) {
+        case .internalError: return "internalError"
+        case .partialFailure: return "partialFailure"
+        case .networkUnavailable: return "networkUnavailable"
+        case .networkFailure: return "networkFailure"
+        case .badContainer: return "badContainer"
+        case .serviceUnavailable: return "serviceUnavailable"
+        case .requestRateLimited: return "requestRateLimited"
+        case .missingEntitlement: return "missingEntitlement"
+        case .notAuthenticated: return "notAuthenticated"
+        case .permissionFailure: return "permissionFailure"
+        case .unknownItem: return "unknownItem"
+        case .invalidArguments: return "invalidArguments"
+        case .serverRecordChanged: return "serverRecordChanged"
+        case .serverRejectedRequest: return "serverRejectedRequest"
+        case .assetFileNotFound: return "assetFileNotFound"
+        case .assetFileModified: return "assetFileModified"
+        case .incompatibleVersion: return "incompatibleVersion"
+        case .constraintViolation: return "constraintViolation"
+        case .operationCancelled: return "operationCancelled"
+        case .changeTokenExpired: return "changeTokenExpired"
+        case .batchRequestFailed: return "batchRequestFailed"
+        case .zoneBusy: return "zoneBusy"
+        case .badDatabase: return "badDatabase"
+        case .quotaExceeded: return "quotaExceeded"
+        case .zoneNotFound: return "zoneNotFound"
+        case .limitExceeded: return "limitExceeded"
+        case .userDeletedZone: return "userDeletedZone"
+        case .tooManyParticipants: return "tooManyParticipants"
+        case .alreadyShared: return "alreadyShared"
+        case .referenceViolation: return "referenceViolation"
+        case .managedAccountRestricted: return "managedAccountRestricted"
+        case .participantMayNeedVerification: return "participantMayNeedVerification"
+        case .serverResponseLost: return "serverResponseLost"
+        case .assetNotAvailable: return "assetNotAvailable"
+        case .accountTemporarilyUnavailable: return "accountTemporarilyUnavailable"
+        default: return "code\(code)"
         }
     }
 
@@ -206,8 +301,23 @@ class PersistenceController: ObservableObject {
         if codes.contains(where: { $0 == .networkUnavailable || $0 == .networkFailure }) {
             return "No network connection — syncing will retry automatically."
         }
-        if codes.contains(where: { $0 == .requestRateLimited || $0 == .zoneBusy || $0 == .serviceUnavailable }) {
+        if codes.contains(where: { $0 == .requestRateLimited || $0 == .zoneBusy || $0 == .serviceUnavailable || $0 == .accountTemporarilyUnavailable }) {
             return "iCloud is busy — syncing will retry automatically."
+        }
+        if codes.contains(where: { $0 == .userDeletedZone || $0 == .zoneNotFound }) {
+            return "The iCloud copy of the app's data was deleted or reset. The app rebuilds it on the next sync; if this keeps showing, reinstalling the app on this device re-uploads everything."
+        }
+        if codes.contains(where: { $0 == .assetFileNotFound || $0 == .assetNotAvailable || $0 == .assetFileModified }) {
+            return "A photo attached to a record is missing on this device, so that record can't upload. Open the record and change or remove its photo."
+        }
+        if codes.contains(where: { $0 == .limitExceeded || $0 == .invalidArguments || $0 == .constraintViolation }) {
+            return "Some records are too large or malformed for iCloud and can't upload. Use Copy Sync Diagnostics below and send it to support."
+        }
+        if codes.contains(.permissionFailure) || codes.contains(.managedAccountRestricted) {
+            return "This iCloud account doesn't allow the app to store data. Check iCloud settings for GeoRecords."
+        }
+        if codes.contains(.serverRecordChanged) {
+            return "iCloud has a newer copy of some records; they merge automatically on the next sync."
         }
         return nil
     }

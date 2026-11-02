@@ -507,7 +507,7 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         type: String,
         newValue: Double,
         threshold: Double,
-        compareAscending: Bool,  // true means lower is better (south, west, down)
+        compareAscending: Bool,  // true means lower is better (south, west)
         location: CLLocation,
         reverseGeocodedName: String?,
         timeFrame: TimeFrame

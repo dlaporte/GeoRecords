@@ -322,6 +322,9 @@ enum UserDefaultsKey: String {
     // continents became geographic (device-local; see RegionTrackingManager)
     case hasAddedImpliedContinents
 
+    // Last CloudKit sync failure, as the diagnostic lines Settings shows (device-local)
+    case lastSyncFailureSummary
+
     // Widget map regions (user-defined framing for widget maps)
     // NOTE: these cases look unreferenced, but their raw values ARE the live keys —
     // SettingsManager builds them by string interpolation ("\(prefix)Lat" etc. in

@@ -11,12 +11,14 @@ import Foundation
 import CoreData
 import CoreLocation
 
-/// One "record set" moment: a type beaten (or first set) at an instant. One location
-/// event writes a row per timeframe it beats, all with the same timestamp, so
-/// events are keyed on (type, second), never counted per row.
+/// One "record set" moment: a type beaten (or first set) at an instant, tagged with
+/// the largest timeframe it set. One location event writes a row per timeframe it
+/// beats, all with the same timestamp, so events are keyed on (type, second),
+/// never counted per row.
 struct RecordEvent: Hashable {
     let recordType: RecordType
     let timestamp: Date
+    let timeFrame: TimeFrame
 }
 
 extension RecordHistoryManager {
@@ -65,7 +67,7 @@ extension RecordHistoryManager {
 
     /// Records set inside an interval: geographic extremes only, Monthly/Yearly/
     /// Lifetime rows (never the per-day rows), never at home, one event per type
-    /// and second. Sorted by time.
+    /// and second carrying the largest timeframe among its rows. Sorted by time.
     nonisolated static func recordEvents(in interval: DateInterval,
                                          home: CLLocationCoordinate2D?,
                                          in context: NSManagedObjectContext) -> [RecordEvent] {
@@ -78,15 +80,40 @@ extension RecordHistoryManager {
         )
         guard let rows = try? context.fetch(request) else { return [] }
 
-        var events = Set<RecordEvent>()
+        struct Key: Hashable {
+            let type: RecordType
+            let second: Date
+        }
+        var largest: [Key: TimeFrame] = [:]
         for row in rows {
             guard let type = RecordType.from(string: row.recordType ?? ""),
+                  let timeFrame = eventTimeFrame(row.timeFrame),
                   let timestamp = row.timestamp,
                   !isAtHome(row, home: home) else { continue }
-            let second = Date(timeIntervalSince1970: timestamp.timeIntervalSince1970.rounded())
-            events.insert(RecordEvent(recordType: type, timestamp: second))
+            let key = Key(type: type, second: Date(timeIntervalSince1970: timestamp.timeIntervalSince1970.rounded()))
+            if let current = largest[key], rank(current) >= rank(timeFrame) { continue }
+            largest[key] = timeFrame
         }
-        return events.sorted { $0.timestamp < $1.timestamp }
+        return largest
+            .map { RecordEvent(recordType: $0.key.type, timestamp: $0.key.second, timeFrame: $0.value) }
+            .sorted { ($0.timestamp, $0.recordType.rawValue) < ($1.timestamp, $1.recordType.rawValue) }
+    }
+
+    /// A row's timeframe, reading the legacy lifetime spellings as Lifetime
+    private nonisolated static func eventTimeFrame(_ raw: String?) -> TimeFrame? {
+        guard let raw else { return nil }
+        if lifetimeTimeFrameVariations.contains(raw) { return .allTime }
+        return TimeFrame(rawValue: raw)
+    }
+
+    /// Daily < Monthly < Yearly < Lifetime
+    private nonisolated static func rank(_ timeFrame: TimeFrame) -> Int {
+        switch timeFrame {
+        case .daily: return 0
+        case .month: return 1
+        case .year: return 2
+        case .allTime: return 3
+        }
     }
 
     /// Rewrite every "Furthest from Home" row (all timeframes) from its stored

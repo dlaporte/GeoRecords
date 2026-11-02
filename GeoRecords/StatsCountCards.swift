@@ -75,19 +75,71 @@ enum StatsBuckets {
     }
 }
 
+// MARK: - Which records count
+
+/// Which records count as "set" in a browsed period: those of a larger timeframe
+/// than the period itself. A month's own monthly records (and a year's yearly ones)
+/// are set by the period's first fix, so counting them says nothing; in a month,
+/// yearly and lifetime records count, in a year lifetime ones, in Lifetime none.
+enum StatsRecordCounts {
+    static func countedTimeFrames(for view: TimeFrame) -> [TimeFrame] {
+        switch view {
+        case .month: return [.year, .allTime]
+        case .year: return [.allTime]
+        case .allTime, .daily: return []
+        }
+    }
+
+    static func counted(_ events: [RecordEvent], in view: TimeFrame) -> [RecordEvent] {
+        let counted = countedTimeFrames(for: view)
+        return events.filter { counted.contains($0.timeFrame) }
+    }
+
+    /// "yearly" / "lifetime", as in "3 yearly records set"
+    static func label(_ timeFrame: TimeFrame) -> String {
+        switch timeFrame {
+        case .daily: return "daily"
+        case .month: return "monthly"
+        case .year: return "yearly"
+        case .allTime: return "lifetime"
+        }
+    }
+
+    /// "yearly or lifetime" in a month, "lifetime" in a year, "" in Lifetime
+    static func phrase(for view: TimeFrame) -> String {
+        countedTimeFrames(for: view).map(label).joined(separator: " or ")
+    }
+}
+
 // MARK: - Period summary
 
 enum PeriodSummary {
-    /// "Oct 2026 · 3 records set · 1 new state"; totals in Lifetime; "nothing
-    /// recorded" when every count is zero
-    static func text(title: String, records: Int, states: Int, countries: Int, continents: Int, lifetime: Bool) -> String {
+    /// "Oct 2026 · 3 yearly records set · 1 lifetime record set · 1 new state"; region
+    /// totals in Lifetime (which counts no records, see StatsRecordCounts); says
+    /// what is missing when every count is zero
+    static func text(title: String, view: TimeFrame, yearlyRecords: Int, lifetimeRecords: Int,
+                     states: Int, countries: Int, continents: Int) -> String {
+        let counted = StatsRecordCounts.countedTimeFrames(for: view)
         var parts: [String] = []
-        if records > 0 { parts.append("\(records) record\(records == 1 ? "" : "s") set") }
+        if counted.contains(.year), yearlyRecords > 0 {
+            parts.append("\(yearlyRecords) yearly record\(yearlyRecords == 1 ? "" : "s") set")
+        }
+        if counted.contains(.allTime), lifetimeRecords > 0 {
+            parts.append("\(lifetimeRecords) lifetime record\(lifetimeRecords == 1 ? "" : "s") set")
+        }
+        let lifetime = view == .allTime
         let prefix = lifetime ? "" : "new "
         if states > 0 { parts.append("\(states) \(prefix)state\(states == 1 ? "" : "s")") }
         if countries > 0 { parts.append("\(countries) \(prefix)countr\(countries == 1 ? "y" : "ies")") }
         if continents > 0 { parts.append("\(continents) \(prefix)continent\(continents == 1 ? "" : "s")") }
-        if parts.isEmpty { parts.append("nothing recorded") }
+        if parts.isEmpty {
+            if lifetime {
+                parts.append("no regions yet")
+            } else {
+                parts.append("no \(StatsRecordCounts.phrase(for: view)) records")
+                parts.append("no new regions")
+            }
+        }
         return ([title] + parts).joined(separator: " · ")
     }
 }
@@ -141,36 +193,62 @@ struct StatsCardContainer<Content: View>: View {
 
 // MARK: - Records set
 
+/// One bar segment: records of one kind ("Yearly" / "Lifetime") in one bucket
 struct CountPoint: Identifiable {
     let label: String
+    let kind: String
     let value: Int
-    var id: String { label }
+    var id: String { "\(kind)/\(label)" }
 }
 
+/// Records of the larger timeframes set in the browsed period, stacked by kind.
+/// Not shown in Lifetime, where no timeframe is larger (see StatsRecordCounts).
 struct RecordsSetCard: View {
     let points: [CountPoint]
-    let total: Int
+    let view: TimeFrame
+    let yearly: Int
+    let lifetime: Int
+
+    private var headline: String {
+        var parts: [String] = []
+        if yearly > 0 { parts.append("\(yearly) yearly record\(yearly == 1 ? "" : "s")") }
+        if lifetime > 0 { parts.append("\(lifetime) lifetime record\(lifetime == 1 ? "" : "s")") }
+        return parts.isEmpty ? "No \(StatsRecordCounts.phrase(for: view)) records" : parts.joined(separator: " · ")
+    }
+
+    private var kinds: [String] {
+        var seen: [String] = []
+        for point in points where !seen.contains(point.kind) { seen.append(point.kind) }
+        return seen
+    }
 
     /// Every label for up to 13 buckets, every 7th day otherwise
     private var axisLabels: [String] {
-        guard points.count > 13 else { return points.map(\.label) }
-        return points.enumerated().filter { $0.offset % 7 == 0 }.map(\.element.label)
+        var labels: [String] = []
+        for point in points where !labels.contains(point.label) { labels.append(point.label) }
+        guard labels.count > 13 else { return labels }
+        return labels.enumerated().filter { $0.offset % 7 == 0 }.map(\.element)
     }
 
     var body: some View {
         StatsCardContainer(title: "Records Set") {
-            Text("\(total) record\(total == 1 ? "" : "s") set")
+            Text(headline)
                 .font(.title3)
                 .fontWeight(.bold)
-                .foregroundColor(total > 0 ? .primary : .secondary)
+                .foregroundColor(yearly + lifetime > 0 ? .primary : .secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
 
             Chart(points) { point in
                 BarMark(
                     x: .value("Period", point.label),
                     y: .value("Records", point.value)
                 )
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(by: .value("Record", point.kind))
             }
+            .chartForegroundStyleScale(["Yearly": Color.accentColor, "Lifetime": Color.orange])
+            .chartLegend(kinds.count > 1 ? .visible : .hidden)
+            .chartLegend(position: .bottom, alignment: .leading)
             .chartXAxis {
                 AxisMarks(values: axisLabels)
             }

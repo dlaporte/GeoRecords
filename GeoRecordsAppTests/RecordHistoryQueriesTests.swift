@@ -66,6 +66,22 @@ struct RecordHistoryQueriesTests {
         let events = RecordHistoryManager.recordEvents(in: interval, home: home, in: ctx)
         #expect(events.count == 2)
         #expect(Set(events.map(\.recordType)) == [.north, .up])
+        // The collapsed event carries the largest timeframe its rows set
+        #expect(events.first { $0.recordType == .north }?.timeFrame == .allTime)
+        #expect(events.first { $0.recordType == .up }?.timeFrame == .month)
+    }
+
+    // Older stores spell lifetime rows "All-Time" / "All Time"; a Yearly sibling
+    // never outranks them
+    @Test func recordEventsReadLegacyLifetimeSpellings() async throws {
+        let ctx = try makeInMemoryContext()
+        let t = noon(2026, 10, 10)
+        insertRow(ctx, type: "Furthest South", timeFrame: "Yearly", value: 30, lat: 30, lon: 10, timestamp: t)
+        insertRow(ctx, type: "Furthest South", timeFrame: "All-Time", value: 30, lat: 30, lon: 10, timestamp: t)
+        insertRow(ctx, type: "Furthest West", timeFrame: "All Time", value: -100, lat: 40, lon: -100, timestamp: noon(2026, 10, 11))
+        let interval = DateInterval(start: noon(2026, 10, 1), end: noon(2026, 11, 1))
+        let events = RecordHistoryManager.recordEvents(in: interval, home: nil, in: ctx)
+        #expect(events.map(\.timeFrame) == [.allTime, .allTime])
     }
 
     @Test func recalculateRewritesFromHomeValuesFromStoredCoordinates() async throws {

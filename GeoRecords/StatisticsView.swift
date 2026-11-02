@@ -157,6 +157,8 @@ struct StatisticsView: View {
 
     // Activity for the browsed period: records set and regions (strip and count cards)
     @State private var periodEvents: [RecordEvent] = []
+    /// Events of the timeframes that count in the browsed period, by timeframe (see StatsRecordCounts)
+    @State private var countedRecords: [TimeFrame: Int] = [:]
     @State private var periodRegionCounts = RegionPeriodCounts(states: 0, countries: 0, continents: 0)
     @State private var recordsSetPoints: [CountPoint] = []
     @State private var regionGrowthPoints: [RegionGrowthPoint] = []
@@ -287,23 +289,31 @@ struct StatisticsView: View {
                             )
                         }
 
-                        // Activity Section (records set, regions over time)
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text("Activity")
-                                .font(.headline)
-                                .padding(.horizontal)
+                        // Activity Section (records set, regions over time). Records Set
+                        // only where a larger timeframe exists to count (never in Lifetime)
+                        let showRecordsSet = !StatsRecordCounts.countedTimeFrames(for: selectedTimeFrame).isEmpty
+                        let showRegions = regionGrowthPoints.contains(where: { $0.states + $0.countries > 0 })
+                        if showRecordsSet || showRegions {
+                            VStack(alignment: .leading, spacing: 16) {
+                                Text("Activity")
+                                    .font(.headline)
+                                    .padding(.horizontal)
 
-                            RecordsSetCard(points: recordsSetPoints, total: periodEvents.count)
+                                if showRecordsSet {
+                                    RecordsSetCard(points: recordsSetPoints, view: selectedTimeFrame,
+                                                   yearly: countedRecords[.year] ?? 0, lifetime: countedRecords[.allTime] ?? 0)
+                                }
 
-                            if regionGrowthPoints.contains(where: { $0.states + $0.countries > 0 }) {
-                                RegionsGrowthCard(
-                                    points: regionGrowthPoints,
-                                    timeFrame: selectedTimeFrame,
-                                    totalStates: regionGrowthPoints.last?.states ?? 0,
-                                    totalCountries: regionGrowthPoints.last?.countries ?? 0,
-                                    newStates: selectedTimeFrame == .allTime ? 0 : periodRegionCounts.states,
-                                    newCountries: selectedTimeFrame == .allTime ? 0 : periodRegionCounts.countries
-                                )
+                                if showRegions {
+                                    RegionsGrowthCard(
+                                        points: regionGrowthPoints,
+                                        timeFrame: selectedTimeFrame,
+                                        totalStates: regionGrowthPoints.last?.states ?? 0,
+                                        totalCountries: regionGrowthPoints.last?.countries ?? 0,
+                                        newStates: selectedTimeFrame == .allTime ? 0 : periodRegionCounts.states,
+                                        newCountries: selectedTimeFrame == .allTime ? 0 : periodRegionCounts.countries
+                                    )
+                                }
                             }
                         }
                     }
@@ -475,6 +485,8 @@ struct StatisticsView: View {
         let interval = StatsBuckets.periodInterval(timeFrame: selectedTimeFrame, year: selectedYear,
                                                    month: selectedMonth, now: now, calendar: calendar)
         periodEvents = historyManager.recordEvents(in: interval)
+        let counted = StatsRecordCounts.counted(periodEvents, in: selectedTimeFrame)
+        countedRecords = Dictionary(grouping: counted, by: \.timeFrame).mapValues(\.count)
         periodRegionCounts = regionManager.newRegionCounts(in: interval)
 
         // Lifetime starts at the earliest of: aggregates, region first visits, events
@@ -488,9 +500,12 @@ struct StatisticsView: View {
                                                now: now, earliestYear: earliestYear, calendar: calendar)
         let labels = StatsBuckets.labels(for: starts, timeFrame: selectedTimeFrame, calendar: calendar)
         let component = StatsBuckets.component(for: selectedTimeFrame)
-        let counts = StatsBuckets.counts(dates: periodEvents.map(\.timestamp), bucketStarts: starts,
-                                         component: component, calendar: calendar)
-        recordsSetPoints = zip(labels, counts).map { CountPoint(label: $0, value: $1) }
+        recordsSetPoints = StatsRecordCounts.countedTimeFrames(for: selectedTimeFrame).flatMap { timeFrame in
+            let dates = counted.filter { $0.timeFrame == timeFrame }.map(\.timestamp)
+            let counts = StatsBuckets.counts(dates: dates, bucketStarts: starts, component: component, calendar: calendar)
+            let kind = StatsRecordCounts.label(timeFrame).capitalized
+            return zip(labels, counts).map { CountPoint(label: $0, kind: kind, value: $1) }
+        }
 
         let ends = starts.compactMap { calendar.date(byAdding: component, value: 1, to: $0)?.addingTimeInterval(-1) }
         regionGrowthPoints = zip(starts, regionManager.cumulativeRegionCounts(through: ends))
@@ -507,17 +522,18 @@ struct StatisticsView: View {
         }
     }
 
-    /// "Oct 2026 · 3 records set · 1 new state" (totals in Lifetime)
+    /// "Oct 2026 · 3 yearly records set · 1 new state" (region totals in Lifetime)
     private var periodSummaryText: String {
         let lifetime = selectedTimeFrame == .allTime
         let regionManager = RegionTrackingManager.shared
         return PeriodSummary.text(
             title: periodTitle,
-            records: periodEvents.count,
+            view: selectedTimeFrame,
+            yearlyRecords: countedRecords[.year] ?? 0,
+            lifetimeRecords: countedRecords[.allTime] ?? 0,
             states: lifetime ? regionManager.stateCount : periodRegionCounts.states,
             countries: lifetime ? regionManager.countryCount : periodRegionCounts.countries,
-            continents: lifetime ? regionManager.continentCount : periodRegionCounts.continents,
-            lifetime: lifetime
+            continents: lifetime ? regionManager.continentCount : periodRegionCounts.continents
         )
     }
 

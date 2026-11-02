@@ -90,9 +90,26 @@ enum StatsRecordCounts {
         }
     }
 
+    /// The records that count in a view: events of the counted timeframes, and one
+    /// per type and timeframe. A type holds one record per timeframe at a time, so
+    /// beating "Furthest North" five times in a year is one lifetime record set,
+    /// not five: only the final record of each type counts, dated when it was set.
+    /// Sorted by type then timeframe.
     static func counted(_ events: [RecordEvent], in view: TimeFrame) -> [RecordEvent] {
         let counted = countedTimeFrames(for: view)
-        return events.filter { counted.contains($0.timeFrame) }
+        struct Key: Hashable {
+            let type: RecordType
+            let timeFrame: TimeFrame
+        }
+        var final: [Key: RecordEvent] = [:]
+        for event in events where counted.contains(event.timeFrame) {
+            let key = Key(type: event.recordType, timeFrame: event.timeFrame)
+            if let current = final[key], current.timestamp >= event.timestamp { continue }
+            final[key] = event
+        }
+        return final.values.sorted {
+            ($0.recordType.rawValue, $0.timeFrame.rawValue) < ($1.recordType.rawValue, $1.timeFrame.rawValue)
+        }
     }
 
     /// "yearly" / "lifetime", as in "3 yearly records set"
@@ -114,9 +131,10 @@ enum StatsRecordCounts {
 // MARK: - Period summary
 
 enum PeriodSummary {
-    /// "Oct 2026 · 3 yearly records set · 1 lifetime record set · 1 new state"; region
-    /// totals in Lifetime (which counts no records, see StatsRecordCounts); says
-    /// what is missing when every count is zero
+    /// "Oct 2026 · 3 yearly records set · 1 lifetime record set · 1 new state"; the
+    /// counts are record types (at most six each, see StatsRecordCounts.counted);
+    /// region totals in Lifetime (which counts no records); says what is missing
+    /// when every count is zero
     static func text(title: String, view: TimeFrame, yearlyRecords: Int, lifetimeRecords: Int,
                      states: Int, countries: Int, continents: Int) -> String {
         let counted = StatsRecordCounts.countedTimeFrames(for: view)

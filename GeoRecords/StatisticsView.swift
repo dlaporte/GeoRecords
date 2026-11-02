@@ -157,7 +157,8 @@ struct StatisticsView: View {
 
     // Activity for the browsed period: records set and regions (strip and count cards)
     @State private var periodEvents: [RecordEvent] = []
-    /// Events of the timeframes that count in the browsed period, by timeframe (see StatsRecordCounts)
+    /// Record types whose final record of a counted timeframe was set in the browsed
+    /// period, by timeframe (see StatsRecordCounts.counted)
     @State private var countedRecords: [TimeFrame: Int] = [:]
     @State private var periodRegionCounts = RegionPeriodCounts(states: 0, countries: 0, continents: 0)
     @State private var recordsSetPoints: [CountPoint] = []

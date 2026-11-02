@@ -52,4 +52,27 @@ struct PeriodSummaryStripTests {
         #expect(StatsRecordCounts.counted(events, in: .year).map(\.recordType) == [.up])
         #expect(StatsRecordCounts.counted(events, in: .allTime).isEmpty)
     }
+
+    // A type holds one lifetime record at a time, so beating "Furthest North" five
+    // times in a year is one lifetime record set, not five: only the final record
+    // of each type counts, dated when it was set, so the chart bars add up to the
+    // headline. Yearly and lifetime are counted separately.
+    @Test func countedEventsKeepOnlyTheFinalRecordPerType() async throws {
+        let events = [
+            RecordEvent(recordType: .north, timestamp: noon(2026, 2, 1), timeFrame: .allTime),
+            RecordEvent(recordType: .north, timestamp: noon(2026, 5, 1), timeFrame: .allTime),
+            RecordEvent(recordType: .north, timestamp: noon(2026, 9, 1), timeFrame: .allTime),
+            RecordEvent(recordType: .east, timestamp: noon(2026, 3, 1), timeFrame: .allTime),
+            RecordEvent(recordType: .north, timestamp: noon(2026, 10, 1), timeFrame: .year),
+            RecordEvent(recordType: .north, timestamp: noon(2026, 10, 2), timeFrame: .year)
+        ]
+        let year = StatsRecordCounts.counted(events, in: .year)
+        #expect(year.map(\.recordType) == [.east, .north])
+        #expect(year.map(\.timestamp) == [noon(2026, 3, 1), noon(2026, 9, 1)])
+
+        let month = StatsRecordCounts.counted(events, in: .month)
+        #expect(month.map { ($0.recordType, $0.timeFrame) }.map { "\($0.0.rawValue)/\($0.1.rawValue)" }
+                == ["Furthest East/Lifetime", "Furthest North/Lifetime", "Furthest North/Yearly"])
+        #expect(month.last?.timestamp == noon(2026, 10, 2))
+    }
 }

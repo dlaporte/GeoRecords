@@ -50,6 +50,8 @@ struct SafetySnapshotsView: View {
                 }
             }
         }
+        .readableWidth()
+        .background(Color(UIColor.systemGroupedBackground))
         .navigationTitle("Automatic Snapshots")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {

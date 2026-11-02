@@ -16,41 +16,63 @@ struct MapsTabView: View {
         case continents = "Continents"
     }
 
+    @Environment(\.layoutWidth) private var layoutWidth
+
     var body: some View {
-        @Bindable var state = state
-        NavigationStack {
-            VStack(spacing: 0) {
-                // Segmented picker
-                StyledSegmentedPicker(
-                    selection: $state.mapType,
-                    options: MapType.allCases,
-                    label: { $0.rawValue }
-                )
-                .padding()
-
-                // Regions found by the automatic photo catch-up, awaiting confirmation
-                if !regionManager.pendingRegions.isEmpty {
-                    PendingRegionsBanner(regionManager: regionManager)
-                        .padding(.horizontal)
-                        .padding(.bottom, 8)
-                }
-
-                // Map content
+        Group {
+            if layoutWidth == .regular {
+                // Each section builds a split view: picker and banner go in its sidebar
                 switch state.mapType {
                 case .states:
-                    StatesMapView()
+                    StatesMapView(sidebarHeader: AnyView(sectionHeader))
                 case .countries:
-                    CountriesMapView()
+                    CountriesMapView(sidebarHeader: AnyView(sectionHeader))
                 case .continents:
-                    ContinentsMapView()
+                    ContinentsMapView(sidebarHeader: AnyView(sectionHeader))
+                }
+            } else {
+                NavigationStack {
+                    VStack(spacing: 0) {
+                        sectionHeader
+
+                        // Map content
+                        switch state.mapType {
+                        case .states:
+                            StatesMapView()
+                        case .countries:
+                            CountriesMapView()
+                        case .continents:
+                            ContinentsMapView()
+                        }
+                    }
+                    .navigationTitle("Regions")
                 }
             }
-            .navigationTitle("Regions")
-            .onAppear {
-                handleDeepLink()
-            }
-            .onChange(of: deepLinkManager.navigateToRegions) { _, _ in
-                handleDeepLink()
+        }
+        .onAppear {
+            handleDeepLink()
+        }
+        .onChange(of: deepLinkManager.navigateToRegions) { _, _ in
+            handleDeepLink()
+        }
+    }
+
+    /// Segmented picker plus the catch-up confirmation banner when there is one
+    private var sectionHeader: some View {
+        @Bindable var state = state
+        return VStack(spacing: 0) {
+            StyledSegmentedPicker(
+                selection: $state.mapType,
+                options: MapType.allCases,
+                label: { $0.rawValue }
+            )
+            .padding()
+
+            // Regions found by the automatic photo catch-up, awaiting confirmation
+            if !regionManager.pendingRegions.isEmpty {
+                PendingRegionsBanner(regionManager: regionManager)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
             }
         }
     }
@@ -255,6 +277,8 @@ struct VisitedRegionCard: View {
 /// The tab-specific pieces (map view, region math, sheet, empty state) come in as
 /// closures; everything else previously existed as three ~105-line verbatim copies.
 private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View {
+    /// Segment picker and pending banner, shown at the top of the sidebar in regular width
+    var sidebarHeader: AnyView = AnyView(EmptyView())
     let regions: [RecordDetail]
     let statsIcon: String
     let statsIconColor: Color
@@ -276,21 +300,22 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
     @ViewBuilder let emptyState: () -> EmptyV
 
     @EnvironmentObject private var settings: SettingsManager
+    @Environment(RegionsTabState.self) private var state
+    @Environment(\.layoutWidth) private var layoutWidth
+    @Environment(\.cardSizing) private var sizing
     @State private var currentCardIndex = 0
     @State private var selectedDetail: RecordDetail?
     @State private var navigateToDetail = false
     @State private var showWidgetViewSetter = false
-    @State private var showNotYet = false
     @State private var callout: UnvisitedCallout?
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var detailExpanded = true
     @State private var cameraOverride: MKCoordinateRegion?
     @State private var distancesByCode: [String: Double] = [:]
 
     // Current region to display on map
     private var currentRegion: RecordDetail? {
-        guard !regions.isEmpty, currentCardIndex < regions.count else {
-            return nil
-        }
-        return regions[currentCardIndex]
+        focusedRegion
     }
 
     // Tapping a visited region on the map swipes the card carousel to it; tapping
@@ -346,101 +371,61 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Map showing current region with overlaid stats
-            ZStack(alignment: .top) {
-                mapView(currentRegion, cameraOverride, showNotYet, selectCard)
-                    .frame(maxWidth: .infinity)
-                    .overlay(alignment: .bottom) {
-                        if let callout {
-                            HStack(spacing: 6) {
-                                Image(systemName: "mappin.circle")
-                                    .foregroundColor(.secondary)
-                                Text(callout.name)
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
-                                Text("· not yet")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                if let distanceText = callout.distanceText {
-                                    Text("· \(distanceText)")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            .lineLimit(1)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color(UIColor.systemBackground).opacity(0.9))
-                            .cornerRadius(8)
-                            .padding(.bottom, 12)
-                            .transition(.opacity)
-                            .task(id: callout) {
-                                try? await Task.sleep(for: .seconds(4))
-                                if !Task.isCancelled {
-                                    withAnimation { self.callout = nil }
-                                }
-                            }
-                        }
-                    }
+        Group {
+            if layoutWidth == .regular {
+                regularLayout
+            } else {
+                compactLayout
+            }
+        }
+        .sheet(isPresented: $showWidgetViewSetter) {
+            widgetSheet()
+        }
+        .task(id: distanceTaskID) {
+            await loadDistances()
+        }
+        .onChange(of: currentCardIndex) { _, newIndex in
+            // The carousel index and the hoisted selection stay in step, so a fold or
+            // a Split View resize that swaps layouts lands on the same region
+            if let code = regions[safe: newIndex]?.regionCode, state.selectedRegionCode != code {
+                state.selectedRegionCode = code
+            }
+        }
+        .onAppear {
+            if let code = state.selectedRegionCode,
+               let index = regions.firstIndex(where: { $0.regionCode == code }),
+               index != currentCardIndex {
+                currentCardIndex = index
+            }
+        }
+    }
 
-                // Stats header overlaid on map
-                HStack {
-                    Image(systemName: statsIcon)
-                        .foregroundColor(statsIconColor)
-                    Text(showNotYet ? "\(notYetRegions.count) to go" : statsText)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            showNotYet.toggle()
-                        }
-                        if !showNotYet {
-                            cameraOverride = nil
-                            callout = nil
-                        }
-                    } label: {
-                        Label("Not yet", systemImage: "list.bullet")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(showNotYet ? .white : .secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(showNotYet ? Color.accentColor : Color(UIColor.tertiarySystemFill)))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(showNotYet ? "Show visited" : "Show regions not yet visited")
-                    Button {
-                        showWidgetViewSetter = true
-                    } label: {
-                        Image(systemName: widgetButtonHighlighted ? "widget.small.badge.plus" : "widget.small")
-                            .font(.system(size: 16))
-                            .foregroundColor(.blue)
-                    }
-                    .accessibilityLabel("Widget map view")
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(UIColor.systemBackground).opacity(0.9))
-                .cornerRadius(8)
-                .padding(.top, 12)
-                .padding(.horizontal, 12)
-            }
-            .sheet(isPresented: $showWidgetViewSetter) {
-                widgetSheet()
-            }
-            .task(id: distanceTaskID) {
-                await loadDistances()
+    // MARK: - Layouts
+
+    /// iPhone: the map with the stats header overlaid, above swipeable cards; beside
+    /// them in compact height (a phone in landscape), where stacking left no map
+    private var compactLayout: some View {
+        let stack = sizing.isCompact ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
+        return stack {
+            ZStack(alignment: .top) {
+                mapPane
+                statsHeader
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(UIColor.systemBackground).opacity(0.9))
+                    .cornerRadius(8)
+                    .padding(.top, 12)
+                    .padding(.horizontal, 12)
             }
 
             // Cards, or the list of what is left
-            if showNotYet {
+            if state.showNotYet {
                 NotYetList(regions: notYetRegions, distances: distancesByCode, unitSystem: settings.unitSystem) { region in
                     cameraOverride = notYetKind.camera(for: region.code, defaultRegion: defaultCamera)
                     showCallout(for: region)
                 }
-                .frame(height: cardTabViewHeight)
+                .frame(width: sizing.isCompact ? 360 : nil)
+                .frame(height: sizing.isCompact ? nil : cardTabViewHeight)
                 .padding(.vertical, 10)
             } else if regions.isEmpty {
                 Spacer()
@@ -460,8 +445,9 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
                 .tabViewStyle(.page(indexDisplayMode: .always))
                 .indexViewStyle(.page(backgroundDisplayMode: .never))
                 .contentMargins(0, for: .scrollContent)
+                .frame(width: sizing.isCompact ? 360 : nil)
                 .frame(maxWidth: .infinity)
-                .frame(height: cardTabViewHeight)
+                .frame(height: sizing.isCompact ? nil : cardTabViewHeight)
                 .padding(.vertical, 10)
                 .navigationDestination(isPresented: $navigateToDetail) {
                     if let detail = selectedDetail {
@@ -470,6 +456,198 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
                 }
             }
         }
+    }
+
+    /// iPad, iPhone Duo open, Max phones in landscape: the segment picker, stats
+    /// header and region cards as a selectable sidebar; the map fills the detail
+    /// column with the selected region's detail in a collapsible panel beneath it
+    private var regularLayout: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            VStack(spacing: 0) {
+                sidebarHeader
+                statsHeader
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                if state.showNotYet {
+                    NotYetList(regions: notYetRegions, distances: distancesByCode, unitSystem: settings.unitSystem) { region in
+                        cameraOverride = notYetKind.camera(for: region.code, defaultRegion: defaultCamera)
+                        showCallout(for: region)
+                    }
+                } else if regions.isEmpty {
+                    Spacer()
+                    emptyState()
+                    Spacer()
+                } else {
+                    regionList
+                }
+            }
+            .navigationTitle("Regions")
+            .navigationSplitViewColumnWidth(min: 340, ideal: 380, max: 440)
+        } detail: {
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    mapPane
+                    if !state.showNotYet, let region = focusedRegion {
+                        detailPanel(for: region, height: geometry.size.height * 0.4)
+                    }
+                }
+            }
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
+    /// Map showing the current region, with the not-yet callout overlaid at the bottom
+    private var mapPane: some View {
+        mapView(currentRegion, cameraOverride, state.showNotYet, selectCard)
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .bottom) {
+                if let callout {
+                    HStack(spacing: 6) {
+                        Image(systemName: "mappin.circle")
+                            .foregroundColor(.secondary)
+                        Text(callout.name)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        Text("· not yet")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        if let distanceText = callout.distanceText {
+                            Text("· \(distanceText)")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .lineLimit(1)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(UIColor.systemBackground).opacity(0.9))
+                    .cornerRadius(8)
+                    .padding(.bottom, 12)
+                    .transition(.opacity)
+                    .task(id: callout) {
+                        try? await Task.sleep(for: .seconds(4))
+                        if !Task.isCancelled {
+                            withAnimation { self.callout = nil }
+                        }
+                    }
+                }
+            }
+    }
+
+    /// "14 of 50 states visited", the Not-yet toggle and the widget button
+    private var statsHeader: some View {
+        HStack {
+            Image(systemName: statsIcon)
+                .foregroundColor(statsIconColor)
+            Text(state.showNotYet ? "\(notYetRegions.count) to go" : statsText)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Spacer()
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    state.showNotYet.toggle()
+                }
+                if !state.showNotYet {
+                    cameraOverride = nil
+                    callout = nil
+                }
+            } label: {
+                Label("Not yet", systemImage: "list.bullet")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(state.showNotYet ? .white : .secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(state.showNotYet ? Color.accentColor : Color(UIColor.tertiarySystemFill)))
+            }
+            .buttonStyle(.plain)
+            .hoverEffect(.highlight)
+            .accessibilityLabel(state.showNotYet ? "Show visited" : "Show regions not yet visited")
+            Button {
+                showWidgetViewSetter = true
+            } label: {
+                Image(systemName: widgetButtonHighlighted ? "widget.small.badge.plus" : "widget.small")
+                    .font(.system(size: 16))
+                    .foregroundColor(.blue)
+            }
+            .hoverEffect(.highlight)
+            .accessibilityLabel("Widget map view")
+        }
+    }
+
+    /// The region cards as a scrolling stack (regular width); tapping one frames the
+    /// map. Not a List: list selection repaints the selected card's text white and
+    /// adds its own focus rectangle, so the ring below marks the selection
+    private var regionList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(Array(regions.enumerated()), id: \.element.id) { index, detail in
+                        Button {
+                            callout = nil
+                            cameraOverride = nil
+                            currentCardIndex = index
+                        } label: {
+                            VisitedRegionCard(detail: detail)
+                                .overlay {
+                                    if focusedRegion?.id == detail.id {
+                                        RoundedRectangle(cornerRadius: sizing.isCompact ? 16 : 20)
+                                            .strokeBorder(Color.accentColor, lineWidth: 3)
+                                            .padding(.horizontal, sizing.horizontalPadding)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .hoverEffect(.lift)
+                        .accessibilityAddTraits(focusedRegion?.id == detail.id ? .isSelected : [])
+                        .id(detail.id)
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+            .onChange(of: currentCardIndex) { _, index in
+                if let id = regions[safe: index]?.id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+            }
+        }
+    }
+
+    /// The selected region's detail, collapsible so the map can take the column
+    @ViewBuilder
+    private func detailPanel(for region: RecordDetail, height: CGFloat) -> some View {
+        Divider()
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                detailExpanded.toggle()
+            }
+        } label: {
+            HStack {
+                Text(region.locationName ?? region.recordType)
+                    .font(.headline)
+                Spacer()
+                Image(systemName: detailExpanded ? "chevron.down" : "chevron.up")
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(detailExpanded ? "Hide region details" : "Show region details")
+        if detailExpanded {
+            RecordDetailView(record: region)
+                .id(region.id)
+                .frame(height: height)
+        }
+    }
+
+    /// The region the map frames and the detail panel shows: the hoisted selection
+    /// when it is in this list, else the carousel's card, else the first region
+    private var focusedRegion: RecordDetail? {
+        if let code = state.selectedRegionCode, let region = regions.first(where: { $0.regionCode == code }) {
+            return region
+        }
+        return regions[safe: currentCardIndex] ?? regions.first
     }
 }
 
@@ -518,6 +696,7 @@ private struct NotYetList: View {
 
 /// Shows visited US states as cards
 struct StatesMapView: View {
+    var sidebarHeader: AnyView = AnyView(EmptyView())
     @StateObject private var regionManager = RegionTrackingManager.shared
 
     // Sorted states alphabetically by name
@@ -540,6 +719,7 @@ struct StatesMapView: View {
     var body: some View {
         let visitedCodes = Set(sortedStates.compactMap { $0.regionCode.map { normalizeRegionCode($0, isState: true) } })
         RegionCardsMapView(
+            sidebarHeader: sidebarHeader,
             regions: sortedStates,
             statsIcon: "flag.fill",
             statsIconColor: .orange,
@@ -586,6 +766,7 @@ struct StatesMapView: View {
 
 /// Shows visited countries as cards
 struct CountriesMapView: View {
+    var sidebarHeader: AnyView = AnyView(EmptyView())
     @StateObject private var regionManager = RegionTrackingManager.shared
 
     // Sorted countries alphabetically by name
@@ -608,6 +789,7 @@ struct CountriesMapView: View {
     var body: some View {
         let visitedCodes = Set(sortedCountries.compactMap(\.regionCode))
         RegionCardsMapView(
+            sidebarHeader: sidebarHeader,
             regions: sortedCountries,
             statsIcon: "globe.americas.fill",
             statsIconColor: .blue,
@@ -655,6 +837,7 @@ struct CountriesMapView: View {
 
 /// Shows visited continents as cards
 struct ContinentsMapView: View {
+    var sidebarHeader: AnyView = AnyView(EmptyView())
     @StateObject private var regionManager = RegionTrackingManager.shared
 
     // Sorted continents alphabetically by name
@@ -682,6 +865,7 @@ struct ContinentsMapView: View {
     var body: some View {
         let visitedCodes = Set(visitedContinentsSet.map(\.rawValue))
         RegionCardsMapView(
+            sidebarHeader: sidebarHeader,
             regions: sortedContinents,
             statsIcon: "globe",
             statsIconColor: .purple,

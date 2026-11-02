@@ -25,4 +25,15 @@ struct AdaptiveLayoutTests {
         #expect(CardSizing(vertical: .regular).iconSize == 44)
         #expect(CardSizing(vertical: .compact).iconSize == 32)
     }
+
+    @Test func statsCardsTileOnlyInRegularWidth() async throws {
+        #expect(StatsGrid.columns(for: .compact).count == 1)
+        let regular = StatsGrid.columns(for: .regular)
+        #expect(regular.count == 1)
+        if case .adaptive(let minimum, _) = regular[0].size {
+            #expect(minimum == 360)
+        } else {
+            Issue.record("regular width should use an adaptive column")
+        }
+    }
 }

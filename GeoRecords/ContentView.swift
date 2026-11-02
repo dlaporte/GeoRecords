@@ -127,6 +127,11 @@ struct ContentView: View {
         ZStack {
             mainTabContent
             setupOverlays
+            #if DEBUG
+            if SizeClassBadge.isEnabled {
+                SizeClassBadge()
+            }
+            #endif
         }
     }
 
@@ -279,9 +284,9 @@ struct ContentView: View {
                 SettingsView()
             }
         }
-        // Bottom tabs on iPhone; on iPad and iPhone Duo open the system tab bar
-        // with its sidebar toggle (the sidebar itself stays the user's choice)
-        .tabViewStyle(.sidebarAdaptable)
+        // Bottom tabs on iPhone, the system top tab bar on iPad and iPhone Duo open.
+        // Not .sidebarAdaptable: its sidebar merges with each tab's own split view
+        // and leaves the Records and Regions columns a sliver wide in landscape
         .environment(recordsState)
         .environment(regionsState)
         .environment(historyState)

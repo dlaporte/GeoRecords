@@ -83,7 +83,7 @@ struct HistoryDetailPager: View {
 
 // MARK: - History Detail Content
 
-private struct HistoryDetailContent: View {
+struct HistoryDetailContent: View {
     let entry: RecordHistoryEntry
     @EnvironmentObject var settings: SettingsManager
     @EnvironmentObject var recordManager: RecordManager
@@ -123,6 +123,78 @@ private struct HistoryDetailContent: View {
     private func savePhoto(_ asset: PHAsset) {
         guard let record = recordDetail else { return }
         updateRecordPhoto(for: record, asset: asset, recordManager: recordManager)
+    }
+}
+
+// MARK: - History Detail Pane (regular width)
+
+/// The selected entry's detail in a split view's detail column, with previous and
+/// next in the toolbar in place of the compact layout's swipe pager
+struct HistoryDetailPane: View {
+    let entries: [RecordHistoryEntry]
+    @Binding var selectedID: UUID?
+    let current: RecordHistoryEntry
+
+    @State private var showDeleteAlert = false
+    @EnvironmentObject var recordManager: RecordManager
+
+    private var index: Int? {
+        entries.firstIndex { $0.objectID == current.objectID }
+    }
+
+    var body: some View {
+        HistoryDetailContent(entry: current)
+            .navigationTitle(current.recordType ?? "Detail")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    VStack(spacing: 0) {
+                        Text(current.recordType ?? "Detail")
+                            .font(.headline)
+                        if let index {
+                            Text("\(index + 1) of \(entries.count)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        step(-1)
+                    } label: {
+                        Label("Previous", systemImage: "chevron.up")
+                    }
+                    .keyboardShortcut(.upArrow, modifiers: [])
+                    .disabled(index == nil || index == 0)
+                    Button {
+                        step(1)
+                    } label: {
+                        Label("Next", systemImage: "chevron.down")
+                    }
+                    .keyboardShortcut(.downArrow, modifiers: [])
+                    .disabled(index == nil || index == entries.count - 1)
+                    Button(role: .destructive) {
+                        showDeleteAlert = true
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
+            .alert("Delete Record?", isPresented: $showDeleteAlert) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) {
+                    if let record = RecordDetail(from: current) {
+                        deleteRecordFromStorage(record, recordManager: recordManager)
+                    }
+                }
+            } message: {
+                Text(RecordDeleteCopy.message(recordType: current.recordType))
+            }
+    }
+
+    private func step(_ delta: Int) {
+        guard let index, let next = entries[safe: index + delta] else { return }
+        selectedID = next.id
     }
 }
 

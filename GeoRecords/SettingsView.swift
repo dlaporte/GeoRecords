@@ -515,6 +515,8 @@ struct SettingsView: View {
             .sheet(isPresented: $showWidgetMapSheet) {
                 WidgetViewSetterSheet(mapType: "states", visitedRegions: [], allowsMapTypeChange: true)
             }
+            .readableWidth()
+            .background(Color(UIColor.systemGroupedBackground))
             } // ScrollViewReader
             .navigationTitle("Settings")
             .task {

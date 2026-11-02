@@ -143,6 +143,10 @@ struct StatisticsView: View {
     @EnvironmentObject var settings: SettingsManager
     @EnvironmentObject var deepLinkManager: DeepLinkManager
     @Environment(StatsTabState.self) private var state
+    @Environment(\.layoutWidth) private var layoutWidth
+
+    /// One column on iPhone; as many 360-pt cards as fit on iPad and iPhone Duo open
+    private var cardColumns: [GridItem] { StatsGrid.columns(for: layoutWidth) }
     @State private var availableYears: [Int] = []
     @State private var availableMonths: [MonthSelection] = []
     @State private var dailyRecordsCache: [Int: [RecordHistoryEntry]] = [:]  // Day -> Records
@@ -214,6 +218,7 @@ struct StatisticsView: View {
                                 .padding(.horizontal)
 
                             if settings.homeCoordinate != nil {
+                                LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
                                 // N-S Chart (relative to home, in miles/km)
                                 BidirectionalStatChartCard(
                                     title: "North / South of Home",
@@ -263,6 +268,7 @@ struct StatisticsView: View {
                                     homeCoordinate: settings.homeCoordinate,
                                     timeFrameFilter: currentTimeFrameFilter
                                 )
+                                }
                             } else {
                                 // Home not set - show message
                                 HomeNotSetCard(message: "Set your home location in Settings to see how far you've traveled relative to home.")
@@ -275,6 +281,7 @@ struct StatisticsView: View {
                                 .font(.headline)
                                 .padding(.horizontal)
 
+                            LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
                             StatChartCard(
                                 title: "Highest Elevation",
                                 summary: currentElevationSummary,
@@ -287,6 +294,7 @@ struct StatisticsView: View {
                                 homeCoordinate: nil,
                                 timeFrameFilter: currentTimeFrameFilter
                             )
+                            }
                         }
 
                         // Activity Section (records set, regions over time). Records Set
@@ -301,6 +309,7 @@ struct StatisticsView: View {
                                     .font(.headline)
                                     .padding(.horizontal)
 
+                                LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
                                 if showRecordsSet {
                                     RecordsSetCard(points: recordsSetPoints, view: state.timeFrame,
                                                    yearly: countedRecords[.year] ?? 0, lifetime: countedRecords[.allTime] ?? 0)
@@ -315,6 +324,7 @@ struct StatisticsView: View {
                                         newStates: state.timeFrame == .allTime ? 0 : periodRegionCounts.states,
                                         newCountries: state.timeFrame == .allTime ? 0 : periodRegionCounts.countries
                                     )
+                                }
                                 }
                             }
                         }

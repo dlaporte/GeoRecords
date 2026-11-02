@@ -124,140 +124,288 @@ struct HistoryView: View {
         deleteRecordFromStorage(detail, recordManager: recordManager)
     }
 
+    @Environment(\.layoutWidth) private var layoutWidth
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @FocusState private var isSearchFocused: Bool
+
     var body: some View {
         @Bindable var state = state
-        NavigationStack {
-            VStack(spacing: 0) {
-                // Filter controls
-                VStack(spacing: 12) {
-                    // Type and source (the two short menus share a row)
-                    HStack(spacing: 12) {
-                        FilterMenu(title: state.typeFilter) {
-                            Picker("Type", selection: $state.typeFilter) {
-                                ForEach(availableRecordTypes, id: \.self) { type in
-                                    Text(type).tag(type)
-                                }
-                            }
-                        }
-                        .onChange(of: state.typeFilter) { _, newValue in
-                            // Reset to All Timeframes when selecting a region type
-                            if isRegionType(newValue) {
-                                state.timeFrameFilter = "All Timeframes"
-                            }
-                        }
+        Group {
+            if layoutWidth == .regular {
+                regularLayout
+            } else {
+                compactLayout
+            }
+        }
+        .alert("Delete Record?", isPresented: Binding(
+            get: { pendingDelete != nil },
+            set: { if !$0 { pendingDelete = nil } }
+        ), presenting: pendingDelete) { entry in
+            Button("Delete", role: .destructive) {
+                deleteEntry(entry)
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { entry in
+            Text(RecordDeleteCopy.message(recordType: entry.recordType))
+        }
+        // ⌘F focuses the search field with a hardware keyboard
+        .background {
+            Button("") { isSearchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
+    }
 
-                        FilterMenu(title: state.source.title) {
-                            Picker("Source", selection: $state.source) {
-                                ForEach(HistorySourceFilter.menuOrder, id: \.self) { source in
-                                    Text(source.title).tag(source)
-                                }
+    // MARK: - Layouts
+
+    /// iPhone: filters above a list whose rows push the detail pager
+    private var compactLayout: some View {
+        @Bindable var state = state
+        return NavigationStack {
+            VStack(spacing: 0) {
+                filterControls
+                Divider()
+                compactContent
+            }
+            .searchable(text: $state.searchText, prompt: "Type or place")
+            .searchFocused($isSearchFocused)
+            .navigationTitle("History (\(filteredEntries.count))")
+        }
+    }
+
+    /// iPad, iPhone Duo open, Max phones in landscape: the list beside the
+    /// selected entry's detail, with previous/next in the detail toolbar
+    private var regularLayout: some View {
+        @Bindable var state = state
+        return NavigationSplitView(columnVisibility: $columnVisibility) {
+            VStack(spacing: 0) {
+                filterControls
+                Divider()
+                regularContent
+            }
+            .searchable(text: $state.searchText, prompt: "Type or place")
+            .searchFocused($isSearchFocused)
+            .navigationTitle("History (\(filteredEntries.count))")
+            .navigationSplitViewColumnWidth(min: 380, ideal: 440, max: 540)
+        } detail: {
+            if let entry = focusedEntry {
+                HistoryDetailPane(entries: filteredEntries, selectedID: $state.selectedEntryID, current: entry)
+                    .id(entry.objectID)
+            } else {
+                ContentUnavailableView("No Record Selected", systemImage: "clock", description: Text("Choose a record from the list."))
+            }
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
+    /// Selection with a default: the first entry stands in for "nothing chosen yet"
+    private var listSelection: Binding<UUID?> {
+        Binding(
+            get: { focusedEntry?.id },
+            set: { state.selectedEntryID = $0 }
+        )
+    }
+
+    /// The entry the detail column shows: the hoisted selection when it is still in
+    /// the filtered list, else the first entry
+    private var focusedEntry: RecordHistoryEntry? {
+        let entries = filteredEntries
+        if let id = state.selectedEntryID, let entry = entries.first(where: { $0.id == id }) {
+            return entry
+        }
+        return entries.first
+    }
+
+    private var filterControls: some View {
+        @Bindable var state = state
+        return Group {
+            // Filter controls
+            VStack(spacing: 12) {
+                // Type and source (the two short menus share a row)
+                HStack(spacing: 12) {
+                    FilterMenu(title: state.typeFilter) {
+                        Picker("Type", selection: $state.typeFilter) {
+                            ForEach(availableRecordTypes, id: \.self) { type in
+                                Text(type).tag(type)
                             }
                         }
                     }
+                    .onChange(of: state.typeFilter) { _, newValue in
+                        // Reset to All Timeframes when selecting a region type
+                        if isRegionType(newValue) {
+                            state.timeFrameFilter = "All Timeframes"
+                        }
+                    }
 
-                    // Timeframe (disabled for region types, which have none) and the
-                    // at-home rows, normally hidden
-                    HStack(spacing: 12) {
-                        FilterMenu(title: state.timeFrameFilter) {
-                            Picker("Time Frame", selection: $state.timeFrameFilter) {
-                                ForEach(availableTimeFrames, id: \.self) { frame in
-                                    Text(frame).tag(frame)
-                                }
+                    FilterMenu(title: state.source.title) {
+                        Picker("Source", selection: $state.source) {
+                            ForEach(HistorySourceFilter.menuOrder, id: \.self) { source in
+                                Text(source.title).tag(source)
                             }
                         }
-                        .disabled(isRegionTypeSelected)
-                        .opacity(isRegionTypeSelected ? 0.5 : 1.0)
-
-                        Toggle("Include home", isOn: $state.includeHome)
-                            .toggleStyle(.switch)
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.horizontal)
-                .padding(.vertical, 12)
-                .background(Color(UIColor.systemBackground))
 
-                Divider()
+                // Timeframe (disabled for region types, which have none) and the
+                // at-home rows, normally hidden
+                HStack(spacing: 12) {
+                    FilterMenu(title: state.timeFrameFilter) {
+                        Picker("Time Frame", selection: $state.timeFrameFilter) {
+                            ForEach(availableTimeFrames, id: \.self) { frame in
+                                Text(frame).tag(frame)
+                            }
+                        }
+                    }
+                    .disabled(isRegionTypeSelected)
+                    .opacity(isRegionTypeSelected ? 0.5 : 1.0)
 
-                // Content
-                Group {
-                    if historyEntries.isEmpty {
-                        VStack(spacing: 16) {
-                            Image(systemName: "clock.arrow.circlepath")
-                                .font(.system(size: 48))
-                                .foregroundColor(.secondary)
-                            Text("No History Yet")
-                                .font(.headline)
-                            Text("Your record history will appear here.")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if onlyHomeRowsRemain {
-                        VStack(spacing: 16) {
-                            Image(systemName: "house")
-                                .font(.system(size: 48))
-                                .foregroundColor(.secondary)
-                            Text("Everything Is at Home")
-                                .font(.headline)
-                            Text("All of your records are at home. Turn on Include home to see them.")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .padding(.horizontal, 32)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if filteredEntries.isEmpty {
-                        VStack(spacing: 16) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.system(size: 48))
-                                .foregroundColor(.secondary)
-                            Text("No Results")
-                                .font(.headline)
-                            Text("Try adjusting your search or filters.")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        let entries = filteredEntries
-                        List {
-                            ForEach(sections) { section in
-                                Section(header: Text(section.title)) {
-                                    ForEach(section.rows) { row in
-                                        NavigationLink(destination: HistoryDetailPager(entries: entries, initialIndex: row.index)) {
-                                            CompactHistoryRow(entry: row.entry)
-                                        }
-                                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                            Button(role: .destructive) {
-                                                pendingDelete = row.entry
-                                            } label: {
-                                                Label("Delete", systemImage: "trash")
-                                            }
+                    Toggle("Include home", isOn: $state.includeHome)
+                        .toggleStyle(.switch)
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+            .background(Color(UIColor.systemBackground))
+        }
+    }
+
+    private var compactContent: some View {
+        Group {
+            // Content
+            Group {
+                if historyEntries.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text("No History Yet")
+                            .font(.headline)
+                        Text("Your record history will appear here.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if onlyHomeRowsRemain {
+                    VStack(spacing: 16) {
+                        Image(systemName: "house")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text("Everything Is at Home")
+                            .font(.headline)
+                        Text("All of your records are at home. Turn on Include home to see them.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.horizontal, 32)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if filteredEntries.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text("No Results")
+                            .font(.headline)
+                        Text("Try adjusting your search or filters.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    let entries = filteredEntries
+                    List {
+                        ForEach(sections) { section in
+                            Section(header: Text(section.title)) {
+                                ForEach(section.rows) { row in
+                                    NavigationLink(destination: HistoryDetailPager(entries: entries, initialIndex: row.index)) {
+                                        CompactHistoryRow(entry: row.entry)
+                                    }
+                                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button(role: .destructive) {
+                                            pendingDelete = row.entry
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
                                         }
                                     }
                                 }
                             }
                         }
-                        .listStyle(.plain)
                     }
+                    .listStyle(.plain)
                 }
             }
-            .searchable(text: $state.searchText, prompt: "Type or place")
-            .navigationTitle("History (\(filteredEntries.count))")
-            .alert("Delete Record?", isPresented: Binding(
-                get: { pendingDelete != nil },
-                set: { if !$0 { pendingDelete = nil } }
-            ), presenting: pendingDelete) { entry in
-                Button("Delete", role: .destructive) {
-                    deleteEntry(entry)
-                    pendingDelete = nil
+        }
+    }
+
+    private var regularContent: some View {
+        Group {
+            // Content
+            Group {
+                if historyEntries.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text("No History Yet")
+                            .font(.headline)
+                        Text("Your record history will appear here.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if onlyHomeRowsRemain {
+                    VStack(spacing: 16) {
+                        Image(systemName: "house")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text("Everything Is at Home")
+                            .font(.headline)
+                        Text("All of your records are at home. Turn on Include home to see them.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.horizontal, 32)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if filteredEntries.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 48))
+                            .foregroundColor(.secondary)
+                        Text("No Results")
+                            .font(.headline)
+                        Text("Try adjusting your search or filters.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(selection: listSelection) {
+                        ForEach(sections) { section in
+                            Section(header: Text(section.title)) {
+                                ForEach(section.rows) { row in
+                                    CompactHistoryRow(entry: row.entry)
+                                        .tag(row.entry.id ?? UUID())
+                                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button(role: .destructive) {
+                                            pendingDelete = row.entry
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .listStyle(.plain)
                 }
-                Button("Cancel", role: .cancel) { pendingDelete = nil }
-            } message: { entry in
-                Text(RecordDeleteCopy.message(recordType: entry.recordType))
             }
         }
     }

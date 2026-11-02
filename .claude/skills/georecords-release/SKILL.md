@@ -51,6 +51,7 @@ Repository secrets: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` (base64 of the `
 | Symptom | Cause / fix |
 |---|---|
 | `Cloud signing permission error`, `No profiles for ... found` at Upload step | API key role can't mint the cloud distribution cert — see key role gotcha above |
+| `Choose a certificate to revoke. Your account has reached the maximum number of certificates` + `No ... App Development provisioning profiles` at **Archive** | The archive was signing with Apple Development, which mints a new cert per runner until the account's cap is hit (2026-11-02). The Archive step now passes `CODE_SIGN_IDENTITY="Apple Distribution"` (cloud-managed, nothing minted); keep it. Optionally revoke the stale "Created via API" development certs in the developer portal |
 | Test host crashes: `signal trap before establishing connection`, `Unable to find entitlement for KVS store` | Someone added `CODE_SIGNING_ALLOWED=NO` to the **test** step — remove it; simulator tests sign ad-hoc and need their entitlements |
 | Workflow fails at "Derive version from tag" | Tag doesn't match `v<digits>.<digits>[.<digits>]` |
 | Workflow doesn't trigger | Only *publishing* a release triggers it — pushed tags and drafts don't. Note: pre-releases DO trigger it |

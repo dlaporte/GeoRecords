@@ -5,7 +5,11 @@
 # App Store release still requires submitting for review in App Store Connect.
 #
 # Signing uses Xcode cloud-managed signing via an App Store Connect API key —
-# no certificates or provisioning profiles are stored in this repo.
+# no certificates or provisioning profiles are stored in this repo. The archive
+# signs with the team's cloud-managed Apple Distribution certificate directly:
+# left to its default (Apple Development), automatic signing minted a new
+# development certificate for every throwaway runner, and on 2026-11-02 the
+# account hit Apple's certificate cap ("Choose a certificate to revoke").
 #
 # Required repository secrets (Settings > Secrets and variables > Actions):
 #   ASC_KEY_ID      - App Store Connect API key ID (e.g. ABC123DEFG)
@@ -111,6 +115,7 @@ jobs:
             -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             INFOPLIST_KEY_ITSAppUsesNonExemptEncryption=NO \
             $VERSION_OVERRIDE

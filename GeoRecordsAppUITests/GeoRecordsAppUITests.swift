@@ -17,9 +17,29 @@ final class GeoRecordsUITests: XCTestCase {
         continueAfterFailure = true
     }
 
+    /// Prefix for attachment names, so a landscape run's captures sort apart
+    private var snapPrefix = ""
+
     @MainActor
     func testScreenshotTour() throws {
+        runTour()
+    }
+
+    /// The same tour with the device rotated: iPhone landscape is compact height,
+    /// iPad landscape is the wide regular layout
+    @MainActor
+    func testScreenshotTourLandscape() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        snapPrefix = "L-"
+        runTour()
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    @MainActor
+    private func runTour() {
         let app = XCUIApplication()
+        // Debug builds stamp each capture with its size classes and window size
+        app.launchEnvironment["GEORECORDS_SHOW_SIZE_CLASS"] = "1"
         addUIInterruptionMonitor(withDescription: "System alerts") { alert in
             for label in ["Allow", "Allow While Using App", "OK", "Open"] where alert.buttons[label].exists {
                 alert.buttons[label].tap()
@@ -43,14 +63,14 @@ final class GeoRecordsUITests: XCTestCase {
         tap(app, "This Month"); sleep(2); snap(app, "02-records-month")
         tap(app, "This Year"); sleep(2); snap(app, "03-records-year")
 
-        app.tabBars.buttons["Stats"].tap(); sleep(3); snap(app, "04-stats-lifetime")
+        selectTab(app, "Stats"); sleep(3); snap(app, "04-stats-lifetime")
         scrollUp(app); snap(app, "05-stats-lifetime-scrolled")
         scrollUp(app); scrollUp(app); snap(app, "06-stats-lifetime-bottom")
         tap(app, "This Year"); sleep(3)
         scrollUp(app); scrollUp(app); scrollUp(app); snap(app, "07-stats-year-bottom")
         tap(app, "This Month"); sleep(3); snap(app, "07b-stats-month")
 
-        app.tabBars.buttons["Regions"].tap(); sleep(4); snap(app, "08-regions-states")
+        selectTab(app, "Regions"); sleep(4); snap(app, "08-regions-states")
         if app.buttons["Show regions not yet visited"].waitForExistence(timeout: 3) {
             app.buttons["Show regions not yet visited"].tap(); sleep(3); snap(app, "09-regions-not-yet")
             app.buttons["Show visited"].tap(); sleep(1)
@@ -60,9 +80,25 @@ final class GeoRecordsUITests: XCTestCase {
         swipeCards(app); sleep(4); snap(app, "10c-regions-continents-third")
         tap(app, "Countries"); sleep(4); snap(app, "11-regions-countries")
 
-        app.tabBars.buttons["History"].tap(); sleep(3); snap(app, "12-history")
-        app.tabBars.buttons["Settings"].tap(); sleep(2); snap(app, "13-settings")
+        selectTab(app, "History"); sleep(3); snap(app, "12-history")
+        selectTab(app, "Settings"); sleep(2); snap(app, "13-settings")
         app.swipeUp(); sleep(1); snap(app, "14-settings-scrolled")
+    }
+
+    /// Selects a tab wherever the platform draws it: the iPhone tab bar, the iPad top
+    /// tab bar or sidebar, or the iPhone Duo inner display's vertical rail
+    private func selectTab(_ app: XCUIApplication, _ name: String) {
+        let inTabBar = app.tabBars.buttons[name]
+        if inTabBar.waitForExistence(timeout: 2) {
+            inTabBar.tap()
+            return
+        }
+        let anywhere = app.buttons[name]
+        if anywhere.waitForExistence(timeout: 2) {
+            anywhere.tap()
+            return
+        }
+        app.staticTexts[name].firstMatch.tap()
     }
 
     /// Drags upward along the left margin, outside the cards: the Stats charts own a
@@ -97,7 +133,7 @@ final class GeoRecordsUITests: XCTestCase {
 
     private func snap(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = name
+        attachment.name = snapPrefix + name
         attachment.lifetime = .keepAlways
         add(attachment)
     }

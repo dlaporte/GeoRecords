@@ -100,6 +100,11 @@ struct ContentView: View {
     @ObservedObject var locationManager = LocationManager.shared
     @StateObject private var photoScanner = PhotoLibraryScanner()
     @State private var selectedTab = 0
+    // Per-tab selection shared by the compact and regular layouts (see TabState.swift)
+    @State private var recordsState = RecordsTabState()
+    @State private var regionsState = RegionsTabState()
+    @State private var historyState = HistoryTabState()
+    @State private var statsState = StatsTabState()
     @State private var setupFlowState: SetupFlowState = .none
     @State private var showPhotoImportWizard = false
     @State private var showNoRecordsView = false
@@ -258,21 +263,38 @@ struct ContentView: View {
 
     private var tabView: some View {
         TabView(selection: $selectedTab) {
-            RecordsView()
-                .tabItem { Label("Records", systemImage: "location.north.fill") }
-                .tag(0)
-            MapsTabView()
-                .tabItem { Label("Regions", systemImage: "map.fill") }
-                .tag(1)
-            StatisticsView()
-                .tabItem { Label("Stats", systemImage: "chart.bar.fill") }
-                .tag(2)
-            HistoryView()
-                .tabItem { Label("History", systemImage: "clock") }
-                .tag(3)
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gear") }
-                .tag(4)
+            Tab("Records", systemImage: "location.north.fill", value: 0) {
+                RecordsView()
+            }
+            Tab("Regions", systemImage: "map.fill", value: 1) {
+                MapsTabView()
+            }
+            Tab("Stats", systemImage: "chart.bar.fill", value: 2) {
+                StatisticsView()
+            }
+            Tab("History", systemImage: "clock", value: 3) {
+                HistoryView()
+            }
+            Tab("Settings", systemImage: "gear", value: 4) {
+                SettingsView()
+            }
+        }
+        // Bottom tabs on iPhone; on iPad and iPhone Duo open the system tab bar
+        // with its sidebar toggle (the sidebar itself stays the user's choice)
+        .tabViewStyle(.sidebarAdaptable)
+        .environment(recordsState)
+        .environment(regionsState)
+        .environment(historyState)
+        .environment(statsState)
+        // ⌘1–⌘5 switch tabs with a hardware keyboard (iPad, Duo)
+        .background {
+            ForEach(0..<5, id: \.self) { index in
+                Button("") { selectedTab = index }
+                    .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+                    .opacity(0)
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateToiCloudSync)) { _ in
             selectedTab = 4  // Settings tab

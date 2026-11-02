@@ -5,11 +5,7 @@ import CoreLocation
 struct HistoryView: View {
     @EnvironmentObject var settings: SettingsManager
     @EnvironmentObject var recordManager: RecordManager
-    @State private var searchText = ""
-    @State private var selectedRecordTypeFilter: String = "All Types"
-    @State private var selectedTimeFrameFilter: String = "All Timeframes"
-    @State private var selectedSource: HistorySourceFilter = .all
-    @State private var includeHome = false
+    @Environment(HistoryTabState.self) private var state
     @State private var pendingDelete: RecordHistoryEntry?
 
     // Fetch history entries sorted by timestamp (newest first)
@@ -27,7 +23,7 @@ struct HistoryView: View {
         entries = entries.filter { $0.timeFrame != TimeFrame.daily.rawValue }
 
         // Filter out records at home (likely test/bogus data) unless asked to show them
-        if !includeHome, let homeCoord = settings.homeCoordinate {
+        if !state.includeHome, let homeCoord = settings.homeCoordinate {
             let homeLocation = CLLocation(latitude: homeCoord.latitude, longitude: homeCoord.longitude)
             entries = entries.filter { entry in
                 let entryLocation = CLLocation(latitude: entry.latitude, longitude: entry.longitude)
@@ -37,29 +33,29 @@ struct HistoryView: View {
         }
 
         // Apply database-level filters first (record type, time frame, source)
-        if selectedRecordTypeFilter != "All Types" {
-            entries = entries.filter { $0.recordType == selectedRecordTypeFilter }
+        if state.typeFilter != "All Types" {
+            entries = entries.filter { $0.recordType == state.typeFilter }
         }
 
-        if selectedSource != .all {
-            entries = entries.filter { selectedSource.matches($0.source) }
+        if state.source != .all {
+            entries = entries.filter { state.source.matches($0.source) }
         }
 
-        if selectedTimeFrameFilter != "All Timeframes" {
+        if state.timeFrameFilter != "All Timeframes" {
             entries = entries.filter { entry in
                 // Treat all variations of lifetime records as the same
-                if selectedTimeFrameFilter == canonicalLifetimeTimeFrame {
+                if state.timeFrameFilter == canonicalLifetimeTimeFrame {
                     return lifetimeTimeFrameVariations.contains(entry.timeFrame ?? "")
                 }
-                return entry.timeFrame == selectedTimeFrameFilter
+                return entry.timeFrame == state.timeFrameFilter
             }
         }
 
         // Apply search filter
-        if !searchText.isEmpty {
+        if !state.searchText.isEmpty {
             entries = entries.filter { entry in
-                let matchesRecordType = entry.recordType?.localizedCaseInsensitiveContains(searchText) ?? false
-                let matchesLocation = entry.locationName?.localizedCaseInsensitiveContains(searchText) ?? false
+                let matchesRecordType = entry.recordType?.localizedCaseInsensitiveContains(state.searchText) ?? false
+                let matchesLocation = entry.locationName?.localizedCaseInsensitiveContains(state.searchText) ?? false
                 return matchesRecordType || matchesLocation
             }
         }
@@ -79,7 +75,7 @@ struct HistoryView: View {
     }
 
     private var isRegionTypeSelected: Bool {
-        isRegionType(selectedRecordTypeFilter)
+        isRegionType(state.typeFilter)
     }
 
     private var availableTimeFrames: [String] {
@@ -113,13 +109,13 @@ struct HistoryView: View {
     }
 
     private var hasActiveFilters: Bool {
-        !searchText.isEmpty || selectedRecordTypeFilter != "All Types"
-            || selectedTimeFrameFilter != "All Timeframes" || selectedSource != .all
+        !state.searchText.isEmpty || state.typeFilter != "All Types"
+            || state.timeFrameFilter != "All Timeframes" || state.source != .all
     }
 
     /// Everything is hidden only by the at-home rule: say so instead of "No Results"
     private var onlyHomeRowsRemain: Bool {
-        filteredEntries.isEmpty && !includeHome && !hasActiveFilters
+        filteredEntries.isEmpty && !state.includeHome && !hasActiveFilters
             && historyEntries.contains { $0.timeFrame != TimeFrame.daily.rawValue }
     }
 
@@ -129,28 +125,29 @@ struct HistoryView: View {
     }
 
     var body: some View {
+        @Bindable var state = state
         NavigationStack {
             VStack(spacing: 0) {
                 // Filter controls
                 VStack(spacing: 12) {
                     // Type and source (the two short menus share a row)
                     HStack(spacing: 12) {
-                        FilterMenu(title: selectedRecordTypeFilter) {
-                            Picker("Type", selection: $selectedRecordTypeFilter) {
+                        FilterMenu(title: state.typeFilter) {
+                            Picker("Type", selection: $state.typeFilter) {
                                 ForEach(availableRecordTypes, id: \.self) { type in
                                     Text(type).tag(type)
                                 }
                             }
                         }
-                        .onChange(of: selectedRecordTypeFilter) { _, newValue in
+                        .onChange(of: state.typeFilter) { _, newValue in
                             // Reset to All Timeframes when selecting a region type
                             if isRegionType(newValue) {
-                                selectedTimeFrameFilter = "All Timeframes"
+                                state.timeFrameFilter = "All Timeframes"
                             }
                         }
 
-                        FilterMenu(title: selectedSource.title) {
-                            Picker("Source", selection: $selectedSource) {
+                        FilterMenu(title: state.source.title) {
+                            Picker("Source", selection: $state.source) {
                                 ForEach(HistorySourceFilter.menuOrder, id: \.self) { source in
                                     Text(source.title).tag(source)
                                 }
@@ -161,8 +158,8 @@ struct HistoryView: View {
                     // Timeframe (disabled for region types, which have none) and the
                     // at-home rows, normally hidden
                     HStack(spacing: 12) {
-                        FilterMenu(title: selectedTimeFrameFilter) {
-                            Picker("Time Frame", selection: $selectedTimeFrameFilter) {
+                        FilterMenu(title: state.timeFrameFilter) {
+                            Picker("Time Frame", selection: $state.timeFrameFilter) {
                                 ForEach(availableTimeFrames, id: \.self) { frame in
                                     Text(frame).tag(frame)
                                 }
@@ -171,7 +168,7 @@ struct HistoryView: View {
                         .disabled(isRegionTypeSelected)
                         .opacity(isRegionTypeSelected ? 0.5 : 1.0)
 
-                        Toggle("Include home", isOn: $includeHome)
+                        Toggle("Include home", isOn: $state.includeHome)
                             .toggleStyle(.switch)
                             .font(.subheadline)
                             .frame(maxWidth: .infinity)
@@ -248,7 +245,7 @@ struct HistoryView: View {
                     }
                 }
             }
-            .searchable(text: $searchText, prompt: "Type or place")
+            .searchable(text: $state.searchText, prompt: "Type or place")
             .navigationTitle("History (\(filteredEntries.count))")
             .alert("Delete Record?", isPresented: Binding(
                 get: { pendingDelete != nil },

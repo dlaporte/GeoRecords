@@ -142,10 +142,8 @@ private func shouldShowXAxisLabel(for value: AxisValue, dataCount: Int, timeFram
 struct StatisticsView: View {
     @EnvironmentObject var settings: SettingsManager
     @EnvironmentObject var deepLinkManager: DeepLinkManager
-    @State private var selectedTimeFrame: TimeFrame = .allTime
-    @State private var selectedYear: Int?
+    @Environment(StatsTabState.self) private var state
     @State private var availableYears: [Int] = []
-    @State private var selectedMonth: MonthSelection?  // Past-month browsing (e.g. from the monthly summary notification)
     @State private var availableMonths: [MonthSelection] = []
     @State private var dailyRecordsCache: [Int: [RecordHistoryEntry]] = [:]  // Day -> Records
     @State private var monthlyAggregates: [MonthlyAggregate] = []
@@ -165,14 +163,15 @@ struct StatisticsView: View {
     @State private var regionGrowthPoints: [RegionGrowthPoint] = []
 
     var body: some View {
+        @Bindable var state = state
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
                     // Time Frame Picker with year selection (shared with Records page)
                     TimeFramePickerWithBadges(
-                        selectedTimeFrame: $selectedTimeFrame,
-                        selectedYear: $selectedYear,
-                        selectedMonth: $selectedMonth,
+                        selectedTimeFrame: $state.timeFrame,
+                        selectedYear: $state.year,
+                        selectedMonth: $state.month,
                         availableYears: availableYears,
                         availableMonths: availableMonths,
                         timeFrameLabel: { timeFrame in
@@ -180,12 +179,12 @@ struct StatisticsView: View {
                             case .allTime:
                                 return "Lifetime"
                             case .year:
-                                if let year = selectedYear {
+                                if let year = state.year {
                                     return String(format: "%d", year)
                                 }
                                 return "This Year"
                             case .month:
-                                return selectedMonth?.displayName ?? "This Month"
+                                return state.month?.displayName ?? "This Month"
                             case .daily: return "Daily"  // Not shown in UI
                             }
                         }
@@ -293,7 +292,7 @@ struct StatisticsView: View {
                         // Activity Section (records set, regions over time). Records Set
                         // only where a larger timeframe exists to count (never in Lifetime)
                         // and something was counted; the strip already says when nothing was
-                        let showRecordsSet = !StatsRecordCounts.countedTimeFrames(for: selectedTimeFrame).isEmpty
+                        let showRecordsSet = !StatsRecordCounts.countedTimeFrames(for: state.timeFrame).isEmpty
                             && countedRecords.values.reduce(0, +) > 0
                         let showRegions = regionGrowthPoints.contains(where: { $0.states + $0.countries > 0 })
                         if showRecordsSet || showRegions {
@@ -303,18 +302,18 @@ struct StatisticsView: View {
                                     .padding(.horizontal)
 
                                 if showRecordsSet {
-                                    RecordsSetCard(points: recordsSetPoints, view: selectedTimeFrame,
+                                    RecordsSetCard(points: recordsSetPoints, view: state.timeFrame,
                                                    yearly: countedRecords[.year] ?? 0, lifetime: countedRecords[.allTime] ?? 0)
                                 }
 
                                 if showRegions {
                                     RegionsGrowthCard(
                                         points: regionGrowthPoints,
-                                        timeFrame: selectedTimeFrame,
+                                        timeFrame: state.timeFrame,
                                         totalStates: regionGrowthPoints.last?.states ?? 0,
                                         totalCountries: regionGrowthPoints.last?.countries ?? 0,
-                                        newStates: selectedTimeFrame == .allTime ? 0 : periodRegionCounts.states,
-                                        newCountries: selectedTimeFrame == .allTime ? 0 : periodRegionCounts.countries
+                                        newStates: state.timeFrame == .allTime ? 0 : periodRegionCounts.states,
+                                        newCountries: state.timeFrame == .allTime ? 0 : periodRegionCounts.countries
                                     )
                                 }
                             }
@@ -332,11 +331,11 @@ struct StatisticsView: View {
                 loadAvailableMonths()
                 // The browsed period survives tab switches (as on Records) unless its
                 // data is gone: the cleanup above can retire a past month
-                if let month = selectedMonth, !availableMonths.contains(month) {
-                    selectedMonth = nil
+                if let month = state.month, !availableMonths.contains(month) {
+                    state.month = nil
                 }
-                if let year = selectedYear, !availableYears.contains(year) {
-                    selectedYear = nil
+                if let year = state.year, !availableYears.contains(year) {
+                    state.year = nil
                 }
                 // A pending summary-notification period wins
                 applyPendingStatsPeriod()
@@ -355,20 +354,20 @@ struct StatisticsView: View {
                     }
                 }
             }
-            .onChange(of: selectedTimeFrame) { _, newValue in
+            .onChange(of: state.timeFrame) { _, newValue in
                 // Reset historical selections when switching away from their timeframe
                 if newValue != .year {
-                    selectedYear = nil
+                    state.year = nil
                 }
                 if newValue != .month {
-                    selectedMonth = nil
+                    state.month = nil
                 }
                 loadStatistics()
             }
-            .onChange(of: selectedYear) { _, _ in
+            .onChange(of: state.year) { _, _ in
                 loadStatistics()
             }
-            .onChange(of: selectedMonth) { _, _ in
+            .onChange(of: state.month) { _, _ in
                 loadStatistics()
             }
             .onChange(of: deepLinkManager.statsPeriod) { _, _ in
@@ -413,18 +412,18 @@ struct StatisticsView: View {
 
         switch period {
         case .month(let month):
-            selectedTimeFrame = .month
+            state.timeFrame = .month
             if month == MonthSelection.containing(Date()) {
-                selectedMonth = nil  // "This Month" already shows it
+                state.month = nil  // "This Month" already shows it
             } else if availableMonths.contains(month) {
-                selectedMonth = month
+                state.month = month
             } else {
-                selectedMonth = nil
+                state.month = nil
                 debugLog("📊 Stats deep link: no daily data left for \(month.displayName), showing current month")
             }
         case .year(let year):
-            selectedTimeFrame = .year
-            selectedYear = availableYears.contains(year) ? year : nil
+            state.timeFrame = .year
+            state.year = availableYears.contains(year) ? year : nil
         }
         loadStatistics()
     }
@@ -437,10 +436,10 @@ struct StatisticsView: View {
             // availableYears is loaded from the full record history before this runs
             hasAnyData = !availableYears.isEmpty
 
-            switch selectedTimeFrame {
+            switch state.timeFrame {
             case .month:
-                // Day-by-day granularity; selectedMonth browses the previous month
-                if let month = selectedMonth {
+                // Day-by-day granularity; state.month browses the previous month
+                if let month = state.month {
                     dailyRecordsCache = historyManager.getDailyRecords(for: month)
                 } else {
                     dailyRecordsCache = historyManager.getDailyRecordsForCurrentMonth()
@@ -452,7 +451,7 @@ struct StatisticsView: View {
 
             case .year:
                 // Use specific year if selected, otherwise current year
-                let yearToLoad = selectedYear ?? Calendar.current.component(.year, from: Date())
+                let yearToLoad = state.year ?? Calendar.current.component(.year, from: Date())
                 monthlyAggregates = historyManager.getMonthlyAggregates(for: yearToLoad)
                 monthlyAggregatesCache = monthlyAggregates.reduce(into: [:]) { $0[$1.month] = $1 }
                 dailyRecordsCache = [:]
@@ -485,10 +484,10 @@ struct StatisticsView: View {
         let now = Date()
         let regionManager = RegionTrackingManager.shared
 
-        let interval = StatsBuckets.periodInterval(timeFrame: selectedTimeFrame, year: selectedYear,
-                                                   month: selectedMonth, now: now, calendar: calendar)
+        let interval = StatsBuckets.periodInterval(timeFrame: state.timeFrame, year: state.year,
+                                                   month: state.month, now: now, calendar: calendar)
         periodEvents = historyManager.recordEvents(in: interval)
-        let counted = StatsRecordCounts.counted(periodEvents, in: selectedTimeFrame)
+        let counted = StatsRecordCounts.counted(periodEvents, in: state.timeFrame)
         countedRecords = Dictionary(grouping: counted, by: \.timeFrame).mapValues(\.count)
         periodRegionCounts = regionManager.newRegionCounts(in: interval)
 
@@ -499,11 +498,11 @@ struct StatisticsView: View {
         let earliestYear = [yearlyAggregates.map(\.year).min(), regionYears.min(), eventYears.min()]
             .compactMap { $0 }.min()
 
-        let starts = StatsBuckets.bucketStarts(timeFrame: selectedTimeFrame, year: selectedYear, month: selectedMonth,
+        let starts = StatsBuckets.bucketStarts(timeFrame: state.timeFrame, year: state.year, month: state.month,
                                                now: now, earliestYear: earliestYear, calendar: calendar)
-        let labels = StatsBuckets.labels(for: starts, timeFrame: selectedTimeFrame, calendar: calendar)
-        let component = StatsBuckets.component(for: selectedTimeFrame)
-        recordsSetPoints = StatsRecordCounts.countedTimeFrames(for: selectedTimeFrame).flatMap { timeFrame in
+        let labels = StatsBuckets.labels(for: starts, timeFrame: state.timeFrame, calendar: calendar)
+        let component = StatsBuckets.component(for: state.timeFrame)
+        recordsSetPoints = StatsRecordCounts.countedTimeFrames(for: state.timeFrame).flatMap { timeFrame in
             let dates = counted.filter { $0.timeFrame == timeFrame }.map(\.timestamp)
             let counts = StatsBuckets.counts(dates: dates, bucketStarts: starts, component: component, calendar: calendar)
             let kind = StatsRecordCounts.label(timeFrame).capitalized
@@ -517,9 +516,9 @@ struct StatisticsView: View {
 
     /// Title-case period for the strip ("This Month", "Oct 2026", "2024", "Lifetime")
     private var periodTitle: String {
-        switch selectedTimeFrame {
-        case .month: return selectedMonth?.displayName ?? "This Month"
-        case .year: return selectedYear.map { String($0) } ?? "This Year"
+        switch state.timeFrame {
+        case .month: return state.month?.displayName ?? "This Month"
+        case .year: return state.year.map { String($0) } ?? "This Year"
         case .allTime: return "Lifetime"
         case .daily: return "Today"
         }
@@ -527,11 +526,11 @@ struct StatisticsView: View {
 
     /// "Oct 2026 · 3 yearly records set · 1 new state" (region totals in Lifetime)
     private var periodSummaryText: String {
-        let lifetime = selectedTimeFrame == .allTime
+        let lifetime = state.timeFrame == .allTime
         let regionManager = RegionTrackingManager.shared
         return PeriodSummary.text(
             title: periodTitle,
-            view: selectedTimeFrame,
+            view: state.timeFrame,
             yearlyRecords: countedRecords[.year] ?? 0,
             lifetimeRecords: countedRecords[.allTime] ?? 0,
             states: lifetime ? regionManager.stateCount : periodRegionCounts.states,
@@ -547,15 +546,15 @@ struct StatisticsView: View {
 
     /// The effective time frame for display - when a specific year is selected, display like .year
     private var effectiveTimeFrame: TimeFrame {
-        // selectedYear is only relevant when in .year mode now
-        return selectedTimeFrame
+        // state.year is only relevant when in .year mode now
+        return state.timeFrame
     }
 
     /// "this month" / "October 2026" / "this year" / "2024" / "lifetime", for empty-state copy
     private var currentPeriodName: String {
-        switch selectedTimeFrame {
-        case .month: return selectedMonth?.displayName ?? "this month"
-        case .year: return selectedYear.map { String($0) } ?? "this year"
+        switch state.timeFrame {
+        case .month: return state.month?.displayName ?? "this month"
+        case .year: return state.year.map { String($0) } ?? "this year"
         case .allTime: return "lifetime"
         case .daily: return "today"
         }
@@ -564,15 +563,15 @@ struct StatisticsView: View {
     /// The timeFrame filter string for Core Data queries
     /// Returns the appropriate timeFrame value to filter records by
     private var currentTimeFrameFilter: String? {
-        switch selectedTimeFrame {
+        switch state.timeFrame {
         case .month:
             return "Monthly"
         case .year:
             // When viewing a specific past year, filter by "Yearly"
             // When viewing current year, include both "Yearly" and "Monthly"
-            return selectedYear != nil ? "Yearly" : nil
+            return state.year != nil ? "Yearly" : nil
         case .allTime:
-            return selectedYear != nil ? "Yearly" : "Lifetime"
+            return state.year != nil ? "Yearly" : "Lifetime"
         case .daily:
             return "Daily"
         }
@@ -581,14 +580,14 @@ struct StatisticsView: View {
     // MARK: - Computed Properties for Current Values
 
     private var hasNoData: Bool {
-        switch selectedTimeFrame {
+        switch state.timeFrame {
         case .month:
             return dailyRecordsCache.isEmpty
         case .year:
             return monthlyAggregates.isEmpty
         case .allTime:
             // When a specific year is selected, we use monthlyAggregates
-            if selectedYear != nil {
+            if state.year != nil {
                 return monthlyAggregates.isEmpty
             }
             return yearlyAggregates.isEmpty
@@ -599,13 +598,13 @@ struct StatisticsView: View {
 
     /// Helper to get furthest record by recordType
     private func getFurthestRecord(type: String) -> (value: Double, locationName: String?)? {
-        if selectedTimeFrame == .year, let year = selectedYear {
+        if state.timeFrame == .year, let year = state.year {
             return RecordHistoryManager.shared.getFurthestRecordForYear(type: type, year: year)
         }
-        if selectedTimeFrame == .month, let month = selectedMonth {
+        if state.timeFrame == .month, let month = state.month {
             return RecordHistoryManager.shared.getFurthestRecordForMonth(type: type, month: month)
         }
-        return RecordHistoryManager.shared.getFurthestRecord(type: type, timeFrame: selectedTimeFrame)
+        return RecordHistoryManager.shared.getFurthestRecord(type: type, timeFrame: state.timeFrame)
     }
 
     private var currentNSSummary: DirectionSummary? {
@@ -740,11 +739,11 @@ struct StatisticsView: View {
         allTimeExtractor: @escaping (YearlyAggregate?) -> (positive: Double, negative: Double),
         conversionFactor: Double = 1.0
     ) -> [BidirectionalChartDataPoint] {
-        switch selectedTimeFrame {
+        switch state.timeFrame {
         case .month:
             let calendar = Calendar.current
             // Anchor to the browsed month (summary notification) or the current one
-            let anchor = selectedMonth?.startDate ?? Date()
+            let anchor = state.month?.startDate ?? Date()
 
             // Get month range using DateUtilities with fallback
             guard let (monthStart, _) = calendar.currentMonthRange(for: anchor),
@@ -768,8 +767,8 @@ struct StatisticsView: View {
             }
 
         case .year:
-            // Use selectedYear if set, otherwise current year
-            let yearToUse = selectedYear ?? Calendar.current.component(.year, from: Date())
+            // Use state.year if set, otherwise current year
+            let yearToUse = state.year ?? Calendar.current.component(.year, from: Date())
             let dict = monthlyAggregatesDict
             return (1...12).map { month in
                 let (start, end) = dateRangeForMonth(year: yearToUse, month: month)
@@ -787,7 +786,7 @@ struct StatisticsView: View {
 
         case .allTime:
             // When a specific year is selected, show all 12 months
-            if let year = selectedYear {
+            if let year = state.year {
                 let dict = monthlyAggregatesDict
                 return (1...12).map { month in
                     let (start, end) = dateRangeForMonth(year: year, month: month)
@@ -830,11 +829,11 @@ struct StatisticsView: View {
         allTimeExtractor: @escaping (YearlyAggregate?) -> Double,
         conversionFactor: Double = 1.0
     ) -> [ChartDataPoint] {
-        switch selectedTimeFrame {
+        switch state.timeFrame {
         case .month:
             let calendar = Calendar.current
             // Anchor to the browsed month (summary notification) or the current one
-            let anchor = selectedMonth?.startDate ?? Date()
+            let anchor = state.month?.startDate ?? Date()
 
             // Get month range using DateUtilities with fallback
             guard let (monthStart, _) = calendar.currentMonthRange(for: anchor),
@@ -857,8 +856,8 @@ struct StatisticsView: View {
             }
 
         case .year:
-            // Use selectedYear if set, otherwise current year
-            let yearToUse = selectedYear ?? Calendar.current.component(.year, from: Date())
+            // Use state.year if set, otherwise current year
+            let yearToUse = state.year ?? Calendar.current.component(.year, from: Date())
             let dict = monthlyAggregatesDict
             return (1...12).map { month in
                 let (start, end) = dateRangeForMonth(year: yearToUse, month: month)
@@ -875,7 +874,7 @@ struct StatisticsView: View {
 
         case .allTime:
             // When a specific year is selected, show all 12 months
-            if let year = selectedYear {
+            if let year = state.year {
                 let dict = monthlyAggregatesDict
                 return (1...12).map { month in
                     let (start, end) = dateRangeForMonth(year: year, month: month)

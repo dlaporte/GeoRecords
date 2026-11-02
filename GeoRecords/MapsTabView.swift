@@ -8,7 +8,7 @@ import WidgetKit
 struct MapsTabView: View {
     @StateObject private var regionManager = RegionTrackingManager.shared
     @EnvironmentObject private var deepLinkManager: DeepLinkManager
-    @State private var selectedMapType: MapType = .states
+    @Environment(RegionsTabState.self) private var state
 
     enum MapType: String, CaseIterable {
         case states = "States"
@@ -17,11 +17,12 @@ struct MapsTabView: View {
     }
 
     var body: some View {
+        @Bindable var state = state
         NavigationStack {
             VStack(spacing: 0) {
                 // Segmented picker
                 StyledSegmentedPicker(
-                    selection: $selectedMapType,
+                    selection: $state.mapType,
                     options: MapType.allCases,
                     label: { $0.rawValue }
                 )
@@ -35,7 +36,7 @@ struct MapsTabView: View {
                 }
 
                 // Map content
-                switch selectedMapType {
+                switch state.mapType {
                 case .states:
                     StatesMapView()
                 case .countries:
@@ -56,16 +57,7 @@ struct MapsTabView: View {
 
     private func handleDeepLink() {
         guard let section = deepLinkManager.navigateToRegions else { return }
-        switch section {
-        case "states":
-            selectedMapType = .states
-        case "countries":
-            selectedMapType = .countries
-        case "continents":
-            selectedMapType = .continents
-        default:
-            break
-        }
+        state.apply(section: section)
         deepLinkManager.navigateToRegions = nil
     }
 }

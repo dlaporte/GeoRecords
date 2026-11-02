@@ -232,6 +232,17 @@ class PersistenceController: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    /// Whether any buried error says a record field is missing from the production
+    /// schema ("Cannot create or modify field 'CD_x' in record 'CD_y' in production schema")
+    nonisolated static func mentionsUndeployedSchema(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        var messages = [nsError.localizedDescription]
+        if let partial = nsError.userInfo[CKPartialErrorsByItemIDKey] as? [CKRecord.ID: Error] {
+            messages.append(contentsOf: partial.values.map { ($0 as NSError).localizedDescription })
+        }
+        return messages.contains { $0.contains("in production schema") }
+    }
+
     /// CKError.Code names for the codes CloudKit sync actually produces
     nonisolated static func ckErrorName(_ code: Int) -> String {
         switch CKError.Code(rawValue: code) {
@@ -309,6 +320,12 @@ class PersistenceController: ObservableObject {
         }
         if codes.contains(where: { $0 == .assetFileNotFound || $0 == .assetNotAvailable || $0 == .assetFileModified }) {
             return "A photo attached to a record is missing on this device, so that record can't upload. Open the record and change or remove its photo."
+        }
+        if Self.mentionsUndeployedSchema(error) {
+            // A field added to the data model exists in CloudKit's development schema
+            // (Xcode builds create it on the fly) but was never deployed to production,
+            // so every TestFlight/App Store export batch fails atomically
+            return "iCloud rejected a field this version of GeoRecords uses, so nothing can upload until the app's iCloud schema is deployed. This needs a fix from the developer; your records are safe on this device."
         }
         if codes.contains(where: { $0 == .limitExceeded || $0 == .invalidArguments || $0 == .constraintViolation }) {
             return "Some records are too large or malformed for iCloud and can't upload. Use Copy Sync Diagnostics below and send it to support."

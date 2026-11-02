@@ -43,6 +43,24 @@ struct SyncDiagnosticsTests {
         #expect(PersistenceController.syncErrorDetails(for: nil).isEmpty)
     }
 
+    // The real cause on David's phone (2026-11-02): a model field never deployed to
+    // CloudKit's production schema fails one record with invalidArguments and the
+    // other 399 of the batch with batchRequestFailed
+    @Test func guidanceNamesAnUndeployedProductionSchema() async throws {
+        var byID: [CKRecord.ID: NSError] = [:]
+        byID[CKRecord.ID(recordName: "514A422E")] = NSError(
+            domain: CKErrorDomain, code: CKError.Code.invalidArguments.rawValue,
+            userInfo: [NSLocalizedDescriptionKey: "Error saving record to server: Cannot create or modify field 'CD_photoCloudIdentifier' in record 'CD_RecordHistoryEntry' in production schema"])
+        byID[CKRecord.ID(recordName: "A71B83B6")] = NSError(
+            domain: CKErrorDomain, code: CKError.Code.batchRequestFailed.rawValue,
+            userInfo: [NSLocalizedDescriptionKey: "Atomic failure"])
+        let error = NSError(domain: CKErrorDomain, code: CKError.Code.partialFailure.rawValue,
+                            userInfo: [CKPartialErrorsByItemIDKey: byID, NSLocalizedDescriptionKey: "Failed to modify some records"])
+        #expect(PersistenceController.mentionsUndeployedSchema(error))
+        #expect(try #require(PersistenceController.syncErrorGuidance(for: error)).contains("schema"))
+        #expect(!PersistenceController.mentionsUndeployedSchema(partialFailure([("r", .limitExceeded)])))
+    }
+
     @Test func guidanceCoversMoreBuriedCodes() async throws {
         let zoneGone = partialFailure([("rec-a", .userDeletedZone)])
         #expect(try #require(PersistenceController.syncErrorGuidance(for: zoneGone)).contains("iCloud copy"))

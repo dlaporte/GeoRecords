@@ -12,13 +12,14 @@ import CoreLocation
 // MARK: - Card Sizing
 
 /// Encapsulates responsive sizing values for record cards
-/// Used by both RecordsView and MapsTabView for consistent card layouts
+/// Used by both RecordsView and MapsTabView for consistent card layouts.
+/// Compact when the vertical size class is compact (any phone in landscape,
+/// iPhone Duo folded in landscape); read it from `@Environment(\.cardSizing)`
 struct CardSizing {
     let isCompact: Bool
 
-    init() {
-        let screenHeight = UIScreen.main.bounds.height
-        isCompact = screenHeight < compactScreenHeightThreshold
+    init(vertical: UserInterfaceSizeClass?) {
+        isCompact = vertical == .compact
     }
 
     var cardSpacing: CGFloat { isCompact ? 8 : 12 }

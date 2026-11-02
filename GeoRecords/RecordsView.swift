@@ -505,7 +505,7 @@ struct RecordCardView: View {
     @EnvironmentObject var settings: SettingsManager
 
     @State private var caption: String?
-    private let sizing = CardSizing()
+    @Environment(\.cardSizing) private var sizing
 
     /// Within-reach on This Month cards, else progression, else nothing
     @MainActor

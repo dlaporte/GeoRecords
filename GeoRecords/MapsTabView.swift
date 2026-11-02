@@ -139,7 +139,7 @@ struct VisitedRegionCard: View {
     @EnvironmentObject var settings: SettingsManager
     @ObservedObject private var regionManager = RegionTrackingManager.shared
 
-    private let sizing = CardSizing()
+    @Environment(\.cardSizing) private var sizing
 
     /// "State" / "Country" / "Continent" instead of the stored "New State"
     private var regionKind: String {

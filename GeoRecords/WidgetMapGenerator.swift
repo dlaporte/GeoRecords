@@ -168,7 +168,7 @@ class WidgetMapGenerator {
         let options = MKMapSnapshotter.Options()
         options.region = region
         options.size = mapType.imageSize
-        options.scale = UIScreen.main.scale
+        options.scale = UITraitCollection.current.displayScale
 
         let snapshotter = MKMapSnapshotter(options: options)
 

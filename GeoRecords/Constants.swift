@@ -645,9 +645,6 @@ let defaultContinentSpan = MKCoordinateSpan(latitudeDelta: 60, longitudeDelta: 8
 
 // MARK: - UI Constants
 
-/// Screen height threshold for compact layout (iPhone 14/15 and smaller)
-let compactScreenHeightThreshold: CGFloat = 850
-
 /// Height for card TabView pagers (Records tab, Maps tab)
 let cardTabViewHeight: CGFloat = 280
 

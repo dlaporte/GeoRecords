@@ -115,8 +115,8 @@ class WidgetMapGenerator {
             debugLog("📍 WidgetMapGenerator: Processing continents separately")
         }
 
-        // Get polygons for all visited regions
-        var allPolygons: [MKPolygon] = []
+        // Polygons of all visited regions, each as its rings (exterior first, then holes)
+        var allPolygons: [[[CLLocationCoordinate2D]]] = []
 
         if mapType == .continents {
             // Get continent polygons from visited continents
@@ -129,15 +129,7 @@ class WidgetMapGenerator {
             for continentRecord in visitedContinents {
                 guard let continentName = continentRecord.locationName,
                       let continent = Continent(rawValue: continentName) else { continue }
-                let polygonArrays = RegionLookupService.shared.continentPolygons(for: continent)
-                for polygonGroup in polygonArrays {
-                    for coordinates in polygonGroup {
-                        guard coordinates.count > 2 else { continue }
-                        var coords = coordinates
-                        let polygon = MKPolygon(coordinates: &coords, count: coords.count)
-                        allPolygons.append(polygon)
-                    }
-                }
+                allPolygons.append(contentsOf: RegionLookupService.shared.continentPolygons(for: continent))
             }
         } else {
             guard !regionCodes.isEmpty else {
@@ -147,15 +139,7 @@ class WidgetMapGenerator {
             }
 
             for code in regionCodes {
-                let polygonArrays = RegionLookupService.shared.polygons(for: code)
-                for polygonGroup in polygonArrays {
-                    for coordinates in polygonGroup {
-                        guard coordinates.count > 2 else { continue }
-                        var coords = coordinates
-                        let polygon = MKPolygon(coordinates: &coords, count: coords.count)
-                        allPolygons.append(polygon)
-                    }
-                }
+                allPolygons.append(contentsOf: RegionLookupService.shared.polygons(for: code))
             }
         }
 
@@ -204,8 +188,8 @@ class WidgetMapGenerator {
         }
     }
 
-    /// Draw polygons on the map snapshot
-    private func drawPolygons(_ polygons: [MKPolygon], on snapshot: MKMapSnapshotter.Snapshot, mapType: MapType) -> UIImage {
+    /// Draw polygons on the map snapshot. Each polygon is its rings, exterior first
+    private func drawPolygons(_ polygons: [[[CLLocationCoordinate2D]]], on snapshot: MKMapSnapshotter.Snapshot, mapType: MapType) -> UIImage {
         let image = snapshot.image
 
         UIGraphicsBeginImageContextWithOptions(image.size, true, image.scale)
@@ -219,53 +203,42 @@ class WidgetMapGenerator {
         context.setFillColor(mapType.fillColor.cgColor)
         context.setStrokeColor(mapType.strokeColor.cgColor)
         context.setLineWidth(1.0)
-
-        // Threshold for detecting antimeridian crossing - if X jumps more than 40% of image width, skip segment
-        let antimeridianThreshold = image.size.width * 0.4
-
         for polygon in polygons {
-            let path = UIBezierPath()
-            let points = polygon.points()
-            let pointCount = polygon.pointCount
-
-            guard pointCount > 0 else { continue }
-
-            // Convert the first point
-            let firstCoord = points[0].coordinate
-            var lastPoint = snapshot.point(for: firstCoord)
-            path.move(to: lastPoint)
-
-            // Add remaining points, but skip segments that cross the antimeridian
-            for i in 1..<pointCount {
-                let coord = points[i].coordinate
-                let point = snapshot.point(for: coord)
-
-                // Check if this segment crosses the antimeridian (huge X jump)
-                let xDelta = abs(point.x - lastPoint.x)
-                if xDelta > antimeridianThreshold {
-                    // Start a new subpath instead of drawing a line across the map
-                    path.move(to: point)
-                } else {
-                    path.addLine(to: point)
-                }
-                lastPoint = point
-            }
-
-            // Don't close the path if it would cross the antimeridian
-            let firstPoint = snapshot.point(for: firstCoord)
-            let closingXDelta = abs(firstPoint.x - lastPoint.x)
-            if closingXDelta <= antimeridianThreshold {
-                path.close()
-            }
-
-            path.fill()
-            path.stroke()
+            let path = CGMutablePath()
+            addRings(polygon, to: path, snapshot: snapshot)
+            context.addPath(path)
+            context.fillPath(using: .evenOdd)  // holes stay open
+            context.addPath(path)
+            context.strokePath()
         }
 
         let resultImage = UIGraphicsGetImageFromCurrentImageContext() ?? image
         UIGraphicsEndImageContext()
 
         return resultImage
+    }
+
+    /// Adds each ring as a closed subpath in snapshot image coordinates, skipping
+    /// any segment that would cross the whole image (an antimeridian jump)
+    private func addRings(_ rings: [[CLLocationCoordinate2D]], to path: CGMutablePath, snapshot: MKMapSnapshotter.Snapshot) {
+        let antimeridianThreshold = snapshot.image.size.width * 0.4
+        for ring in rings where ring.count > 2 {
+            let firstPoint = snapshot.point(for: ring[0])
+            var lastPoint = firstPoint
+            path.move(to: firstPoint)
+            for coordinate in ring.dropFirst() {
+                let point = snapshot.point(for: coordinate)
+                if abs(point.x - lastPoint.x) > antimeridianThreshold {
+                    path.move(to: point)
+                } else {
+                    path.addLine(to: point)
+                }
+                lastPoint = point
+            }
+            if abs(firstPoint.x - lastPoint.x) <= antimeridianThreshold {
+                path.closeSubpath()
+            }
+        }
     }
 
     /// Save image to App Group shared storage

@@ -21,7 +21,22 @@ struct RegionBoundary {
     let type: RegionType
     let continent: Continent?
     let boundingBox: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)
-    let polygons: [[[Double]]]  // Array of polygons, each polygon is array of [lon, lat] pairs
+    /// Exterior ring of every polygon, as [lon, lat] pairs (what the point-in-region tests use)
+    let polygons: [[[Double]]]
+    /// Every polygon with all its rings, exterior first then holes (what gets drawn)
+    let rings: [[[[Double]]]]
+
+    init(code: String, name: String, type: RegionType, continent: Continent?,
+         boundingBox: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double),
+         rings: [[[[Double]]]]) {
+        self.code = code
+        self.name = name
+        self.type = type
+        self.continent = continent
+        self.boundingBox = boundingBox
+        self.rings = rings
+        self.polygons = rings.compactMap(\.first)
+    }
 
     /// Quick check if a point could possibly be in this region
     func containsInBoundingBox(latitude: Double, longitude: Double) -> Bool {
@@ -53,6 +68,9 @@ class RegionLookupService {
     private var usOutlinePolylines: [[[Double]]] = []  // Array of LineStrings [lon, lat]
     private var isLoaded = false
     private let loadQueue = DispatchQueue(label: "com.georecords.regionLookup", qos: .userInitiated)
+    /// Continent outlines (see continentPolygons), built on first use
+    private var continentUnions: [Continent: [[[CLLocationCoordinate2D]]]] = [:]
+    private let unionLock = NSLock()
 
     private init() {}
 
@@ -165,14 +183,14 @@ class RegionLookupService {
         if regionCode.hasPrefix("US-") {
             let stateCode = String(regionCode.dropFirst(3))
             if let state = usStates.first(where: { $0.code == stateCode }) {
-                return convertToCoordinates(polygons: state.polygons)
+                return convertToCoordinates(rings: state.rings)
             }
         }
 
         // Check countries by code BEFORE bare 2-letter state codes
         // This prevents collisions like "CA" (Canada) vs "CA" (California)
         if let country = countries.first(where: { $0.code == regionCode }) {
-            return convertToCoordinates(polygons: country.polygons)
+            return convertToCoordinates(rings: country.rings)
         }
 
         // Check if it's a bare 2-letter US state code (without "US-" prefix)
@@ -180,7 +198,7 @@ class RegionLookupService {
         // Done AFTER country check to avoid code collisions (e.g., CA, CO, etc.)
         if regionCode.count == 2 {
             if let state = usStates.first(where: { $0.code == regionCode }) {
-                return convertToCoordinates(polygons: state.polygons)
+                return convertToCoordinates(rings: state.rings)
             }
         }
 
@@ -189,7 +207,7 @@ class RegionLookupService {
             for geoJSONName in geoJSONNames {
                 if let country = countries.first(where: { $0.name.lowercased() == geoJSONName }) {
                     debugLog("📍 Found polygon for territory '\(regionCode)' using name '\(country.name)'")
-                    return convertToCoordinates(polygons: country.polygons)
+                    return convertToCoordinates(rings: country.rings)
                 }
             }
         }
@@ -199,9 +217,9 @@ class RegionLookupService {
            let parentCountry = countries.first(where: { $0.code == parentCode }) {
             // Get the territory's bounding box from our definitions
             if let territoryBounds = getTerritoryBoundingBox(regionCode) {
-                let filteredPolygons = parentCountry.polygons.filter { polygon in
-                    // Check if any point of this polygon falls within the territory's bounding box
-                    for point in polygon {
+                let filteredPolygons = parentCountry.rings.filter { polygon in
+                    // Check if any point of this polygon's exterior falls within the territory's bounding box
+                    for point in polygon.first ?? [] {
                         guard point.count >= 2 else { continue }
                         let lon = point[0]
                         let lat = point[1]
@@ -214,7 +232,7 @@ class RegionLookupService {
                 }
                 if !filteredPolygons.isEmpty {
                     debugLog("📍 Extracted \(filteredPolygons.count) polygons for territory '\(regionCode)' from parent '\(parentCode)'")
-                    return convertToCoordinates(polygons: filteredPolygons)
+                    return convertToCoordinates(rings: filteredPolygons)
                 }
             }
         }
@@ -254,21 +272,34 @@ class RegionLookupService {
         return countries.map { RegionInfo(code: $0.code, name: $0.name, type: .country, continent: $0.continent) }
     }
 
-    /// Polygon coordinates for drawing a continent overlay: the land of every country
-    /// attributed to that continent. Natural Earth's own "Continent" features are
+    /// Polygon coordinates for drawing a continent overlay: the outline of the land
+    /// of every country attributed to that continent, each polygon as its rings
+    /// (exterior first, then holes). Natural Earth's own "Continent" features are
     /// mainland masses only (no Yucatán, Central America, Caribbean, British Isles,
-    /// Philippines, Madagascar or New Zealand), and the country polygons tile the land
-    /// without overlapping, so the translucent fill stays even. Each country is drawn
-    /// in the continent its visits are attributed to (so all of Russia is Europe, as
-    /// in the country data).
+    /// Philippines, Madagascar or New Zealand), so the continent is built from the
+    /// countries, and `ContinentUnion` removes the borders between them. Each
+    /// country lands in the continent its visits are attributed to (so all of
+    /// Russia is Europe, as in the country data). Computed once per continent.
     /// - Parameter continent: The continent enum value
     /// - Returns: Array of polygon coordinate arrays
     func continentPolygons(for continent: Continent) -> [[[CLLocationCoordinate2D]]] {
         loadBoundaries()
 
+        unionLock.lock()
+        defer { unionLock.unlock() }
+        if let cached = continentUnions[continent] { return cached }
+        let union = ContinentUnion.polygons(of: countryPolygons(for: continent))
+        continentUnions[continent] = union
+        return union
+    }
+
+    /// The polygons (rings, exterior first) of every country attributed to a continent
+    func countryPolygons(for continent: Continent) -> [[[CLLocationCoordinate2D]]] {
+        loadBoundaries()
+
         var result: [[[CLLocationCoordinate2D]]] = []
         for country in countries where country.continent == continent {
-            result.append(contentsOf: convertToCoordinates(polygons: country.polygons))
+            result.append(contentsOf: convertToCoordinates(rings: country.rings))
         }
         return result
     }
@@ -280,7 +311,7 @@ class RegionLookupService {
         loadBoundaries()
 
         if let continentBoundary = continents.first(where: { $0.continent == continent }) {
-            return convertToCoordinates(polygons: continentBoundary.polygons)
+            return convertToCoordinates(rings: continentBoundary.rings)
         }
 
         return []
@@ -341,8 +372,8 @@ class RegionLookupService {
                 continue
             }
 
-            let polygons = extractPolygons(geometryType: geometryType, coordinates: coordinates)
-            let boundingBox = calculateBoundingBox(polygons: polygons)
+            let rings = extractRings(geometryType: geometryType, coordinates: coordinates)
+            let boundingBox = calculateBoundingBox(polygons: rings.compactMap(\.first))
 
             let boundary = RegionBoundary(
                 code: postalCode,
@@ -350,7 +381,7 @@ class RegionLookupService {
                 type: .state,
                 continent: .northAmerica,
                 boundingBox: boundingBox,
-                polygons: polygons
+                rings: rings
             )
             usStates.append(boundary)
         }
@@ -416,8 +447,8 @@ class RegionLookupService {
                 continue
             }
 
-            let polygons = extractPolygons(geometryType: geometryType, coordinates: coordinates)
-            let boundingBox = calculateBoundingBox(polygons: polygons)
+            let rings = extractRings(geometryType: geometryType, coordinates: coordinates)
+            let boundingBox = calculateBoundingBox(polygons: rings.compactMap(\.first))
 
             // Get continent from the file if available, otherwise use our lookup
             // (the file labels a few island nations "Seven seas (open ocean)")
@@ -435,7 +466,7 @@ class RegionLookupService {
                 type: .country,
                 continent: continent,
                 boundingBox: boundingBox,
-                polygons: polygons
+                rings: rings
             )
             countries.append(boundary)
         }
@@ -469,8 +500,8 @@ class RegionLookupService {
             // Use name with proper case (e.g., "SOUTH AMERICA" -> "South America")
             let rawName = properties["name"] as? String ?? region
             let name = rawName.capitalized
-            let polygons = extractPolygons(geometryType: geometryType, coordinates: coordinates)
-            let boundingBox = calculateBoundingBox(polygons: polygons)
+            let rings = extractRings(geometryType: geometryType, coordinates: coordinates)
+            let boundingBox = calculateBoundingBox(polygons: rings.compactMap(\.first))
 
             let boundary = RegionBoundary(
                 code: region,
@@ -478,7 +509,7 @@ class RegionLookupService {
                 type: .country,  // Reusing type, not used for continents
                 continent: continent,
                 boundingBox: boundingBox,
-                polygons: polygons
+                rings: rings
             )
             continents.append(boundary)
         }
@@ -530,34 +561,38 @@ class RegionLookupService {
 
     // MARK: - Polygon Extraction
 
-    private func extractPolygons(geometryType: String, coordinates: [Any]) -> [[[Double]]] {
-        var polygons: [[[Double]]] = []
-
+    /// Every polygon of a GeoJSON geometry with all its rings, exterior first then
+    /// holes (South Africa around Lesotho, Italy around San Marino, Kazakhstan
+    /// around Baikonur). Coordinates are clamped to the valid range: Natural
+    /// Earth's antimeridian cuts leave vertices at 180.0000000000002°, which
+    /// CLLocationCoordinate2DIsValid rejects and MKPolygon then maps to the
+    /// corner of the world.
+    private func extractRings(geometryType: String, coordinates: [Any]) -> [[[[Double]]]] {
+        let polygons: [[[[Double]]]]
         switch geometryType {
         case "Polygon":
-            // coordinates is [[lon, lat], [lon, lat], ...]
-            if let rings = coordinates as? [[[Double]]] {
-                // First ring is exterior, rest are holes (we only use exterior for simplicity)
-                if let exteriorRing = rings.first {
-                    polygons.append(exteriorRing)
-                }
-            }
-
+            // coordinates is [ring, ring, ...], each ring [[lon, lat], ...]
+            polygons = (coordinates as? [[[Double]]]).map { [$0] } ?? []
         case "MultiPolygon":
-            // coordinates is [polygon, polygon, ...] where each polygon is [[lon, lat], ...]
-            if let multiPolygon = coordinates as? [[[[Double]]]] {
-                for polygon in multiPolygon {
-                    if let exteriorRing = polygon.first {
-                        polygons.append(exteriorRing)
-                    }
-                }
-            }
-
+            // coordinates is [polygon, polygon, ...], each polygon [ring, ring, ...]
+            polygons = coordinates as? [[[[Double]]]] ?? []
         default:
             debugLog("⚠️ Unknown geometry type: \(geometryType)")
+            polygons = []
         }
 
-        return polygons
+        return polygons.compactMap { rings in
+            guard !rings.isEmpty else { return nil }
+            return rings.map { ring in
+                // Copy only the few rings that need it; the data holds ~550k vertices
+                let needsClamp = ring.contains { $0.count >= 2 && (abs($0[0]) > 180 || abs($0[1]) > 90) }
+                guard needsClamp else { return ring }
+                return ring.map { point -> [Double] in
+                    guard point.count >= 2 else { return point }
+                    return [min(max(point[0], -180), 180), min(max(point[1], -90), 90)]
+                }
+            }
+        }
     }
 
     private func calculateBoundingBox(polygons: [[[Double]]]) -> (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double) {
@@ -581,12 +616,15 @@ class RegionLookupService {
         return (minLat, maxLat, minLon, maxLon)
     }
 
-    private func convertToCoordinates(polygons: [[[Double]]]) -> [[[CLLocationCoordinate2D]]] {
-        return polygons.map { polygon in
-            [polygon.compactMap { point -> CLLocationCoordinate2D? in
-                guard point.count >= 2 else { return nil }
-                return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
-            }]
+    /// Every polygon as its rings of coordinates, exterior first then holes
+    private func convertToCoordinates(rings: [[[[Double]]]]) -> [[[CLLocationCoordinate2D]]] {
+        return rings.map { polygon in
+            polygon.map { ring in
+                ring.compactMap { point -> CLLocationCoordinate2D? in
+                    guard point.count >= 2 else { return nil }
+                    return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
+                }
+            }
         }
     }
 

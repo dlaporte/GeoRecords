@@ -56,6 +56,8 @@ final class GeoRecordsUITests: XCTestCase {
             app.buttons["Show visited"].tap(); sleep(1)
         }
         tap(app, "Continents"); sleep(4); snap(app, "10-regions-continents")
+        swipeCards(app); sleep(4); snap(app, "10b-regions-continents-second")
+        swipeCards(app); sleep(4); snap(app, "10c-regions-continents-third")
         tap(app, "Countries"); sleep(4); snap(app, "11-regions-countries")
 
         app.tabBars.buttons["History"].tap(); sleep(3); snap(app, "12-history")
@@ -70,6 +72,14 @@ final class GeoRecordsUITests: XCTestCase {
         let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.3))
         start.press(forDuration: 0.1, thenDragTo: end)
         sleep(1)
+    }
+
+    /// Swipes the region card pager (bottom of the Regions tab) to the next card,
+    /// away from the map so the map doesn't pan instead
+    private func swipeCards(_ app: XCUIApplication) {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.72))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.72))
+        start.press(forDuration: 0.05, thenDragTo: end)
     }
 
     /// Taps a control by its visible text, whichever element type the picker exposes

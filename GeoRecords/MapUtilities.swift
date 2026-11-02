@@ -113,37 +113,40 @@ final class RegionOverlayCache {
 
     private init() {}
 
+    /// One MKPolygon from a polygon's rings: the exterior only. Interior polygons
+    /// are deliberately not passed on: with them, MKMapView silently stops drawing
+    /// whole tiles of the overlay (bisected in the simulator, Nov 2026; the same
+    /// polygons draw fine through the renderer directly). The holes are enclaves,
+    /// which the overlay of their own country or continent covers anyway, and the
+    /// one sizeable hole in a continent outline is a gap in the data (eastern
+    /// Bosnia), better filled than not.
+    private static func makePolygon(rings: [[CLLocationCoordinate2D]]) -> MKPolygon? {
+        guard var exterior = rings.first, exterior.count > 2 else { return nil }
+        return MKPolygon(coordinates: &exterior, count: exterior.count)
+    }
+
     /// Display polygons for a region code (title = region name, subtitle = code,
     /// matching what the map renderers key their styling on)
     func polygons(for code: String, title: String?) -> [MKPolygon] {
         if let cached = polygonsByCode[code] { return cached }
         var result: [MKPolygon] = []
         for polygonGroup in RegionLookupService.shared.polygons(for: code) {
-            for coordinates in polygonGroup where coordinates.count > 2 {
-                var coords = coordinates
-                let polygon = MKPolygon(coordinates: &coords, count: coords.count)
-                polygon.title = title
-                polygon.subtitle = code
-                result.append(polygon)
-            }
+            guard let polygon = Self.makePolygon(rings: polygonGroup) else { continue }
+            polygon.title = title
+            polygon.subtitle = code
+            result.append(polygon)
         }
         polygonsByCode[code] = result
         return result
     }
 
     /// Display overlay for a continent (title = continent name, matching the renderer).
-    /// A continent is the land of every country attributed to it, over a thousand
+    /// A continent is the outline of every country attributed to it, over a thousand
     /// polygons for North America, so it is one MKMultiPolygon: one overlay and one
     /// renderer per continent instead of one per polygon.
     func multiPolygon(for continent: Continent) -> MKMultiPolygon {
         if let cached = multiPolygonByContinent[continent] { return cached }
-        var polygons: [MKPolygon] = []
-        for polygonGroup in RegionLookupService.shared.continentPolygons(for: continent) {
-            for coordinates in polygonGroup where coordinates.count > 2 {
-                var coords = coordinates
-                polygons.append(MKPolygon(coordinates: &coords, count: coords.count))
-            }
-        }
+        let polygons = RegionLookupService.shared.continentPolygons(for: continent).compactMap(Self.makePolygon)
         let multiPolygon = MKMultiPolygon(polygons)
         multiPolygon.title = continent.rawValue
         multiPolygonByContinent[continent] = multiPolygon

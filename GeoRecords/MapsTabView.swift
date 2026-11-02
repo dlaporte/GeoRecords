@@ -1312,19 +1312,10 @@ struct InteractiveWidgetMapView: UIViewRepresentable {
                 mapView.addOverlay(RegionOverlayCache.shared.multiPolygon(for: continent))
             }
         } else {
-            // States/Countries mode
+            // States/Countries mode (the cached polygons carry their holes)
             for detail in visitedRegions {
                 guard let code = detail.regionCode else { continue }
-                let polygonArrays = RegionLookupService.shared.polygons(for: code)
-                for polygonGroup in polygonArrays {
-                    for coordinates in polygonGroup {
-                        guard coordinates.count > 2 else { continue }
-                        var coords = coordinates
-                        let polygon = MKPolygon(coordinates: &coords, count: coords.count)
-                        polygon.title = detail.locationName
-                        mapView.addOverlay(polygon)
-                    }
-                }
+                mapView.addOverlays(RegionOverlayCache.shared.polygons(for: code, title: detail.locationName))
             }
         }
     }

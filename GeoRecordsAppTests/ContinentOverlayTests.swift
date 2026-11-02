@@ -72,6 +72,39 @@ struct ContinentOverlayTests {
         #expect(oceania.span.longitudeDelta > 1, "Oceania camera fell back to the default")
     }
 
+    // Natural Earth's antimeridian cuts leave a few vertices at 180.0000000000002°
+    // (Russia, Fiji, Antarctica). CLLocationCoordinate2DIsValid rejects those and
+    // MKPolygon maps them to map point (-1, -1), the world's top-left corner, so
+    // the ring drew a line to the Arctic and filled the triangle on the way.
+    @MainActor
+    @Test func overlayVerticesStayInsideTheWorld() async throws {
+        let cache = RegionOverlayCache.shared
+        for continent in [Continent.europe, .oceania] {
+            let strays = cache.multiPolygon(for: continent).polygons
+                .filter { $0.boundingMapRect.minX < 0 || $0.boundingMapRect.minY < 0 }
+            #expect(strays.isEmpty, "\(continent.rawValue) has \(strays.count) polygons reaching outside the map")
+        }
+        for code in ["RU", "FJ"] {
+            let strays = cache.polygons(for: code, title: nil)
+                .filter { $0.boundingMapRect.minX < 0 || $0.boundingMapRect.minY < 0 }
+            #expect(strays.isEmpty, "\(code) has \(strays.count) polygons reaching outside the map")
+        }
+    }
+
+    // MKMapView silently stops drawing whole tiles of a multipolygon overlay whose
+    // polygons carry interior polygons (bisected in the simulator, Nov 2026), so
+    // the map overlays are exterior rings only
+    @MainActor
+    @Test func mapOverlaysCarryNoInteriorPolygons() async throws {
+        let cache = RegionOverlayCache.shared
+        for continent in [Continent.asia, .europe, .africa] {
+            let polygons = cache.multiPolygon(for: continent).polygons
+            #expect(!polygons.isEmpty)
+            #expect(polygons.allSatisfy { ($0.interiorPolygons ?? []).isEmpty }, "\(continent.rawValue) overlay has holes")
+        }
+        #expect(cache.polygons(for: "ZA", title: nil).allSatisfy { ($0.interiorPolygons ?? []).isEmpty })
+    }
+
     @Test func longitudeExtentWrapsAcrossTheAntimeridian() async throws {
         // Plain range
         let plain = try #require(longitudeExtent(of: [-10, 5, 20]))

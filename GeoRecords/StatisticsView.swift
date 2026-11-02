@@ -291,7 +291,9 @@ struct StatisticsView: View {
 
                         // Activity Section (records set, regions over time). Records Set
                         // only where a larger timeframe exists to count (never in Lifetime)
+                        // and something was counted; the strip already says when nothing was
                         let showRecordsSet = !StatsRecordCounts.countedTimeFrames(for: selectedTimeFrame).isEmpty
+                            && countedRecords.values.reduce(0, +) > 0
                         let showRegions = regionGrowthPoints.contains(where: { $0.states + $0.countries > 0 })
                         if showRecordsSet || showRegions {
                             VStack(alignment: .leading, spacing: 16) {

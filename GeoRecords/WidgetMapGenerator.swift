@@ -188,7 +188,8 @@ class WidgetMapGenerator {
         }
     }
 
-    /// Draw polygons on the map snapshot. Each polygon is its rings, exterior first
+    /// Draw polygons on the map snapshot. Each polygon is its rings, exterior first;
+    /// only the exterior is drawn, like the map overlays (see RegionOverlayCache)
     private func drawPolygons(_ polygons: [[[CLLocationCoordinate2D]]], on snapshot: MKMapSnapshotter.Snapshot, mapType: MapType) -> UIImage {
         let image = snapshot.image
 
@@ -205,9 +206,9 @@ class WidgetMapGenerator {
         context.setLineWidth(1.0)
         for polygon in polygons {
             let path = CGMutablePath()
-            addRings(polygon, to: path, snapshot: snapshot)
+            addRings(Array(polygon.prefix(1)), to: path, snapshot: snapshot)
             context.addPath(path)
-            context.fillPath(using: .evenOdd)  // holes stay open
+            context.fillPath()
             context.addPath(path)
             context.strokePath()
         }

@@ -141,9 +141,9 @@ final class RegionOverlayCache {
     }
 
     /// Display overlay for a continent (title = continent name, matching the renderer).
-    /// A continent is the outline of every country attributed to it, over a thousand
-    /// polygons for North America, so it is one MKMultiPolygon: one overlay and one
-    /// renderer per continent instead of one per polygon.
+    /// A continent outline is every island too, over a thousand polygons for North
+    /// America, so it is one MKMultiPolygon: one overlay and one renderer per
+    /// continent instead of one per polygon.
     func multiPolygon(for continent: Continent) -> MKMultiPolygon {
         if let cached = multiPolygonByContinent[continent] { return cached }
         let polygons = RegionLookupService.shared.continentPolygons(for: continent).compactMap(Self.makePolygon)

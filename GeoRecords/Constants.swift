@@ -308,6 +308,10 @@ enum UserDefaultsKey: String {
     case beatenLifetimeRecordCount
     case reviewRequested
 
+    // One-shot pass that added the continent records existing visits implied once
+    // continents became geographic (device-local; see RegionTrackingManager)
+    case hasAddedImpliedContinents
+
     // Widget map regions (user-defined framing for widget maps)
     // NOTE: these cases look unreferenced, but their raw values ARE the live keys —
     // SettingsManager builds them by string interpolation ("\(prefix)Lat" etc. in

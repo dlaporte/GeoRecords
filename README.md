@@ -39,6 +39,15 @@ Built entirely with Apple frameworks — SwiftUI, Core Data, CoreLocation, MapKi
 
 Open `GeoRecords.xcodeproj` in Xcode. The project requires no package resolution or additional setup beyond standard Xcode signing configuration.
 
+## Map data
+
+Region boundaries come from [Natural Earth](https://www.naturalearthdata.com) 10m data bundled in `GeoRecords/Resources` (countries) and US Census cartographic boundaries (states). `continents.json`, the geographic continent outlines the Continents map draws and attributes visits with, is derived from the Natural Earth files by `tools/build_continents.py`; regenerate it with:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install shapely==2.2.0
+.venv/bin/python tools/build_continents.py
+```
+
 ## License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

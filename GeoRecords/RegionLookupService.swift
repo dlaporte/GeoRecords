@@ -68,9 +68,12 @@ class RegionLookupService {
     private var usOutlinePolylines: [[[Double]]] = []  // Array of LineStrings [lon, lat]
     private var isLoaded = false
     private let loadQueue = DispatchQueue(label: "com.georecords.regionLookup", qos: .userInitiated)
-    /// Continent outlines (see continentPolygons), built on first use
-    private var continentUnions: [Continent: [[[CLLocationCoordinate2D]]]] = [:]
-    private let unionLock = NSLock()
+    /// Simplified mainland rings per continent, for framing a camera (see continents.json)
+    private var continentFrames: [Continent: [[[Double]]]] = [:]
+
+    /// Countries that straddle the Europe/Asia divide: a visit inside them counts
+    /// for the continent whose outline contains it (see continents.json)
+    static let dividedCountries: Set<String> = ["RU", "KZ", "TR"]
 
     private init() {}
 
@@ -137,7 +140,7 @@ class RegionLookupService {
                         code: country.code,
                         name: country.name,
                         type: .country,
-                        continent: country.continent
+                        continent: attributedContinent(for: country, latitude: lat, longitude: lon)
                     )
                 }
             }
@@ -156,7 +159,7 @@ class RegionLookupService {
                         code: country.code,
                         name: country.name,
                         type: .country,
-                        continent: country.continent
+                        continent: attributedContinent(for: country, latitude: lat, longitude: lon)
                     )
                 }
             }
@@ -272,42 +275,14 @@ class RegionLookupService {
         return countries.map { RegionInfo(code: $0.code, name: $0.name, type: .country, continent: $0.continent) }
     }
 
-    /// Polygon coordinates for drawing a continent overlay: the outline of the land
-    /// of every country attributed to that continent, each polygon as its rings
-    /// (exterior first, then holes). Natural Earth's own "Continent" features are
-    /// mainland masses only (no Yucatán, Central America, Caribbean, British Isles,
-    /// Philippines, Madagascar or New Zealand), so the continent is built from the
-    /// countries, and `ContinentUnion` removes the borders between them. Each
-    /// country lands in the continent its visits are attributed to (so all of
-    /// Russia is Europe, as in the country data). Computed once per continent.
+    /// Polygon coordinates for drawing a continent overlay: the geographic outline
+    /// from continents.json (built by tools/build_continents.py), each polygon as
+    /// its rings. The outlines are the land of the countries attributed to the
+    /// continent with their borders removed, and Russia, Kazakhstan and Turkey cut
+    /// along the Europe/Asia divide.
     /// - Parameter continent: The continent enum value
     /// - Returns: Array of polygon coordinate arrays
     func continentPolygons(for continent: Continent) -> [[[CLLocationCoordinate2D]]] {
-        loadBoundaries()
-
-        unionLock.lock()
-        defer { unionLock.unlock() }
-        if let cached = continentUnions[continent] { return cached }
-        let union = ContinentUnion.polygons(of: countryPolygons(for: continent))
-        continentUnions[continent] = union
-        return union
-    }
-
-    /// The polygons (rings, exterior first) of every country attributed to a continent
-    func countryPolygons(for continent: Continent) -> [[[CLLocationCoordinate2D]]] {
-        loadBoundaries()
-
-        var result: [[[CLLocationCoordinate2D]]] = []
-        for country in countries where country.continent == continent {
-            result.append(contentsOf: convertToCoordinates(rings: country.rings))
-        }
-        return result
-    }
-
-    /// Mainland extent of a continent, for framing a camera. The drawing overlay
-    /// can't be used for this: the United States, Russia, Fiji and New Zealand
-    /// cross the antimeridian, so their bounding box spans the globe.
-    func continentExtentPolygons(for continent: Continent) -> [[[CLLocationCoordinate2D]]] {
         loadBoundaries()
 
         if let continentBoundary = continents.first(where: { $0.continent == continent }) {
@@ -317,19 +292,84 @@ class RegionLookupService {
         return []
     }
 
-    /// Whether the drawn overlay for a continent covers a coordinate
+    /// Mainland extent of a continent, for framing a camera. The drawing overlay
+    /// can't be used for this: the United States, Russia, Fiji and New Zealand
+    /// cross the antimeridian, so their bounding box spans the globe.
+    func continentExtentPolygons(for continent: Continent) -> [[[CLLocationCoordinate2D]]] {
+        loadBoundaries()
+
+        guard let frames = continentFrames[continent] else { return [] }
+        // Each frame ring is one single-ring polygon
+        return frames.map { ring in
+            [ring.compactMap { point -> CLLocationCoordinate2D? in
+                guard point.count >= 2 else { return nil }
+                return CLLocationCoordinate2D(latitude: point[1], longitude: point[0])
+            }]
+        }
+    }
+
+    /// Whether the drawn outline of a continent covers a coordinate
     func continentPolygonsContain(_ coordinate: CLLocationCoordinate2D, continent: Continent) -> Bool {
+        loadBoundaries()
+
+        guard let continentBoundary = continents.first(where: { $0.continent == continent }),
+              continentBoundary.containsInBoundingBox(latitude: coordinate.latitude, longitude: coordinate.longitude) else {
+            return false
+        }
+        return pointInRegion(latitude: coordinate.latitude, longitude: coordinate.longitude, region: continentBoundary)
+    }
+
+    /// The continent whose drawn outline contains a coordinate, or whose coast is
+    /// within the usual coastal tolerance of it (harbour fixes sit just offshore of
+    /// the 10m coastline). Nil in open water.
+    func continent(containing coordinate: CLLocationCoordinate2D) -> Continent? {
         loadBoundaries()
 
         let lat = coordinate.latitude
         let lon = coordinate.longitude
-        for country in countries where country.continent == continent {
-            guard country.containsInBoundingBox(latitude: lat, longitude: lon) else { continue }
-            if country.polygons.contains(where: { pointInPolygon(latitude: lat, longitude: lon, polygon: $0) }) {
-                return true
+        for boundary in continents where boundary.containsInBoundingBox(latitude: lat, longitude: lon) {
+            if pointInRegion(latitude: lat, longitude: lon, region: boundary) {
+                return boundary.continent
             }
         }
-        return false
+        let coastalTolerance = 0.01
+        for boundary in continents where boundary.containsInBoundingBox(latitude: lat, longitude: lon, tolerance: coastalTolerance) {
+            if pointNearRegion(latitude: lat, longitude: lon, region: boundary, tolerance: coastalTolerance) {
+                return boundary.continent
+            }
+        }
+        return nil
+    }
+
+    /// The continent a visit in a country counts for: the country's own continent,
+    /// except in the divided countries, where it is the continent whose outline
+    /// contains the fix (falling back to the country's continent in open water)
+    private func attributedContinent(for country: RegionBoundary, latitude: Double, longitude: Double) -> Continent? {
+        guard Self.dividedCountries.contains(country.code) else { return country.continent }
+        return continent(containing: CLLocationCoordinate2D(latitude: latitude, longitude: longitude)) ?? country.continent
+    }
+
+    /// The continent a country visit counts for: in the divided countries the
+    /// continent whose outline contains the fix (the code's continent in open
+    /// water), otherwise the code's continent
+    func continent(forCountryCode code: String, at coordinate: CLLocationCoordinate2D) -> Continent? {
+        if Self.dividedCountries.contains(code), let continent = continent(containing: coordinate) {
+            return continent
+        }
+        return continent(forRegionCode: code)
+    }
+
+    /// The continent a region record's code is attributed to: states and US
+    /// territories to North America, overseas territories per their table, countries
+    /// per the country data. Nil for codes with no continent (open-ocean islands).
+    func continent(forRegionCode code: String) -> Continent? {
+        loadBoundaries()
+
+        if code.hasPrefix("US-") { return .northAmerica }
+        if let territory = Self.overseasTerritories.first(where: { $0.code == code }) {
+            return territory.continent
+        }
+        return countries.first(where: { $0.code == code })?.continent
     }
 
     /// Get US outline polylines (for map overlays)
@@ -472,46 +512,47 @@ class RegionLookupService {
         }
     }
 
+    /// Geographic continent outlines and camera frames from continents.json, which
+    /// tools/build_continents.py derives from the Natural Earth files
     private func loadContinents() {
-        guard let url = Bundle.main.url(forResource: "ne_10m_geography_regions_polys", withExtension: "json"),
+        guard let url = Bundle.main.url(forResource: "continents", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let features = json["features"] as? [[String: Any]] else {
-            debugLog("⚠️ Failed to load ne_10m_geography_regions_polys.json")
+            debugLog("⚠️ Failed to load continents.json")
             return
         }
 
         for feature in features {
             guard let properties = feature["properties"] as? [String: Any],
-                  let featurecla = properties["featurecla"] as? String,
-                  featurecla == "Continent",
-                  let region = properties["region"] as? String,
+                  let rawValue = properties["continent"] as? String,
                   let geometry = feature["geometry"] as? [String: Any],
                   let geometryType = geometry["type"] as? String,
                   let coordinates = geometry["coordinates"] as? [Any] else {
                 continue
             }
 
-            guard let continent = continentFromString(region) else {
-                debugLog("⚠️ Unknown continent region: \(region)")
+            guard let continent = Continent(rawValue: rawValue) else {
+                debugLog("⚠️ Unknown continent: \(rawValue)")
                 continue
             }
 
-            // Use name with proper case (e.g., "SOUTH AMERICA" -> "South America")
-            let rawName = properties["name"] as? String ?? region
-            let name = rawName.capitalized
             let rings = extractRings(geometryType: geometryType, coordinates: coordinates)
             let boundingBox = calculateBoundingBox(polygons: rings.compactMap(\.first))
 
             let boundary = RegionBoundary(
-                code: region,
-                name: name,
+                code: continent.rawValue,
+                name: continent.rawValue,
                 type: .country,  // Reusing type, not used for continents
                 continent: continent,
                 boundingBox: boundingBox,
                 rings: rings
             )
             continents.append(boundary)
+
+            if let frame = properties["frame"] as? [[[Double]]] {
+                continentFrames[continent] = frame
+            }
         }
     }
 
@@ -632,63 +673,63 @@ class RegionLookupService {
     // Note: Territory mappings (territoryToParentCountry, territoryCodes, isTerritory, flagCodeForRegion)
     // are defined in Constants.swift for use across the app
 
-    /// Check if coordinates fall within known overseas territories
-    /// These are geographically separate from their parent countries but share the same
-    /// country code in the GeoJSON data. We detect them by bounding box to give them
-    /// distinct region codes.
+    /// Overseas territories: geographically separate from their parent countries but
+    /// sharing the same country code in the GeoJSON data. Detected by bounding box to
+    /// give them distinct region codes. tools/build_continents.py carries a copy of
+    /// this table so the continent outlines place each territory the same way.
     /// Note: US territories are NOT included here - they are tracked as states instead.
+    /// Format: (minLat, maxLat, minLon, maxLon, code, name, continent)
+    static let overseasTerritories: [(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double,
+                                      code: String, name: String, continent: Continent)] = [
+        // French Overseas Territories
+        (2.0, 6.0, -55.0, -51.0, "GF", "French Guiana", .southAmerica),
+        (14.35, 14.9, -61.3, -60.8, "MQ", "Martinique", .northAmerica),
+        (15.8, 16.55, -61.85, -61.0, "GP", "Guadeloupe", .northAmerica),
+        (-21.4, -20.85, 55.2, 55.85, "RE", "Réunion", .africa),
+        (-13.05, -12.6, 45.0, 45.35, "YT", "Mayotte", .africa),
+        (-22.4, -22.2, 166.3, 166.5, "NC", "New Caledonia", .oceania),  // Main island area
+        (-17.9, -17.45, -149.95, -149.1, "PF", "French Polynesia", .oceania),  // Tahiti area
+
+        // Dutch Overseas Territories
+        (12.0, 12.65, -68.5, -68.0, "CW", "Curaçao", .northAmerica),
+        (12.4, 12.65, -70.1, -69.85, "AW", "Aruba", .northAmerica),
+        (17.45, 18.07, -63.15, -62.95, "SX", "Sint Maarten", .northAmerica),
+
+        // British Overseas Territories
+        (32.25, 32.4, -64.9, -64.65, "BM", "Bermuda", .northAmerica),
+        (18.15, 19.4, -64.85, -64.25, "VG", "British Virgin Islands", .northAmerica),
+        (19.25, 19.4, -81.45, -81.05, "KY", "Cayman Islands", .northAmerica),
+        (-54.9, -51.0, -61.5, -57.5, "FK", "Falkland Islands", .southAmerica),
+        (-4.75, -4.65, 55.45, 55.55, "SC", "Seychelles", .africa),  // Main island area
+        (36.1, 36.16, -5.37, -5.33, "GI", "Gibraltar", .europe),
+
+        // Portuguese Overseas Territories
+        (36.9, 39.75, -31.3, -25.0, "PT-20", "Azores", .europe),  // Use PT-20 to distinguish
+        (32.6, 33.15, -17.3, -16.25, "PT-30", "Madeira", .europe),  // Use PT-30 to distinguish
+
+        // Spanish Overseas Territories
+        (27.6, 29.5, -18.2, -13.3, "ES-CN", "Canary Islands", .europe),  // Use ES-CN to distinguish
+
+        // Danish Overseas Territories
+        (61.35, 62.45, -7.7, -6.2, "FO", "Faroe Islands", .europe),
+        (59.5, 83.7, -73.0, -11.0, "GL", "Greenland", .northAmerica),
+
+        // Note: US territories (PR, VI, GU, AS, MP) are tracked as states, not countries
+
+        // Australian Overseas Territories
+        (-10.7, -10.35, 105.5, 105.75, "CX", "Christmas Island", .oceania),
+        (-12.25, -11.8, 96.8, 96.95, "CC", "Cocos (Keeling) Islands", .oceania),
+        (-29.15, -29.0, 167.9, 168.0, "NF", "Norfolk Island", .oceania),
+
+        // New Zealand Overseas Territories
+        (-21.3, -21.15, -159.85, -159.7, "CK", "Cook Islands", .oceania),  // Rarotonga area
+        (-19.15, -18.95, -169.95, -169.75, "NU", "Niue", .oceania),
+        (-9.25, -8.5, -172.0, -171.0, "TK", "Tokelau", .oceania),
+    ]
+
+    /// Check if coordinates fall within known overseas territories (see overseasTerritories)
     private func checkOverseasTerritories(latitude lat: Double, longitude lon: Double) -> RegionInfo? {
-        // Define overseas territories with their bounding boxes and info
-        // Format: (minLat, maxLat, minLon, maxLon, code, name, continent)
-        let territories: [(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double,
-                          code: String, name: String, continent: Continent)] = [
-            // French Overseas Territories
-            (2.0, 6.0, -55.0, -51.0, "GF", "French Guiana", .southAmerica),
-            (14.35, 14.9, -61.3, -60.8, "MQ", "Martinique", .northAmerica),
-            (15.8, 16.55, -61.85, -61.0, "GP", "Guadeloupe", .northAmerica),
-            (-21.4, -20.85, 55.2, 55.85, "RE", "Réunion", .africa),
-            (-13.05, -12.6, 45.0, 45.35, "YT", "Mayotte", .africa),
-            (-22.4, -22.2, 166.3, 166.5, "NC", "New Caledonia", .oceania),  // Main island area
-            (-17.9, -17.45, -149.95, -149.1, "PF", "French Polynesia", .oceania),  // Tahiti area
-
-            // Dutch Overseas Territories
-            (12.0, 12.65, -68.5, -68.0, "CW", "Curaçao", .northAmerica),
-            (12.4, 12.65, -70.1, -69.85, "AW", "Aruba", .northAmerica),
-            (17.45, 18.07, -63.15, -62.95, "SX", "Sint Maarten", .northAmerica),
-
-            // British Overseas Territories
-            (32.25, 32.4, -64.9, -64.65, "BM", "Bermuda", .northAmerica),
-            (18.15, 19.4, -64.85, -64.25, "VG", "British Virgin Islands", .northAmerica),
-            (19.25, 19.4, -81.45, -81.05, "KY", "Cayman Islands", .northAmerica),
-            (-54.9, -51.0, -61.5, -57.5, "FK", "Falkland Islands", .southAmerica),
-            (-4.75, -4.65, 55.45, 55.55, "SC", "Seychelles", .africa),  // Main island area
-            (36.1, 36.16, -5.37, -5.33, "GI", "Gibraltar", .europe),
-
-            // Portuguese Overseas Territories
-            (36.9, 39.75, -31.3, -25.0, "PT-20", "Azores", .europe),  // Use PT-20 to distinguish
-            (32.6, 33.15, -17.3, -16.25, "PT-30", "Madeira", .europe),  // Use PT-30 to distinguish
-
-            // Spanish Overseas Territories
-            (27.6, 29.5, -18.2, -13.3, "ES-CN", "Canary Islands", .europe),  // Use ES-CN to distinguish
-
-            // Danish Overseas Territories
-            (61.35, 62.45, -7.7, -6.2, "FO", "Faroe Islands", .europe),
-            (59.5, 83.7, -73.0, -11.0, "GL", "Greenland", .northAmerica),
-
-            // Note: US territories (PR, VI, GU, AS, MP) are tracked as states, not countries
-
-            // Australian Overseas Territories
-            (-10.7, -10.35, 105.5, 105.75, "CX", "Christmas Island", .oceania),
-            (-12.25, -11.8, 96.8, 96.95, "CC", "Cocos (Keeling) Islands", .oceania),
-            (-29.15, -29.0, 167.9, 168.0, "NF", "Norfolk Island", .oceania),
-
-            // New Zealand Overseas Territories
-            (-21.3, -21.15, -159.85, -159.7, "CK", "Cook Islands", .oceania),  // Rarotonga area
-            (-19.15, -18.95, -169.95, -169.75, "NU", "Niue", .oceania),
-            (-9.25, -8.5, -172.0, -171.0, "TK", "Tokelau", .oceania),
-        ]
-
-        for territory in territories {
+        for territory in Self.overseasTerritories {
             if lat >= territory.minLat && lat <= territory.maxLat &&
                lon >= territory.minLon && lon <= territory.maxLon {
                 // A bounding box alone is too coarse for the larger territories:

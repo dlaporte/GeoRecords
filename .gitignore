@@ -4,6 +4,9 @@
 # Project skills are functional tooling (release runbooks etc.), not internal notes
 !.claude/skills/**/*.md
 
+# Python venv for tools/build_continents.py
+.venv/
+
 # Xcode
 build/
 DerivedData/

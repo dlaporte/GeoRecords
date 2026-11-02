@@ -426,10 +426,17 @@ class RegionTrackingManager: ObservableObject {
         do {
             let stateEntries = try context.fetch(stateRequest)
             let countryEntries = try context.fetch(countryRequest)
-            let continentEntries = try context.fetch(continentRequest)
+            var continentEntries = try context.fetch(continentRequest)
 
             // Migrate any entries missing regionCode
             migrateRegionCodes(stateEntries: stateEntries, countryEntries: countryEntries, continentEntries: continentEntries)
+
+            // Once per device: add the continent records existing visits imply but
+            // lack (continents became geographic in 1.8.9, so a Vladivostok visit
+            // implies Asia). Nothing is deleted.
+            if addImpliedContinentRecordsIfNeeded() {
+                continentEntries = try context.fetch(continentRequest)
+            }
 
             // Convert to RecordDetail and deduplicate by regionCode
             // (iCloud sync can create duplicates that bypass the addVisitToRegion check)
@@ -895,6 +902,10 @@ class RegionTrackingManager: ObservableObject {
     /// - Returns: true if a record with this regionCode exists, false otherwise
     /// - Note: Returns false on fetch errors (logged via debugLog) for safe failure handling
     private func regionExists(code: String) -> Bool {
+        Self.regionExists(code: code, in: context)
+    }
+
+    private static func regionExists(code: String, in context: NSManagedObjectContext) -> Bool {
         let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
         request.predicate = NSPredicate(format: "regionCode == %@", code)
         request.fetchLimit = 1
@@ -925,6 +936,20 @@ class RegionTrackingManager: ObservableObject {
         source: RecordSource,
         logPrefix: String? = nil
     ) {
+        Self.createRegionRecord(in: context, code: code, name: name, recordType: recordType,
+                                coordinate: coordinate, date: date, source: source, logPrefix: logPrefix)
+    }
+
+    private static func createRegionRecord(
+        in context: NSManagedObjectContext,
+        code: String,
+        name: String,
+        recordType: RecordType,
+        coordinate: CLLocationCoordinate2D,
+        date: Date,
+        source: RecordSource,
+        logPrefix: String? = nil
+    ) {
         let newEntry = RecordHistoryEntry(context: context)
         newEntry.id = UUID()
         newEntry.recordType = recordType.rawValue
@@ -945,6 +970,62 @@ class RegionTrackingManager: ObservableObject {
         } else {
             debugLog("📍 RegionTrackingManager: Added region record: \(name) (\(code))")
         }
+    }
+
+    // MARK: Implied Continents
+
+    /// Runs `addImpliedContinentRecords` once per device (continents became
+    /// geographic in 1.8.9). Returns true when it added records (already saved).
+    private func addImpliedContinentRecordsIfNeeded() -> Bool {
+        let key = UserDefaultsKey.hasAddedImpliedContinents.rawValue
+        guard !UserDefaults.standard.bool(forKey: key) else { return false }
+        let added = Self.addImpliedContinentRecords(in: context)
+        UserDefaults.standard.set(true, forKey: key)
+        if added > 0 {
+            saveContext()
+            debugLog("📍 RegionTrackingManager: Added \(added) implied continent record(s)")
+        }
+        return added > 0
+    }
+
+    /// Adds a continent record for every continent that an existing state or country
+    /// record implies but that has no record yet, dated and sourced like the implying
+    /// record (the earliest wins: entries are read oldest first). A state implies
+    /// North America; a country its continent, except in the divided countries
+    /// (Russia, Kazakhstan, Turkey) where the continent is the one whose outline
+    /// contains the record's coordinate. Nothing is deleted or changed.
+    /// - Returns: how many records were added (unsaved)
+    @discardableResult
+    static func addImpliedContinentRecords(in context: NSManagedObjectContext) -> Int {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "recordType == %@ OR recordType == %@",
+                                        RecordType.state.rawValue, RecordType.country.rawValue)
+        request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: true)]
+        guard let entries = try? context.fetch(request) else { return 0 }
+
+        let lookup = RegionLookupService.shared
+        var added = 0
+        for entry in entries {
+            guard let code = entry.regionCode else { continue }
+            let coordinate = CLLocationCoordinate2D(latitude: entry.latitude, longitude: entry.longitude)
+            let implied = entry.recordType == RecordType.state.rawValue
+                ? Continent.northAmerica
+                : lookup.continent(forCountryCode: code, at: coordinate)
+            guard let continent = implied, !regionExists(code: continent.rawValue, in: context) else { continue }
+
+            createRegionRecord(
+                in: context,
+                code: continent.rawValue,
+                name: continent.rawValue,
+                recordType: .continent,
+                coordinate: coordinate,
+                date: entry.timestamp ?? Date(),
+                source: RecordSource(rawValue: entry.source ?? "") ?? .location,
+                logPrefix: "Adding implied continent"
+            )
+            added += 1
+        }
+        return added
     }
 
     // MARK: Region Visit Recording
@@ -1052,10 +1133,12 @@ class RegionTrackingManager: ObservableObject {
             addVisitToRegion(code: "US", name: "United States", type: .country, date: date, coordinate: coordinate, altitude: altitude, photoAssetIdentifier: photoAssetIdentifier, photoCloudIdentifier: photoCloudIdentifier, suppressNotifications: suppressNotifications, suppressPhotoPrompts: suppressPhotoPrompts, source: source)
         }
 
-        // If this is a country, also record the continent (propagate suppression flags, photo identifiers, and source)
+        // If this is a country, also record the continent (propagate suppression flags,
+        // photo identifiers, and source). Continents are geographic: inside Russia,
+        // Kazakhstan or Turkey the fix decides between Europe and Asia.
         if type == .country {
-            if let continent = getContinentForCountry(code: code) {
-                addContinentVisit(continent: continent, date: date, coordinate: coordinate, altitude: altitude, photoAssetIdentifier: photoAssetIdentifier, photoCloudIdentifier: photoCloudIdentifier, suppressNotifications: suppressNotifications, suppressPhotoPrompts: suppressPhotoPrompts, source: source)
+            if let continent = RegionLookupService.shared.continent(forCountryCode: code, at: coordinate) {
+                addContinentVisit(continent: continent.rawValue, date: date, coordinate: coordinate, altitude: altitude, photoAssetIdentifier: photoAssetIdentifier, photoCloudIdentifier: photoCloudIdentifier, suppressNotifications: suppressNotifications, suppressPhotoPrompts: suppressPhotoPrompts, source: source)
             }
         }
 
@@ -1286,15 +1369,6 @@ class RegionTrackingManager: ObservableObject {
         }
     }
 
-    private func getContinentForCountry(code: String) -> String? {
-        // Use RegionLookupService to get continent
-        for country in RegionLookupService.shared.allCountries {
-            if country.code == code {
-                return country.continent?.rawValue
-            }
-        }
-        return nil
-    }
 }
 
 // MARK: - VisitedRegion Extensions

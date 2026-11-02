@@ -12,9 +12,9 @@ struct ContinentOverlayTests {
 
     // Natural Earth's "Continent" features are mainland masses only: the Yucatán,
     // Central America, the Caribbean, Great Britain, the Philippines, Madagascar
-    // and New Zealand all sit outside them. Continent overlays must come from
-    // the country polygons instead, so each country's land is drawn in the
-    // continent the app attributes its visits to.
+    // and New Zealand all sit outside them. The outlines in continents.json are
+    // built from the country coastlines instead, so each country's land is drawn
+    // in the continent the app attributes its visits to.
     @Test func continentOverlaysCoverIslandsAndIsthmuses() async throws {
         let service = RegionLookupService.shared
         let cases: [(name: String, continent: Continent, lat: Double, lon: Double)] = [
@@ -37,6 +37,55 @@ struct ContinentOverlayTests {
             let coordinate = CLLocationCoordinate2D(latitude: c.lat, longitude: c.lon)
             #expect(service.continentPolygonsContain(coordinate, continent: c.continent),
                     "\(c.name) should be inside the \(c.continent.rawValue) overlay")
+        }
+    }
+
+    // Russia, Kazakhstan and Turkey are cut along the Europe/Asia divide (Urals,
+    // Ural River, Caspian, Caucasus crest, Bosporus), and overseas territories
+    // land in the continent the app attributes them to
+    @Test func continentOutlinesAreGeographic() async throws {
+        let service = RegionLookupService.shared
+        let cases: [(name: String, continent: Continent, lat: Double, lon: Double)] = [
+            ("Moscow", .europe, 55.75, 37.62),
+            ("Perm", .europe, 58.0, 56.23),
+            ("Uralsk", .europe, 51.37, 51.23),
+            ("Istanbul, European side", .europe, 41.03, 28.95),
+            ("Yekaterinburg", .asia, 56.84, 60.6),
+            ("Khabarovsk", .asia, 48.48, 135.07),
+            ("Almaty", .asia, 43.2, 76.9),
+            ("Istanbul, Asian side", .asia, 41.0, 29.05),
+            ("Cayenne", .southAmerica, 4.93, -52.33),
+            ("Nouméa", .oceania, -22.27, 166.45),
+            ("Las Palmas", .europe, 28.12, -15.43),
+            ("Honolulu", .northAmerica, 21.3, -157.86)
+        ]
+        for c in cases {
+            let coordinate = CLLocationCoordinate2D(latitude: c.lat, longitude: c.lon)
+            #expect(service.continentPolygonsContain(coordinate, continent: c.continent),
+                    "\(c.name) should be inside the \(c.continent.rawValue) outline")
+        }
+        #expect(!service.continentPolygonsContain(CLLocationCoordinate2D(latitude: 55.75, longitude: 37.62), continent: .asia))
+        #expect(!service.continentPolygonsContain(CLLocationCoordinate2D(latitude: 48.48, longitude: 135.07), continent: .europe))
+    }
+
+    // The outline is the countries' coast, not their borders: fewer vertices than
+    // the countries combined, exterior rings only, every vertex on the globe
+    @Test func continentOutlinesCarryNoCountryBorders() async throws {
+        let service = RegionLookupService.shared
+        let countryVertices = service.allCountries
+            .filter { $0.continent == .europe }
+            .map { service.polygons(for: $0.code).flatMap { $0 }.reduce(0) { $0 + $1.count } }
+            .reduce(0, +)
+        let europe = service.continentPolygons(for: .europe)
+        let outlineVertices = europe.flatMap { $0 }.reduce(0) { $0 + $1.count }
+        #expect(outlineVertices > 0 && outlineVertices < countryVertices)
+
+        for continent in Continent.allCases {
+            let polygons = service.continentPolygons(for: continent)
+            #expect(!polygons.isEmpty, "\(continent.rawValue) has no outline")
+            #expect(polygons.allSatisfy { $0.count == 1 }, "\(continent.rawValue) outline carries holes")
+            let offGlobe = polygons.flatMap { $0.flatMap { $0 } }.filter { abs($0.latitude) > 90 || abs($0.longitude) > 180 }
+            #expect(offGlobe.isEmpty, "\(continent.rawValue) has \(offGlobe.count) vertices off the globe")
         }
     }
 

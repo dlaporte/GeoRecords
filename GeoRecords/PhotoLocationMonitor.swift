@@ -429,19 +429,14 @@ class PhotoLocationMonitor: NSObject, ObservableObject {
         // Only current-period wins update the in-memory slots or notify.
         let photoDate = asset.creationDate ?? now
         let calendar = Calendar.current
-        let isCurrentPeriod: Bool
-        switch timeFrame {
-        case .daily, .allTime:
-            isCurrentPeriod = true
-        case .month:
-            isCurrentPeriod = calendar.isDate(photoDate, equalTo: now, toGranularity: .month)
-        case .year:
-            isCurrentPeriod = calendar.isDate(photoDate, equalTo: now, toGranularity: .year)
-        }
+        let isCurrentPeriod = timeFrame.isCurrentPeriod(for: photoDate, now: now, calendar: calendar)
 
         let currentRecord: RecordDetail?
         if isCurrentPeriod {
+            // An empty slot (right after a restore) is not "no record yet": Core Data
+            // holds the baseline
             currentRecord = recordManager.getRecord(type: recordType.rawValue, timeFrame: timeFrame)
+                ?? historyManager.bestRecord(type: recordType.rawValue, timeFrame: timeFrame, around: photoDate)
         } else {
             let components = calendar.dateComponents([.year, .month], from: photoDate)
             switch timeFrame {

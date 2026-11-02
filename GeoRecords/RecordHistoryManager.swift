@@ -974,6 +974,11 @@ class RecordHistoryManager: ObservableObject {
         let atHomeDeleted = deleteRecordsAtHome()
         totalCleaned += atHomeDeleted
 
+        // 4. Delete rows that never held the record of their period (written against
+        //    an empty or stale in-memory slot; see rowsThatNeverHeldTheRecord)
+        let neverRecordsRemoved = removeRowsThatNeverHeldTheRecord()
+        totalCleaned += neverRecordsRemoved
+
         // Note: consolidateRecords() is NOT called automatically
         // It should only be run on explicit user request since it removes history
 
@@ -986,7 +991,107 @@ class RecordHistoryManager: ObservableObject {
         return totalCleaned
     }
 
+    // MARK: - Rows that never held the record
+
+    /// Geographic-extreme rows of automatic sources that never beat the earlier best
+    /// of their own period (the month for Monthly, the year for Yearly, ever for
+    /// Lifetime). Such rows were written against an empty or stale in-memory slot
+    /// (right after a restore, a deferred fix processed in the next month, the
+    /// pre-1.8.0 rollover bug) and are not records. Rows the user chose or entered
+    /// (wizard, manual) and legacy rows without a source are kept: a chosen photo may
+    /// be less extreme on purpose. Oldest first, so the earliest genuine row of a
+    /// period sets the bar.
+    nonisolated static func rowsThatNeverHeldTheRecord(in context: NSManagedObjectContext) -> [RecordHistoryEntry] {
+        let types = RecordType.allCases.filter(\.isGeographicExtreme).map(\.rawValue)
+        let timeFrames = [TimeFrame.month.rawValue, TimeFrame.year.rawValue] + lifetimeTimeFrameVariations
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        request.predicate = NSPredicate(format: "recordType IN %@ AND timeFrame IN %@", types, timeFrames)
+        request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: true),
+                                   NSSortDescriptor(key: "dateAdded", ascending: true)]
+        guard let rows = try? context.fetch(request) else { return [] }
+
+        let automaticSources: Set<String> = [RecordSource.location.rawValue, RecordSource.photo.rawValue, RecordSource.home.rawValue]
+        let calendar = Calendar.current
+        var bestByPeriod: [String: Double] = [:]
+        var neverRecords: [RecordHistoryEntry] = []
+        for row in rows {
+            guard let type = RecordType.from(string: row.recordType ?? ""), let timestamp = row.timestamp else { continue }
+            let period: String
+            if lifetimeTimeFrameVariations.contains(row.timeFrame ?? "") {
+                period = "lifetime"
+            } else {
+                let parts = calendar.dateComponents([.year, .month], from: timestamp)
+                period = row.timeFrame == TimeFrame.year.rawValue ? "\(parts.year ?? 0)" : "\(parts.year ?? 0)-\(parts.month ?? 0)"
+            }
+            let key = "\(type.rawValue)|\(period)"
+            if let best = bestByPeriod[key], !type.shouldReplace(newValue: row.value, oldValue: best) {
+                if automaticSources.contains(row.source ?? "") {
+                    neverRecords.append(row)
+                }
+                continue
+            }
+            bestByPeriod[key] = row.value
+        }
+        return neverRecords
+    }
+
+    func rowsThatNeverHeldTheRecord() -> [RecordHistoryEntry] {
+        Self.rowsThatNeverHeldTheRecord(in: context)
+    }
+
+    /// Deletes the rows `rowsThatNeverHeldTheRecord` finds and reloads the slots
+    /// - Returns: how many rows were deleted
+    @discardableResult
+    func removeRowsThatNeverHeldTheRecord() -> Int {
+        let rows = Self.rowsThatNeverHeldTheRecord(in: context)
+        guard !rows.isEmpty else { return 0 }
+        for row in rows {
+            debugLog("🧹 Deleting row that never held the record: \(row.recordType ?? "?") (\(row.timeFrame ?? "?")) \(row.value) at \(row.timestamp.map { "\($0)" } ?? "?")")
+            context.delete(row)
+        }
+        do {
+            try context.save()
+        } catch {
+            debugLog("❌ Error deleting never-record rows: \(error.localizedDescription)")
+            context.rollback()
+            return 0
+        }
+        RecordManager.shared.loadRecordsFromHistory()
+        return rows.count
+    }
+
     // MARK: - Historical Record Lookup
+
+    /// The most extreme row of a type in the period containing `date` for a timeframe:
+    /// every Lifetime row, the Yearly rows of that year or the Monthly rows of that
+    /// month. The baseline a fix or photo competes against when the in-memory slot is
+    /// empty or describes another period.
+    func bestRecord(type: String, timeFrame: TimeFrame, around date: Date) -> RecordDetail? {
+        Self.bestRecord(type: type, timeFrame: timeFrame, around: date, in: context)
+    }
+
+    nonisolated static func bestRecord(type: String, timeFrame: TimeFrame, around date: Date,
+                                       in context: NSManagedObjectContext) -> RecordDetail? {
+        let request: NSFetchRequest<RecordHistoryEntry> = RecordHistoryEntry.fetchRequest()
+        switch timeFrame {
+        case .allTime:
+            request.predicate = NSPredicate(format: "recordType == %@ AND timeFrame IN %@", type, lifetimeTimeFrameVariations)
+        case .year, .month:
+            let component: Calendar.Component = timeFrame == .year ? .year : .month
+            guard let interval = Calendar.current.dateInterval(of: component, for: date) else { return nil }
+            request.predicate = NSPredicate(
+                format: "recordType == %@ AND timeFrame == %@ AND timestamp >= %@ AND timestamp < %@",
+                type, timeFrame.rawValue, interval.start as NSDate, interval.end as NSDate
+            )
+        case .daily:
+            return nil
+        }
+        let ascending = type == RecordType.south.rawValue || type == RecordType.west.rawValue
+        request.sortDescriptors = [NSSortDescriptor(key: "value", ascending: ascending)]
+        request.fetchLimit = 1
+        guard let entry = try? context.fetch(request).first else { return nil }
+        return RecordDetail(from: entry)
+    }
 
     /// Get the best (most extreme) record for a given type and year
     /// Used for checking if a historical yearly record exists

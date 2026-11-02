@@ -118,6 +118,16 @@ enum TimeFrame: String, CaseIterable {
         return allCases.filter { $0.isUserVisible }
     }
 
+    /// Whether a date falls in the period this timeframe's in-memory slot describes:
+    /// the current month or year, always for Daily and Lifetime
+    func isCurrentPeriod(for date: Date, now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        switch self {
+        case .daily, .allTime: return true
+        case .month: return calendar.isDate(date, equalTo: now, toGranularity: .month)
+        case .year: return calendar.isDate(date, equalTo: now, toGranularity: .year)
+        }
+    }
+
     /// The most significant timeframe in a set (lifetime > yearly > monthly > daily).
     /// Used to pick the single "biggest achievement" notification when one location
     /// event beats records in several timeframes at once.

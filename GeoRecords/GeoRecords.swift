@@ -117,7 +117,15 @@ struct GeoRecords: App {
         Task {
             try? await Task.sleep(nanoseconds: standardDelayNanos)  // Wait 2 seconds after launch
 
-            // Perform data cleanup (duplicates, at-home records, etc.)
+            // The never-held-the-record repair can delete many history rows at once
+            // (880 on the developer's device, Nov 2026): snapshot first so Files holds
+            // a restore point
+            let needsRepair = await MainActor.run { !RecordHistoryManager.shared.rowsThatNeverHeldTheRecord().isEmpty }
+            if needsRepair {
+                await BackupManager.shared.writeSafetySnapshot(reason: "record-cleanup")
+            }
+
+            // Perform data cleanup (duplicates, at-home records, never-records, etc.)
             await MainActor.run {
                 let cleaned = RecordHistoryManager.shared.performDataCleanup()
                 if cleaned > 0 {

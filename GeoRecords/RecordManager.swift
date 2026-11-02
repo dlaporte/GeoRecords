@@ -512,12 +512,20 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
         reverseGeocodedName: String?,
         timeFrame: TimeFrame
     ) -> (updated: Bool, notifiable: Bool) {
-        let currentRecord = getRecord(type: type, timeFrame: timeFrame)
         // Stamp the record with the GPS fix's own timestamp, not processing time:
         // deferred background delivery can process a fix minutes later, which matters
         // at month/year boundaries
         let recordTimestamp = location.timestamp
         let settings = SettingsManager.shared
+
+        // A fix competes against the record of ITS OWN period, read from Core Data when
+        // the in-memory slot is empty or describes another period. Comparing a deferred
+        // August 31 fix against September's empty slot, or any fix against slots emptied
+        // by a restore, wrote "records" for every type that never were (Nov 2026 data).
+        let isCurrentPeriod = timeFrame.isCurrentPeriod(for: recordTimestamp)
+        let historyManager = RecordHistoryManager.shared
+        let currentRecord = (isCurrentPeriod ? getRecord(type: type, timeFrame: timeFrame) : nil)
+            ?? historyManager.bestRecord(type: type, timeFrame: timeFrame, around: recordTimestamp)
 
         if let current = currentRecord {
             // Calculate delta based on comparison direction
@@ -539,6 +547,12 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
                 let saveSucceeded = RecordHistoryManager.shared.addRecord(recordType: type, detail: newRecord)
 
                 if saveSucceeded {
+                    // A past-period row belongs in history only: slots, badges, prompts
+                    // and notifications describe the current period
+                    guard isCurrentPeriod else {
+                        debugLog("NEW RECORD (past period): \(type) (\(timeFrame.rawValue)) updated to \(newValue)")
+                        return (updated: true, notifiable: false)
+                    }
                     setRecord(type: type, timeFrame: timeFrame, record: newRecord)
 
                     // Increment badge for this timeframe
@@ -591,6 +605,9 @@ class RecordManager: NSObject, ObservableObject, RecordManaging {
             let saveSucceeded = RecordHistoryManager.shared.addRecord(recordType: type, detail: newRecord)
 
             if saveSucceeded {
+                guard isCurrentPeriod else {
+                    return (updated: true, notifiable: false)
+                }
                 setRecord(type: type, timeFrame: timeFrame, record: newRecord)
 
                 // Photo prompts only for all-time records

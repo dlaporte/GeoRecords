@@ -3,43 +3,52 @@ import Photos
 
 // MARK: - Wizard Progress Indicator
 
-/// Progress indicator showing the wizard steps
+/// Progress indicator showing the wizard steps. Every step is labelled where the
+/// labels fit (iPad, iPhone Duo open); on iPhones and the folded Duo only the
+/// current step is labelled and the others are numbered circles, so all five
+/// steps show at once; narrower still (Slide Over, large text) the compact row
+/// scrolls with the current step centered.
 struct WizardProgressIndicator: View {
     let currentStep: ImportWizardStep
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    WizardStepItem(step: .allTime, currentStep: currentStep)
-                        .id(ImportWizardStep.allTime)
-                    WizardStepConnector(isCompleted: currentStep.rawValue > 0)
-                    WizardStepItem(step: .yearly, currentStep: currentStep)
-                        .id(ImportWizardStep.yearly)
-                    WizardStepConnector(isCompleted: currentStep.rawValue > 1)
-                    WizardStepItem(step: .monthly, currentStep: currentStep)
-                        .id(ImportWizardStep.monthly)
-                    WizardStepConnector(isCompleted: currentStep.rawValue > 2)
-                    WizardStepItem(step: .states, currentStep: currentStep)
-                        .id(ImportWizardStep.states)
-                    WizardStepConnector(isCompleted: currentStep.rawValue > 3)
-                    WizardStepItem(step: .countries, currentStep: currentStep)
-                        .id(ImportWizardStep.countries)
+        ViewThatFits(in: .horizontal) {
+            stepRow(labelled: .all)
+            stepRow(labelled: .currentOnly)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    stepRow(labelled: .currentOnly)
                 }
-                .padding(.horizontal, 12)
-            }
-            .onChange(of: currentStep) { _, newStep in
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    proxy.scrollTo(newStep, anchor: .center)
+                .onChange(of: currentStep) { _, newStep in
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        proxy.scrollTo(newStep, anchor: .center)
+                    }
                 }
-            }
-            .onAppear {
-                // Center on current step when view appears
-                proxy.scrollTo(currentStep, anchor: .center)
+                .onAppear {
+                    proxy.scrollTo(currentStep, anchor: .center)
+                }
             }
         }
         .padding(.vertical, 10)
         .background(Color(UIColor.systemBackground))
+    }
+
+    enum Labelling { case all, currentOnly }
+
+    private static let steps: [ImportWizardStep] = [.allTime, .yearly, .monthly, .states, .countries]
+
+    private func stepRow(labelled: Labelling) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(Self.steps.enumerated()), id: \.element) { index, step in
+                if index > 0 {
+                    WizardStepConnector(isCompleted: currentStep.rawValue >= index)
+                }
+                WizardStepItem(step: step, currentStep: currentStep,
+                               showsTitle: labelled == .all || step == currentStep)
+                    .id(step)
+            }
+        }
+        .padding(.horizontal, 12)
     }
 }
 
@@ -47,6 +56,7 @@ struct WizardProgressIndicator: View {
 private struct WizardStepItem: View {
     let step: ImportWizardStep
     let currentStep: ImportWizardStep
+    let showsTitle: Bool
 
     private var isActive: Bool { step == currentStep }
     private var isCompleted: Bool { step.rawValue < currentStep.rawValue }
@@ -66,10 +76,12 @@ private struct WizardStepItem: View {
     var body: some View {
         HStack(spacing: 6) {
             stepCircle
-            stepTitle
+            if showsTitle {
+                stepTitle
+            }
         }
         .padding(.vertical, 8)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, showsTitle ? 10 : 6)
         .background(stepBackground)
     }
 

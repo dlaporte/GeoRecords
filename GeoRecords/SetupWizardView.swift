@@ -76,41 +76,37 @@ struct SetupWizardView: View {
                 if !showImportPreview {
                     TabView(selection: $currentStep) {
                     // Step 0: Welcome
-                    WelcomeStepView()
+                    FitToHeight { WelcomeStepView() }
                         .tag(0)
 
                     // Step 1: Units
-                    UnitsStepView(selectedUnitSystem: $selectedUnitSystem)
+                    FitToHeight { UnitsStepView(selectedUnitSystem: $selectedUnitSystem) }
                         .tag(1)
 
                     // Step 2: Home Location
-                    HomeLocationStepView(homeCoordinate: $homeCoordinate)
+                    FitToHeight { HomeLocationStepView(homeCoordinate: $homeCoordinate) }
                         .tag(2)
 
                     // Step 3: Record Notifications
-                    NotificationsStepView(
-                        notificationsEnabled: $notificationsEnabled
-                    )
-                    .tag(3)
+                    FitToHeight { NotificationsStepView(notificationsEnabled: $notificationsEnabled) }
+                        .tag(3)
 
                     // Step 4: Summary Notifications
-                    SummaryNotificationsStepView(
-                        summaryNotificationsEnabled: $summaryNotificationsEnabled
-                    )
-                    .tag(4)
+                    FitToHeight { SummaryNotificationsStepView(summaryNotificationsEnabled: $summaryNotificationsEnabled) }
+                        .tag(4)
 
                     // Step 5: Photo Prompts
-                    PhotoPromptsStepView(
-                        photoPromptsEnabled: $photoPromptsEnabled
-                    )
-                    .tag(5)
+                    FitToHeight { PhotoPromptsStepView(photoPromptsEnabled: $photoPromptsEnabled) }
+                        .tag(5)
 
                     // Step 6: Photo Import
-                    PhotoImportStepView(
-                        wantPhotoImport: $wantPhotoImport,
-                        photoScanner: photoScanner,
-                        showPermissionAlert: $showPermissionAlert
-                    )
+                    FitToHeight {
+                        PhotoImportStepView(
+                            wantPhotoImport: $wantPhotoImport,
+                            photoScanner: photoScanner,
+                            showPermissionAlert: $showPermissionAlert
+                        )
+                    }
                     .tag(6)
                     }
                     .tabViewStyle(.page(indexDisplayMode: .never))

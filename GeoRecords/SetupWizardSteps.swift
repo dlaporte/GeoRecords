@@ -7,63 +7,70 @@ import UserNotifications
 
 // MARK: - Welcome Step
 struct WelcomeStepView: View {
+    @Environment(\.wizardDensity) private var density
     var body: some View {
-        VStack(spacing: 30) {
+        VStack(spacing: density.stackSpacing) {
             Spacer()
 
             Image("WizardIcon")
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 120, height: 120)
+                .frame(width: density.heroIconSize, height: density.heroIconSize)
 
-            VStack(spacing: 12) {
+            VStack(spacing: density.titleSpacing) {
                 Text("Welcome to GeoRecords")
-                    .font(.system(size: 32, weight: .bold))
+                    .font(.system(size: density.welcomeTitleSize, weight: .bold))
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Text("Track your geographical extremes")
-                    .font(.title3)
+                    .font(density.welcomeSubtitle)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: density.listSpacing) {
                 FeatureRow(icon: "arrow.up.arrow.down", text: "Track furthest North, South, East, West")
                 FeatureRow(icon: "mountain.2.fill", text: "Record highest altitude reached")
                 FeatureRow(icon: "house.fill", text: "Measure furthest distance from home")
                 FeatureRow(icon: "photo.fill", text: "Attach photos to your records")
             }
-            .padding(.top, 20)
+            .padding(.top, density.listTopPadding)
 
             Spacer()
         }
-        .padding(.horizontal, 40)
+        .padding(.horizontal, density.horizontalPadding)
     }
 }
 
 // MARK: - Units Step
 struct UnitsStepView: View {
+    @Environment(\.wizardDensity) private var density
     @Binding var selectedUnitSystem: UnitSystem
 
     var body: some View {
-        VStack(spacing: 30) {
+        VStack(spacing: density.stackSpacing) {
             Spacer()
 
             Image(systemName: "ruler")
-                .font(.system(size: 60))
+                .font(.system(size: density.symbolSize))
                 .foregroundColor(.blue)
 
-            VStack(spacing: 12) {
+            VStack(spacing: density.titleSpacing) {
                 Text("Choose Your Units")
                     .font(.system(size: 28, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Text("Select your preferred measurement system")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 16) {
+            VStack(spacing: density.listSpacing) {
                 UnitSystemCard(
                     title: "Imperial",
                     subtitle: "Miles, feet",
@@ -82,16 +89,17 @@ struct UnitsStepView: View {
                     selectedUnitSystem = .metric
                 }
             }
-            .padding(.top, 20)
+            .padding(.top, density.listTopPadding)
 
             Spacer()
         }
-        .padding(.horizontal, 40)
+        .padding(.horizontal, density.horizontalPadding)
     }
 }
 
 // MARK: - Home Location Step
 struct HomeLocationStepView: View {
+    @Environment(\.wizardDensity) private var density
     @Binding var homeCoordinate: CLLocationCoordinate2D?
     @EnvironmentObject var locationManager: LocationManager
     @EnvironmentObject var settings: SettingsManager
@@ -115,7 +123,7 @@ struct HomeLocationStepView: View {
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
-            .padding(.top, 20)
+            .padding(.top, density.listTopPadding)
 
             // Map with tap gesture
             MapReader { reader in
@@ -125,7 +133,7 @@ struct HomeLocationStepView: View {
                             .tint(.red)
                     }
                 }
-                .frame(height: 200)
+                .frame(height: density.homeMapHeight)
                 .cornerRadius(12)
                 .onTapGesture { position in
                     if let coordinate = reader.convert(position, from: .local) {
@@ -200,6 +208,7 @@ struct HomeLocationStepView: View {
                             .font(.subheadline)
                             .fontWeight(.semibold)
                             .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Text(FormatUtils.formatCoordinatesWithCardinals(coord))
                         .font(.caption2)
@@ -285,145 +294,161 @@ struct HomeLocationStepView: View {
 
 // MARK: - Notifications Step
 struct NotificationsStepView: View {
+    @Environment(\.wizardDensity) private var density
     @Binding var notificationsEnabled: Bool
 
     var body: some View {
-        VStack(spacing: 30) {
+        VStack(spacing: density.stackSpacing) {
             Spacer()
 
             Image(systemName: "bell.badge.fill")
-                .font(.system(size: 60))
+                .font(.system(size: density.symbolSize))
                 .foregroundColor(.blue)
 
-            VStack(spacing: 12) {
+            VStack(spacing: density.titleSpacing) {
                 Text("Record Notifications")
                     .font(.system(size: 28, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Text("Get notified when you break records")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 16) {
+            VStack(spacing: density.listSpacing) {
                 NotificationToggleCard(
-                    title: "Enable Notifications",
+                    title: "Notifications",
                     subtitle: "Receive alerts for yearly and all-time records",
                     icon: "bell.fill",
                     isEnabled: $notificationsEnabled
                 )
             }
-            .padding(.top, 20)
+            .padding(.top, density.listTopPadding)
 
             Spacer()
         }
-        .padding(.horizontal, 40)
+        .padding(.horizontal, density.horizontalPadding)
     }
 }
 
 // MARK: - Summary Notifications Step
 struct SummaryNotificationsStepView: View {
+    @Environment(\.wizardDensity) private var density
     @Binding var summaryNotificationsEnabled: Bool
 
     var body: some View {
-        VStack(spacing: 30) {
+        VStack(spacing: density.stackSpacing) {
             Spacer()
 
             Image(systemName: "calendar.badge.clock")
-                .font(.system(size: 60))
+                .font(.system(size: density.symbolSize))
                 .foregroundColor(.orange)
 
-            VStack(spacing: 12) {
+            VStack(spacing: density.titleSpacing) {
                 Text("Summary Notifications")
                     .font(.system(size: 28, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Text("Get monthly and yearly summaries of your achievements")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 16) {
+            VStack(spacing: density.listSpacing) {
                 NotificationToggleCard(
-                    title: "Enable Summaries",
+                    title: "Summaries",
                     subtitle: "Receive summaries at the end of each month and year",
                     icon: "calendar.badge.clock",
                     isEnabled: $summaryNotificationsEnabled
                 )
             }
-            .padding(.top, 20)
+            .padding(.top, density.listTopPadding)
 
             Spacer()
         }
-        .padding(.horizontal, 40)
+        .padding(.horizontal, density.horizontalPadding)
     }
 }
 
 // MARK: - Photo Prompts Step
 struct PhotoPromptsStepView: View {
+    @Environment(\.wizardDensity) private var density
     @Binding var photoPromptsEnabled: Bool
 
     var body: some View {
-        VStack(spacing: 30) {
+        VStack(spacing: density.stackSpacing) {
             Spacer()
 
             Image(systemName: "camera.fill")
-                .font(.system(size: 60))
+                .font(.system(size: density.symbolSize))
                 .foregroundColor(.green)
 
-            VStack(spacing: 12) {
+            VStack(spacing: density.titleSpacing) {
                 Text("Photo Prompts")
                     .font(.system(size: 28, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Text("Capture memories when you break records")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 16) {
+            VStack(spacing: density.listSpacing) {
                 NotificationToggleCard(
-                    title: "Enable Photo Prompts",
+                    title: "Photo Prompts",
                     subtitle: "Get prompted to attach photos to all-time records",
                     icon: "camera.fill",
                     isEnabled: $photoPromptsEnabled
                 )
             }
-            .padding(.top, 20)
+            .padding(.top, density.listTopPadding)
 
             Spacer()
         }
-        .padding(.horizontal, 40)
+        .padding(.horizontal, density.horizontalPadding)
     }
 }
 
 // MARK: - Photo Import Step
 struct PhotoImportStepView: View {
+    @Environment(\.wizardDensity) private var density
     @Binding var wantPhotoImport: Bool
     @ObservedObject var photoScanner: PhotoLibraryScanner
     @Binding var showPermissionAlert: Bool
 
     var body: some View {
-        VStack(spacing: 30) {
+        VStack(spacing: density.stackSpacing) {
             Spacer()
 
             Image(systemName: "photo.stack.fill")
-                .font(.system(size: 60))
+                .font(.system(size: density.symbolSize))
                 .foregroundColor(.blue)
 
-            VStack(spacing: 12) {
+            VStack(spacing: density.titleSpacing) {
                 Text("Import Records from Photos")
                     .font(.system(size: 28, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Text("Scan your photo library to find records from past travels")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 16) {
+            VStack(spacing: density.listSpacing) {
                 ImportOptionCard(
-                    title: "Yes, Import My Photos",
+                    title: "Import My Photos",
                     subtitle: "Scan photo library for location records",
                     icon: "photo.on.rectangle.angled",
                     isSelected: wantPhotoImport
@@ -440,10 +465,10 @@ struct PhotoImportStepView: View {
                     wantPhotoImport = false
                 }
             }
-            .padding(.top, 20)
+            .padding(.top, density.listTopPadding)
 
             if photoScanner.isScanning {
-                VStack(spacing: 12) {
+                VStack(spacing: density.titleSpacing) {
                     ProgressView(value: photoScanner.progress)
                         .progressViewStyle(.linear)
 
@@ -451,11 +476,11 @@ struct PhotoImportStepView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                .padding(.top, 20)
+                .padding(.top, density.listTopPadding)
             }
 
             Spacer()
         }
-        .padding(.horizontal, 40)
+        .padding(.horizontal, density.horizontalPadding)
     }
 }

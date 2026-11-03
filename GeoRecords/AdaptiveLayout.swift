@@ -44,6 +44,29 @@ enum StatsGrid {
     }
 }
 
+/// Sidebar column widths for a NavigationSplitView. Under 720 pt (iPhone Duo inner
+/// display 669, iPad two-thirds Split View 694) a 380 pt sidebar leaves too little
+/// for the detail and iOS overlays the sidebar instead of tiling; 300 pt leaves at
+/// least 369 pt, which is known to tile (an iPad mini tiles with 364).
+struct SidebarWidth: Equatable {
+    let minimum: CGFloat
+    let ideal: CGFloat
+    let maximum: CGFloat
+
+    static let narrowWindow: CGFloat = 720
+    static let narrow = SidebarWidth(minimum: 280, ideal: 300, maximum: 320)
+
+    static func forWindow(width: CGFloat, roomy: SidebarWidth) -> SidebarWidth {
+        width < narrowWindow ? narrow : roomy
+    }
+}
+
+extension View {
+    func navigationSplitViewColumnWidth(_ width: SidebarWidth) -> some View {
+        navigationSplitViewColumnWidth(min: width.minimum, ideal: width.ideal, max: width.maximum)
+    }
+}
+
 // MARK: - Readable width
 
 private struct ReadableWidth: ViewModifier {

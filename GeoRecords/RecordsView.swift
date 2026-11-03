@@ -199,34 +199,36 @@ struct RecordsView: View {
     /// iPad, iPhone Duo open, Max phones in landscape: the cards as a selectable list
     /// beside a map that frames the selection, with the record's detail beneath the map
     private var regularLayout: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            VStack(spacing: 0) {
-                timeFramePicker
-                    .padding()
-                if allRecords.isEmpty {
-                    emptyState
-                } else {
-                    recordList
-                }
-            }
-            .navigationTitle("Records")
-            .toolbar { syncToolbar }
-            .navigationSplitViewColumnWidth(min: 340, ideal: 380, max: 440)
-        } detail: {
-            if let record = focusedRecord {
-                GeometryReader { geometry in
-                    VStack(spacing: 0) {
-                        recordsMap
-                            .frame(height: geometry.size.height * 0.45)
-                        RecordDetailView(record: record)
-                            .id(record.id)
+        GeometryReader { window in
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                VStack(spacing: 0) {
+                    timeFramePicker
+                        .padding()
+                    if allRecords.isEmpty {
+                        emptyState
+                    } else {
+                        recordList
                     }
                 }
-            } else {
-                ContentUnavailableView("No Record Selected", systemImage: "location.north", description: Text("Choose a record from the list."))
+                .navigationTitle("Records")
+                .toolbar { syncToolbar }
+                .navigationSplitViewColumnWidth(SidebarWidth.forWindow(width: window.size.width, roomy: SidebarWidth(minimum: 340, ideal: 380, maximum: 440)))
+            } detail: {
+                if let record = focusedRecord {
+                    GeometryReader { geometry in
+                        VStack(spacing: 0) {
+                            recordsMap
+                                .frame(height: geometry.size.height * 0.45)
+                            RecordDetailView(record: record)
+                                .id(record.id)
+                        }
+                    }
+                } else {
+                    ContentUnavailableView("No Record Selected", systemImage: "location.north", description: Text("Choose a record from the list."))
+                }
             }
+            .navigationSplitViewStyle(.balanced)
         }
-        .navigationSplitViewStyle(.balanced)
     }
 
     private var timeFramePicker: some View {

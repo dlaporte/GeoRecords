@@ -462,38 +462,40 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
     /// header and region cards as a selectable sidebar; the map fills the detail
     /// column with the selected region's detail in a collapsible panel beneath it
     private var regularLayout: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            VStack(spacing: 0) {
-                sidebarHeader
-                statsHeader
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-                if state.showNotYet {
-                    NotYetList(regions: notYetRegions, distances: distancesByCode, unitSystem: settings.unitSystem) { region in
-                        cameraOverride = notYetKind.camera(for: region.code, defaultRegion: defaultCamera)
-                        showCallout(for: region)
-                    }
-                } else if regions.isEmpty {
-                    Spacer()
-                    emptyState()
-                    Spacer()
-                } else {
-                    regionList
-                }
-            }
-            .navigationTitle("Regions")
-            .navigationSplitViewColumnWidth(min: 340, ideal: 380, max: 440)
-        } detail: {
-            GeometryReader { geometry in
+        GeometryReader { window in
+            NavigationSplitView(columnVisibility: $columnVisibility) {
                 VStack(spacing: 0) {
-                    mapPane
-                    if !state.showNotYet, let region = focusedRegion {
-                        detailPanel(for: region, height: geometry.size.height * 0.4)
+                    sidebarHeader
+                    statsHeader
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 8)
+                    if state.showNotYet {
+                        NotYetList(regions: notYetRegions, distances: distancesByCode, unitSystem: settings.unitSystem) { region in
+                            cameraOverride = notYetKind.camera(for: region.code, defaultRegion: defaultCamera)
+                            showCallout(for: region)
+                        }
+                    } else if regions.isEmpty {
+                        Spacer()
+                        emptyState()
+                        Spacer()
+                    } else {
+                        regionList
+                    }
+                }
+                .navigationTitle("Regions")
+                .navigationSplitViewColumnWidth(SidebarWidth.forWindow(width: window.size.width, roomy: SidebarWidth(minimum: 340, ideal: 380, maximum: 440)))
+            } detail: {
+                GeometryReader { geometry in
+                    VStack(spacing: 0) {
+                        mapPane
+                        if !state.showNotYet, let region = focusedRegion {
+                            detailPanel(for: region, height: geometry.size.height * 0.4)
+                        }
                     }
                 }
             }
+            .navigationSplitViewStyle(.balanced)
         }
-        .navigationSplitViewStyle(.balanced)
     }
 
     /// Map showing the current region, with the not-yet callout overlaid at the bottom

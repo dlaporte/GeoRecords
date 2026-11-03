@@ -399,6 +399,13 @@ struct ContentView: View {
     }
 
     private func handleOnAppear() {
+        #if DEBUG
+        // The wizard screenshot tour opens the setup wizard without touching settings
+        if ProcessInfo.processInfo.environment["GEORECORDS_FORCE_SETUP_WIZARD"] == "1" {
+            setupFlowState = .showingSetupWizard
+            return
+        }
+        #endif
         if !settings.hasCompletedSetup && setupFlowState == .none {
             checkForCloudRestore()
         } else if settings.needsDataRestore && setupFlowState == .none {

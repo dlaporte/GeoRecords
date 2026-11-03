@@ -35,6 +35,40 @@ final class GeoRecordsUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
     }
 
+    /// The setup wizard step by step, opened by a DEBUG launch flag without touching
+    /// settings; the folded iPhone Duo (382×644 window) is where its text truncated
+    @MainActor
+    func testSetupWizardTour() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["GEORECORDS_SHOW_SIZE_CLASS"] = "1"
+        app.launchEnvironment["GEORECORDS_FORCE_SETUP_WIZARD"] = "1"
+        app.launch()
+        sleep(3)
+        snap(app, "W1-welcome")
+        tap(app, "Next"); dismissSystemAlert(); sleep(1); snap(app, "W2-units")
+        tap(app, "Next"); sleep(2)
+        if !app.buttons["Next"].isEnabled, app.maps.firstMatch.waitForExistence(timeout: 3) {
+            app.maps.firstMatch.tap()  // sets the home location
+            sleep(2)
+        }
+        snap(app, "W3-home")
+        tap(app, "Next"); sleep(1); snap(app, "W4-notifications")
+        tap(app, "Next"); dismissSystemAlert(); sleep(1); snap(app, "W5-summaries")
+        tap(app, "Next"); sleep(1); snap(app, "W6-photo-prompts")
+        tap(app, "Next"); sleep(1); snap(app, "W7-photo-import")
+    }
+
+    /// Taps through a system permission alert (location, notifications) if one is up
+    private func dismissSystemAlert() {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let alert = springboard.alerts.firstMatch
+        guard alert.waitForExistence(timeout: 3) else { return }
+        for label in ["Allow While Using App", "Allow", "OK"] where alert.buttons[label].exists {
+            alert.buttons[label].tap()
+            return
+        }
+    }
+
     @MainActor
     private func runTour() {
         let app = XCUIApplication()

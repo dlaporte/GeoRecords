@@ -11,10 +11,17 @@ struct PhotoPicker: View {
     @State private var showCamera = false
     @State private var showSourceChoice = true
 
+    /// Region records carry the stored type name ("New Continent"); the prompt
+    /// should read "New Continent Record!", not "New New Continent Record!"
+    static func title(forRecordType type: String) -> String {
+        let name = type.hasPrefix("New ") ? String(type.dropFirst(4)) : type
+        return "🎉 New \(name) Record!"
+    }
+
     var body: some View {
         VStack(spacing: 20) {
             if showSourceChoice {
-                Text("🎉 New \(recordType) Record!")
+                Text(Self.title(forRecordType: recordType))
                     .font(.title2)
                     .fontWeight(.bold)
 

@@ -147,6 +147,12 @@ struct StatisticsView: View {
 
     /// One column on iPhone; as many 360-pt cards as fit on iPad and iPhone Duo open
     private var cardColumns: [GridItem] { StatsGrid.columns(for: layoutWidth) }
+    /// The scroll view's width, for how many card columns fit
+    @State private var windowWidth: CGFloat = 0
+    /// Two or more card columns fit: one grid for every card, no section headers
+    private var cardsTile: Bool {
+        layoutWidth == .regular && FlowingCardGrid().columnCount(for: windowWidth) > 1
+    }
     @State private var availableYears: [Int] = []
     @State private var availableMonths: [MonthSelection] = []
     @State private var dailyRecordsCache: [Int: [RecordHistoryEntry]] = [:]  // Day -> Records
@@ -165,6 +171,167 @@ struct StatisticsView: View {
     @State private var periodRegionCounts = RegionPeriodCounts(states: 0, countries: 0, continents: 0)
     @State private var recordsSetPoints: [CountPoint] = []
     @State private var regionGrowthPoints: [RegionGrowthPoint] = []
+
+    // MARK: - Cards
+
+    private let homeNotSetMessage = "Set your home location in Settings to see how far you've traveled relative to home."
+
+    /// Where two or more columns fit, one grid for every card: section headers would
+    /// restart the rows and leave odd cards alone on the left (the staircase the Duo
+    /// inner display and iPad portrait showed); a short last row stretches to fill
+    @ViewBuilder private var tiledCards: some View {
+        if settings.homeCoordinate == nil {
+            HomeNotSetCard(message: homeNotSetMessage)
+        }
+        FlowingCardGrid {
+            distanceChartCards
+            elevationCard
+            activityCards
+        }
+    }
+
+    /// One column with section headers: iPhones, and regular-width windows too narrow
+    /// for two columns (the Duo inner display upright, iPad two-thirds Split View)
+    @ViewBuilder private var sectionedCards: some View {
+        // Distance Section (relative to home)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Distance")
+                .font(.headline)
+                .padding(.horizontal)
+
+            if settings.homeCoordinate != nil {
+                LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
+                    distanceChartCards
+                }
+            } else {
+                // Home not set - show message
+                HomeNotSetCard(message: homeNotSetMessage)
+            }
+        }
+
+        // Elevation Section (relative to sea level)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Elevation")
+                .font(.headline)
+                .padding(.horizontal)
+
+            LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
+                elevationCard
+            }
+        }
+
+        // Activity Section (records set, regions over time)
+        if showRecordsSet || showRegions {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Activity")
+                    .font(.headline)
+                    .padding(.horizontal)
+
+                LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
+                    activityCards
+                }
+            }
+        }
+    }
+
+    /// The Distance cards, relative to home; none without a home
+    @ViewBuilder private var distanceChartCards: some View {
+        if settings.homeCoordinate != nil {
+            // N-S Chart (relative to home, in miles/km)
+            BidirectionalStatChartCard(
+                title: "North / South of Home",
+                summary: currentNSSummary,
+                unit: settings.unitSystem.distanceUnit,
+                positiveColor: .blue,
+                negativeColor: .blue.opacity(0.5),
+                positiveLabel: "N",
+                negativeLabel: "S",
+                data: chartDataForNS,
+                timeFrame: effectiveTimeFrame,
+                positiveRecordType: RecordType.north.rawValue,
+                negativeRecordType: RecordType.south.rawValue,
+                unitSystem: settings.unitSystem,
+                homeCoordinate: settings.homeCoordinate,
+                timeFrameFilter: currentTimeFrameFilter
+            )
+
+            // E-W Chart (relative to home, in miles/km)
+            BidirectionalStatChartCard(
+                title: "East / West of Home",
+                summary: currentEWSummary,
+                unit: settings.unitSystem.distanceUnit,
+                positiveColor: .orange,
+                negativeColor: .orange.opacity(0.5),
+                positiveLabel: "E",
+                negativeLabel: "W",
+                data: chartDataForEW,
+                timeFrame: effectiveTimeFrame,
+                positiveRecordType: RecordType.east.rawValue,
+                negativeRecordType: RecordType.west.rawValue,
+                unitSystem: settings.unitSystem,
+                homeCoordinate: settings.homeCoordinate,
+                timeFrameFilter: currentTimeFrameFilter
+            )
+
+            // Distance from Home Chart
+            StatChartCard(
+                title: "Furthest from Home",
+                summary: currentDistanceSummary,
+                unit: settings.unitSystem.distanceUnit,
+                color: .red,
+                data: chartDataForDistance,
+                timeFrame: effectiveTimeFrame,
+                recordTypeToQuery: RecordType.fromHome.rawValue,
+                unitSystem: settings.unitSystem,
+                homeCoordinate: settings.homeCoordinate,
+                timeFrameFilter: currentTimeFrameFilter
+            )
+        }
+    }
+
+    @ViewBuilder private var elevationCard: some View {
+        StatChartCard(
+            title: "Highest Elevation",
+            summary: currentElevationSummary,
+            unit: settings.unitSystem.elevationUnit,
+            color: .green,
+            data: chartDataForElevation,
+            timeFrame: effectiveTimeFrame,
+            recordTypeToQuery: RecordType.up.rawValue,
+            unitSystem: settings.unitSystem,
+            homeCoordinate: nil,
+            timeFrameFilter: currentTimeFrameFilter
+        )
+    }
+
+    /// Records Set only where a larger timeframe exists to count (never in Lifetime)
+    /// and something was counted; the strip already says when nothing was
+    private var showRecordsSet: Bool {
+        !StatsRecordCounts.countedTimeFrames(for: state.timeFrame).isEmpty
+            && countedRecords.values.reduce(0, +) > 0
+    }
+
+    private var showRegions: Bool {
+        regionGrowthPoints.contains(where: { $0.states + $0.countries > 0 })
+    }
+
+    @ViewBuilder private var activityCards: some View {
+        if showRecordsSet {
+            RecordsSetCard(points: recordsSetPoints, view: state.timeFrame,
+                           yearly: countedRecords[.year] ?? 0, lifetime: countedRecords[.allTime] ?? 0)
+        }
+
+        if showRegions {
+            RegionsGrowthCard(
+                points: regionGrowthPoints,
+                timeFrame: state.timeFrame,
+                totalStates: regionGrowthPoints.last?.states ?? 0,
+                totalCountries: regionGrowthPoints.last?.countries ?? 0,
+                newStates: state.timeFrame == .allTime ? 0 : periodRegionCounts.states,
+                newCountries: state.timeFrame == .allTime ? 0 : periodRegionCounts.countries
+            )
+        }
+    }
 
     var body: some View {
         @Bindable var state = state
@@ -211,127 +378,16 @@ struct StatisticsView: View {
                         // What the browsed period amounted to
                         PeriodSummaryStrip(text: periodSummaryText)
 
-                        // Distance Section (relative to home)
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text("Distance")
-                                .font(.headline)
-                                .padding(.horizontal)
-
-                            if settings.homeCoordinate != nil {
-                                LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
-                                // N-S Chart (relative to home, in miles/km)
-                                BidirectionalStatChartCard(
-                                    title: "North / South of Home",
-                                    summary: currentNSSummary,
-                                    unit: settings.unitSystem.distanceUnit,
-                                    positiveColor: .blue,
-                                    negativeColor: .blue.opacity(0.5),
-                                    positiveLabel: "N",
-                                    negativeLabel: "S",
-                                    data: chartDataForNS,
-                                    timeFrame: effectiveTimeFrame,
-                                    positiveRecordType: RecordType.north.rawValue,
-                                    negativeRecordType: RecordType.south.rawValue,
-                                    unitSystem: settings.unitSystem,
-                                    homeCoordinate: settings.homeCoordinate,
-                                    timeFrameFilter: currentTimeFrameFilter
-                                )
-
-                                // E-W Chart (relative to home, in miles/km)
-                                BidirectionalStatChartCard(
-                                    title: "East / West of Home",
-                                    summary: currentEWSummary,
-                                    unit: settings.unitSystem.distanceUnit,
-                                    positiveColor: .orange,
-                                    negativeColor: .orange.opacity(0.5),
-                                    positiveLabel: "E",
-                                    negativeLabel: "W",
-                                    data: chartDataForEW,
-                                    timeFrame: effectiveTimeFrame,
-                                    positiveRecordType: RecordType.east.rawValue,
-                                    negativeRecordType: RecordType.west.rawValue,
-                                    unitSystem: settings.unitSystem,
-                                    homeCoordinate: settings.homeCoordinate,
-                                    timeFrameFilter: currentTimeFrameFilter
-                                )
-
-                                // Distance from Home Chart
-                                StatChartCard(
-                                    title: "Furthest from Home",
-                                    summary: currentDistanceSummary,
-                                    unit: settings.unitSystem.distanceUnit,
-                                    color: .red,
-                                    data: chartDataForDistance,
-                                    timeFrame: effectiveTimeFrame,
-                                    recordTypeToQuery: RecordType.fromHome.rawValue,
-                                    unitSystem: settings.unitSystem,
-                                    homeCoordinate: settings.homeCoordinate,
-                                    timeFrameFilter: currentTimeFrameFilter
-                                )
-                                }
-                            } else {
-                                // Home not set - show message
-                                HomeNotSetCard(message: "Set your home location in Settings to see how far you've traveled relative to home.")
-                            }
-                        }
-
-                        // Elevation Section (relative to sea level)
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text("Elevation")
-                                .font(.headline)
-                                .padding(.horizontal)
-
-                            LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
-                            StatChartCard(
-                                title: "Highest Elevation",
-                                summary: currentElevationSummary,
-                                unit: settings.unitSystem.elevationUnit,
-                                color: .green,
-                                data: chartDataForElevation,
-                                timeFrame: effectiveTimeFrame,
-                                recordTypeToQuery: RecordType.up.rawValue,
-                                unitSystem: settings.unitSystem,
-                                homeCoordinate: nil,
-                                timeFrameFilter: currentTimeFrameFilter
-                            )
-                            }
-                        }
-
-                        // Activity Section (records set, regions over time). Records Set
-                        // only where a larger timeframe exists to count (never in Lifetime)
-                        // and something was counted; the strip already says when nothing was
-                        let showRecordsSet = !StatsRecordCounts.countedTimeFrames(for: state.timeFrame).isEmpty
-                            && countedRecords.values.reduce(0, +) > 0
-                        let showRegions = regionGrowthPoints.contains(where: { $0.states + $0.countries > 0 })
-                        if showRecordsSet || showRegions {
-                            VStack(alignment: .leading, spacing: 16) {
-                                Text("Activity")
-                                    .font(.headline)
-                                    .padding(.horizontal)
-
-                                LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
-                                if showRecordsSet {
-                                    RecordsSetCard(points: recordsSetPoints, view: state.timeFrame,
-                                                   yearly: countedRecords[.year] ?? 0, lifetime: countedRecords[.allTime] ?? 0)
-                                }
-
-                                if showRegions {
-                                    RegionsGrowthCard(
-                                        points: regionGrowthPoints,
-                                        timeFrame: state.timeFrame,
-                                        totalStates: regionGrowthPoints.last?.states ?? 0,
-                                        totalCountries: regionGrowthPoints.last?.countries ?? 0,
-                                        newStates: state.timeFrame == .allTime ? 0 : periodRegionCounts.states,
-                                        newCountries: state.timeFrame == .allTime ? 0 : periodRegionCounts.countries
-                                    )
-                                }
-                                }
-                            }
+                        if cardsTile {
+                            tiledCards
+                        } else {
+                            sectionedCards
                         }
                     }
                 }
                 .padding(.vertical)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
             .navigationTitle("Statistics")
             .onAppear {
                 // Clean up old daily records (keeps current + previous month)

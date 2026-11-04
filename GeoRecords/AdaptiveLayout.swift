@@ -44,6 +44,83 @@ enum StatsGrid {
     }
 }
 
+/// Rows of equal-width columns, as many as fit at the minimum width, for the Stats
+/// cards where they tile; a short last row stretches its cards across the full width
+/// so no cell is left empty. (One grid per section left every odd card alone on the
+/// left: the staircase the iPhone Duo inner display and iPad portrait showed.)
+struct FlowingCardGrid: Layout {
+    var minimumColumnWidth: CGFloat = 360
+    /// Cards add their own 16 pt side padding, so 48 pt shows between columns
+    var columnSpacing: CGFloat = 16
+    var rowSpacing: CGFloat = 16
+
+    /// Columns that fit: 1 under 736 pt (iPhones, the Duo inner display upright, iPad
+    /// two-thirds Split View), 2 at the Duo's 868 pt landscape window and iPad portrait,
+    /// 3 on an iPad in landscape. SwiftUI also probes with nil and infinite widths: 1.
+    func columnCount(for width: CGFloat?) -> Int {
+        guard let width, width.isFinite else { return 1 }
+        return max(1, Int(((width + columnSpacing) / (minimumColumnWidth + columnSpacing)).rounded(.down)))
+    }
+
+    /// Cell widths per row: full rows of `columnCount` cells, then a last row whose
+    /// cards share the width equally
+    func cellWidths(cardCount: Int, width: CGFloat?) -> [[CGFloat]] {
+        guard cardCount > 0 else { return [] }
+        let usable = usableWidth(width)
+        let columns = columnCount(for: width)
+        return stride(from: 0, to: cardCount, by: columns).map { start in
+            let cells = min(columns, cardCount - start)
+            let cell = (usable - CGFloat(cells - 1) * columnSpacing) / CGFloat(cells)
+            return Array(repeating: cell, count: cells)
+        }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = rows(width: proposal.width, subviews: subviews)
+        let height = rows.reduce(0) { $0 + $1.height } + CGFloat(max(0, rows.count - 1)) * rowSpacing
+        return CGSize(width: usableWidth(proposal.width), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(width: bounds.width, subviews: subviews) {
+            var x = bounds.minX
+            for index in row.cards {
+                subviews[index].place(at: CGPoint(x: x, y: y), anchor: .topLeading,
+                                      proposal: ProposedViewSize(width: row.cellWidth, height: nil))
+                x += row.cellWidth + columnSpacing
+            }
+            y += row.height + rowSpacing
+        }
+    }
+
+    private struct Row {
+        let cards: Range<Int>
+        let cellWidth: CGFloat
+        /// The tallest card at the cell width; cards keep their natural height, top-aligned
+        let height: CGFloat
+    }
+
+    /// The same rows for measuring and placing, so the two can't disagree
+    private func rows(width: CGFloat?, subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var start = 0
+        for widths in cellWidths(cardCount: subviews.count, width: width) {
+            let cards = start..<(start + widths.count)
+            let cellWidth = widths[0]
+            let height = cards.map { subviews[$0].sizeThatFits(ProposedViewSize(width: cellWidth, height: nil)).height }.max() ?? 0
+            rows.append(Row(cards: cards, cellWidth: cellWidth, height: height))
+            start = cards.upperBound
+        }
+        return rows
+    }
+
+    private func usableWidth(_ width: CGFloat?) -> CGFloat {
+        guard let width, width.isFinite else { return minimumColumnWidth }
+        return width
+    }
+}
+
 /// Sidebar column widths for a NavigationSplitView. Under 720 pt (iPhone Duo inner
 /// display 669, iPad two-thirds Split View 694) a 380 pt sidebar leaves too little
 /// for the detail and iOS overlays the sidebar instead of tiling; 300 pt leaves at

@@ -49,4 +49,49 @@ struct AdaptiveLayoutTests {
             Issue.record("regular width should use an adaptive column")
         }
     }
+
+    // Where the Stats cards tile they share one grid: rows of equal columns, as many as
+    // fit at 360 pt (the LazyVGrid rule), so no section restarts a row and leaves a card alone
+    @Test func flowingGridFitsAsManyColumnsAsTheAdaptiveGrid() async throws {
+        let grid = FlowingCardGrid()
+        #expect(grid.columnCount(for: 393) == 1)      // iPhone 16 Pro
+        #expect(grid.columnCount(for: 669) == 1)      // iPhone Duo inner display, upright
+        #expect(grid.columnCount(for: 694) == 1)      // iPad two-thirds Split View
+        #expect(grid.columnCount(for: 735) == 1)
+        #expect(grid.columnCount(for: 736) == 2)      // two 360 pt columns and a 16 pt gap
+        #expect(grid.columnCount(for: 834) == 2)      // iPad Pro 11" portrait
+        #expect(grid.columnCount(for: 868) == 2)      // iPhone Duo inner display, landscape
+        #expect(grid.columnCount(for: 1194) == 3)     // iPad Pro 11" landscape
+        #expect(grid.columnCount(for: 1366) == 3)     // iPad Pro 13" landscape
+        #expect(grid.columnCount(for: nil) == 1)      // SwiftUI's unspecified probe
+        #expect(grid.columnCount(for: .infinity) == 1)
+    }
+
+    // A short last row stretches its cards across the width instead of leaving cells empty
+    @Test func shortLastRowStretchesAcrossTheWidth() async throws {
+        let grid = FlowingCardGrid()
+        #expect(grid.cellWidths(cardCount: 5, width: 868) == [[426, 426], [426, 426], [868]])        // Lifetime
+        #expect(grid.cellWidths(cardCount: 6, width: 868) == [[426, 426], [426, 426], [426, 426]])   // This Year
+        let landscape = grid.cellWidths(cardCount: 5, width: 1194)
+        #expect(landscape.count == 2)
+        #expect(landscape[0].count == 3)
+        #expect(landscape[0].allSatisfy { abs($0 - 387.33) < 0.5 })
+        #expect(landscape[1] == [589, 589])
+        #expect(grid.cellWidths(cardCount: 2, width: 1194) == [[589, 589]])   // home not set: Elevation and Regions
+        #expect(grid.cellWidths(cardCount: 3, width: 669) == [[669], [669], [669]])
+        #expect(grid.cellWidths(cardCount: 0, width: 868).isEmpty)
+        #expect(grid.cellWidths(cardCount: 2, width: nil) == [[360], [360]])
+    }
+
+    @Test func flowingGridRowsFillTheWidthExactly() async throws {
+        let grid = FlowingCardGrid()
+        for width: CGFloat in [393, 669, 736, 868, 1194, 1366] {
+            for count in 1...7 {
+                for row in grid.cellWidths(cardCount: count, width: width) {
+                    let total = row.reduce(0, +) + CGFloat(row.count - 1) * grid.columnSpacing
+                    #expect(abs(total - width) < 0.01, "\(count) cards at \(width)")
+                }
+            }
+        }
+    }
 }

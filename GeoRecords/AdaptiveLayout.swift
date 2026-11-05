@@ -144,6 +144,61 @@ extension View {
     }
 }
 
+/// The navigation stack of a tab with a single column (Stats, Settings). Under the
+/// regular-width top tab bar, iPadOS places a plain NavigationStack's large title
+/// 14 pt lower than a NavigationSplitView column's, so these tabs looked sunk beside
+/// Records, Regions and History; hosting the stack as a split view's only column
+/// lines the titles up. On compact width a split view would collapse to its empty
+/// sidebar, so iPhones and the folded Duo keep the plain stack. Presentations
+/// (sheets, alerts) belong outside this view: its branch changes on fold.
+struct SingleColumnTab<Content: View>: View {
+    @Environment(\.layoutWidth) private var layoutWidth
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        if layoutWidth == .regular {
+            NavigationSplitView(columnVisibility: .constant(.detailOnly)) {
+                EmptyView()
+                    .toolbar(removing: .sidebarToggle)  // the only placement that removes it
+            } detail: {
+                NavigationStack { content }
+                    .background(SidebarSwipeDisabler())
+            }
+            .navigationSplitViewStyle(.balanced)
+        } else {
+            NavigationStack { content }
+        }
+    }
+}
+
+/// Turns off the split view's leading-edge swipe, which slides the empty sidebar in
+/// over the column even with the visibility bound to a constant (a zero-width sidebar
+/// doesn't stop it either); SwiftUI has no switch for it, UIKit does
+private struct SidebarSwipeDisabler: UIViewRepresentable {
+    func makeUIView(context: Context) -> Finder { Finder() }
+    func updateUIView(_ uiView: Finder, context: Context) {}
+
+    final class Finder: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil else { return }
+            disableSwipe()
+            DispatchQueue.main.async { [weak self] in self?.disableSwipe() }  // the split view may attach later
+        }
+
+        private func disableSwipe() {
+            var responder: UIResponder? = self
+            while let current = responder {
+                if let split = current as? UISplitViewController {
+                    split.presentsWithGesture = false
+                    return
+                }
+                responder = current.next
+            }
+        }
+    }
+}
+
 // MARK: - Readable width
 
 private struct ReadableWidth: ViewModifier {

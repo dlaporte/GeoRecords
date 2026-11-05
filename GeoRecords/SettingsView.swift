@@ -78,7 +78,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        SingleColumnTab {
             ScrollViewReader { proxy in
             Form {
                 // MARK: - Home Location Section
@@ -519,117 +519,119 @@ struct SettingsView: View {
             .background(Color(UIColor.systemGroupedBackground))
             } // ScrollViewReader
             .navigationTitle("Settings")
-            .task {
-                // Check notification permission status
-                let settings = await UNUserNotificationCenter.current().notificationSettings()
-                notificationPermissionStatus = settings.authorizationStatus
-            }
-            .sheet(isPresented: $showClearRecordsSheet) {
-                ClearRecordsSheet(
-                    deleteFromiCloud: $deleteFromiCloud,
-                    persistenceController: persistenceController,
-                    onComplete: {
-                        showClearRecordsSheet = false
-                        // Route through the restore-first gate that ContentView owns:
-                        // check iCloud FIRST, prompt for restore/scan only if that fails
-                        Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: shortDelayNanos)
-                            NotificationCenter.default.post(name: .dataRestoreCheckNeeded, object: nil)
-                        }
-                    },
-                    onCancel: {
-                        showClearRecordsSheet = false
-                    },
-                    onFullReset: {
-                        showClearRecordsSheet = false
-                        // Small delay to let sheet dismiss, then show setup wizard
-                        Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: shortDelayNanos)
-                            showSetupWizard = true
-                        }
+        }
+        // Presentations stay outside the wrapper: its stack is rebuilt on fold (Duo)
+        // and resize, and a sheet attached inside would be dismissed and shown again
+        .task {
+            // Check notification permission status
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            notificationPermissionStatus = settings.authorizationStatus
+        }
+        .sheet(isPresented: $showClearRecordsSheet) {
+            ClearRecordsSheet(
+                deleteFromiCloud: $deleteFromiCloud,
+                persistenceController: persistenceController,
+                onComplete: {
+                    showClearRecordsSheet = false
+                    // Route through the restore-first gate that ContentView owns:
+                    // check iCloud FIRST, prompt for restore/scan only if that fails
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: shortDelayNanos)
+                        NotificationCenter.default.post(name: .dataRestoreCheckNeeded, object: nil)
                     }
-                )
+                },
+                onCancel: {
+                    showClearRecordsSheet = false
+                },
+                onFullReset: {
+                    showClearRecordsSheet = false
+                    // Small delay to let sheet dismiss, then show setup wizard
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: shortDelayNanos)
+                        showSetupWizard = true
+                    }
+                }
+            )
+            .environmentObject(settings)
+            .presentationDetents([.height(440)])
+        }
+        .fullScreenCover(isPresented: $showSetupWizard) {
+            SetupWizardView()
                 .environmentObject(settings)
-                .presentationDetents([.height(440)])
-            }
-            .fullScreenCover(isPresented: $showSetupWizard) {
-                SetupWizardView()
-                    .environmentObject(settings)
-            }
-            .alert("Photo Access Required", isPresented: $showPermissionAlert) {
-                Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Please grant photo library access in Settings to import records from your photos.")
-            }
-            .sheet(isPresented: $showImportView, onDismiss: {
-                // Discard results AFTER the sheet is torn down (never while the wizard is
-                // mounted — views whose selections index the cleared arrays would crash),
-                // so the next Import Photos starts fresh at the options screen
-                photoScanner.cancelAndReset()
-            }) {
-                // Scan starts from the options screen (entire library or since a chosen date)
-                ImportPreviewView(allowScanOptions: true)
-                    .environmentObject(photoScanner)
-                    .environmentObject(settings)
-                    .interactiveDismissDisabled()  // Prevent accidental swipe-down dismissal
-            }
-            .sheet(isPresented: $showManualImport) {
-                ManualRecordImportView()
-                    .environmentObject(settings)
-            }
-            .sheet(isPresented: $showBackupShareSheet) {
-                if let url = backupURL {
-                    ShareSheet(activityItems: [url])
+        }
+        .alert("Photo Access Required", isPresented: $showPermissionAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
                 }
             }
-            .fileImporter(
-                isPresented: $showImportFilePicker,
-                allowedContentTypes: [.georecordsBackup, .json],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Please grant photo library access in Settings to import records from your photos.")
+        }
+        .sheet(isPresented: $showImportView, onDismiss: {
+            // Discard results AFTER the sheet is torn down (never while the wizard is
+            // mounted — views whose selections index the cleared arrays would crash),
+            // so the next Import Photos starts fresh at the options screen
+            photoScanner.cancelAndReset()
+        }) {
+            // Scan starts from the options screen (entire library or since a chosen date)
+            ImportPreviewView(allowScanOptions: true)
+                .environmentObject(photoScanner)
+                .environmentObject(settings)
+                .interactiveDismissDisabled()  // Prevent accidental swipe-down dismissal
+        }
+        .sheet(isPresented: $showManualImport) {
+            ManualRecordImportView()
+                .environmentObject(settings)
+        }
+        .sheet(isPresented: $showBackupShareSheet) {
+            if let url = backupURL {
+                ShareSheet(activityItems: [url])
+            }
+        }
+        .fileImporter(
+            isPresented: $showImportFilePicker,
+            allowedContentTypes: [.georecordsBackup, .json],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
 
-                    // Copy while the picker's security scope is still valid, then
-                    // confirm like the other restore paths do
-                    do {
-                        let staged = try BackupManager.stageImportedFile(from: url)
-                        pendingBackupURL = staged
-                        pendingBackupInfo = BackupManager.shared.getBackupInfo(from: staged)
-                        showImportConfirm = true
-                    } catch {
-                        importSucceeded = false
-                        importResultMessage = "Could not read the selected file: \(error.localizedDescription)"
-                        showImportResult = true
-                    }
-                case .failure(let error):
+                // Copy while the picker's security scope is still valid, then
+                // confirm like the other restore paths do
+                do {
+                    let staged = try BackupManager.stageImportedFile(from: url)
+                    pendingBackupURL = staged
+                    pendingBackupInfo = BackupManager.shared.getBackupInfo(from: staged)
+                    showImportConfirm = true
+                } catch {
                     importSucceeded = false
-                    importResultMessage = "Error selecting file: \(error.localizedDescription)"
+                    importResultMessage = "Could not read the selected file: \(error.localizedDescription)"
                     showImportResult = true
                 }
+            case .failure(let error):
+                importSucceeded = false
+                importResultMessage = "Error selecting file: \(error.localizedDescription)"
+                showImportResult = true
             }
-            .alert("Backup Error", isPresented: $showBackupError) {
-                Button("OK") {}
-            } message: {
-                Text("Failed to create backup. Please try again.")
-            }
-            .alert("Restore from Backup?", isPresented: $showImportConfirm) {
-                Button("Restore") { performBackupImport() }
-                Button("Cancel", role: .cancel) { discardPendingBackup() }
-            } message: {
-                Text(BackupManager.restoreConfirmationMessage(for: pendingBackupInfo))
-            }
-            .alert(BackupManager.importAlertTitle(succeeded: importSucceeded), isPresented: $showImportResult) {
-                Button("OK") {}
-            } message: {
-                Text(importResultMessage)
-            }
+        }
+        .alert("Backup Error", isPresented: $showBackupError) {
+            Button("OK") {}
+        } message: {
+            Text("Failed to create backup. Please try again.")
+        }
+        .alert("Restore from Backup?", isPresented: $showImportConfirm) {
+            Button("Restore") { performBackupImport() }
+            Button("Cancel", role: .cancel) { discardPendingBackup() }
+        } message: {
+            Text(BackupManager.restoreConfirmationMessage(for: pendingBackupInfo))
+        }
+        .alert(BackupManager.importAlertTitle(succeeded: importSucceeded), isPresented: $showImportResult) {
+            Button("OK") {}
+        } message: {
+            Text(importResultMessage)
         }
     }
 

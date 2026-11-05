@@ -58,6 +58,26 @@ final class GeoRecordsUITests: XCTestCase {
         tap(app, "Next"); sleep(1); snap(app, "W7-photo-import")
     }
 
+    /// Stats and Settings are hosted as a split view's only column at regular width
+    /// (SingleColumnTab); a drag from the leading edge must not reveal the empty
+    /// sidebar. Captures before and after the drag, for eyeballing on the iPad.
+    @MainActor
+    func testSingleColumnTabsIgnoreEdgeSwipe() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["GEORECORDS_SHOW_SIZE_CLASS"] = "1"
+        app.launch()
+        sleep(3)
+        for tab in ["Stats", "Settings"] {
+            selectTab(app, tab); sleep(2)
+            snap(app, "E1-\(tab)-before")
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.002, dy: 0.5))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(forDuration: 0.1, thenDragTo: end)
+            sleep(2)
+            snap(app, "E2-\(tab)-after-edge-drag")
+        }
+    }
+
     /// Taps through a system permission alert (location, notifications) if one is up
     private func dismissSystemAlert() {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")

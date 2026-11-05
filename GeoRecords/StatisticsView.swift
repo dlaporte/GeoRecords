@@ -335,7 +335,7 @@ struct StatisticsView: View {
 
     var body: some View {
         @Bindable var state = state
-        NavigationStack {
+        SingleColumnTab {
             ScrollView {
                 VStack(spacing: 20) {
                     // Time Frame Picker with year selection (shared with Records page)

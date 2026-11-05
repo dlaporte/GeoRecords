@@ -110,9 +110,12 @@ final class GeoRecordsUITests: XCTestCase {
 
         app.launch()
         sleep(3)
-        app.tap()  // lets the interruption monitor dismiss the notifications prompt
+        // Lets the interruption monitor dismiss the notifications prompt; off-centre,
+        // since the screen's middle can be a record's photo (tapping it opens the viewer)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.04)).tap()
         sleep(1)
         snap(app, "01-records-lifetime")
+        openFirstCard(app); snap(app, "01b-record-opened"); goBack(app)
 
         tap(app, "This Month"); sleep(2); snap(app, "02-records-month")
         tap(app, "This Year"); sleep(2); snap(app, "03-records-year")
@@ -125,6 +128,7 @@ final class GeoRecordsUITests: XCTestCase {
         tap(app, "This Month"); sleep(3); snap(app, "07b-stats-month")
 
         selectTab(app, "Regions"); sleep(4); snap(app, "08-regions-states")
+        openFirstCard(app); snap(app, "08b-region-opened"); goBack(app)
         if app.buttons["Show regions not yet visited"].waitForExistence(timeout: 3) {
             app.buttons["Show regions not yet visited"].tap(); sleep(3); snap(app, "09-regions-not-yet")
             app.buttons["Show visited"].tap(); sleep(1)
@@ -137,6 +141,25 @@ final class GeoRecordsUITests: XCTestCase {
         selectTab(app, "History"); sleep(3); snap(app, "12-history")
         selectTab(app, "Settings"); sleep(2); snap(app, "13-settings")
         app.swipeUp(); sleep(1); snap(app, "14-settings-scrolled")
+    }
+
+    /// Taps the card under the map: on a phone it pushes the record's page, on an
+    /// iPad it selects the card beside the detail column (the capture then shows
+    /// the same screen)
+    private func openFirstCard(_ app: XCUIApplication) {
+        let card = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.72))
+        card.tap()
+        sleep(3)
+    }
+
+    /// Pops a pushed page, if one is up (the back button is a bare chevron, still
+    /// labelled Back); on an iPad nothing was pushed
+    private func goBack(_ app: XCUIApplication) {
+        let back = app.navigationBars.buttons["Back"]
+        if back.waitForExistence(timeout: 2) {
+            back.tap()
+            sleep(2)
+        }
     }
 
     /// Selects a tab wherever the platform draws it: the iPhone tab bar, the iPad top

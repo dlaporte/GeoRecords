@@ -27,7 +27,8 @@ struct CardSizing {
     var valueFontSize: CGFloat { isCompact ? 24 : 36 }
     var photoSize: CGFloat { isCompact ? 80 : 120 }
     var cardPadding: CGFloat { isCompact ? 12 : 16 }
-    var horizontalPadding: CGFloat { isCompact ? 20 : 26 }
+    /// The same 16 pt the picker, map and detail rows keep from the edge
+    var horizontalPadding: CGFloat { 16 }
     var contentSpacing: CGFloat { isCompact ? 6 : 12 }
 }
 

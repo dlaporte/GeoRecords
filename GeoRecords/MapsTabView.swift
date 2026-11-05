@@ -155,11 +155,6 @@ struct VisitedRegionCard: View {
 
     @Environment(\.cardSizing) private var sizing
 
-    /// "State" / "Country" / "Continent" instead of the stored "New State"
-    private var regionKind: String {
-        detail.recordType.replacingOccurrences(of: "New ", with: "")
-    }
-
     private var firstVisitedText: String {
         "First visited \(detail.timestamp.formatted(.dateTime.month(.abbreviated).year()))"
     }
@@ -170,9 +165,15 @@ struct VisitedRegionCard: View {
         return VisitLog.text(count: summary.count, last: summary.last)
     }
 
+    /// Distance from home to where the region was first entered
+    private var fromHomeText: String? {
+        FormatUtils.formatDistanceFromHome(from: detail.coordinate, to: settings.homeCoordinate, unitSystem: settings.unitSystem)
+            .map { "\($0) from home" }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: sizing.cardSpacing) {
-            // Header with icon and region info
+            // The region itself heads the card; the segmented control names its kind
             HStack(spacing: sizing.isCompact ? 8 : 12) {
                 Image(systemName: FormatUtils.iconForRecordType(detail.recordType))
                     .font(sizing.isCompact ? .title3 : .title)
@@ -180,10 +181,17 @@ struct VisitedRegionCard: View {
                     .frame(width: sizing.iconSize, height: sizing.iconSize)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(regionKind)
-                        .font(sizing.isCompact ? .caption : .headline)
-                        .fontWeight(.semibold)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        if let flag = FormatUtils.flagEmoji(for: detail.regionCode, recordType: detail.recordType) {
+                            Text(flag)
+                                .font(sizing.isCompact ? .body : .title3)
+                        }
+                        Text(detail.locationName ?? "Unknown")
+                            .font(sizing.isCompact ? .caption : .headline)
+                            .fontWeight(.semibold)
+                            .minimumScaleFactor(0.7)
+                            .lineLimit(1)
+                    }
                     Text(firstVisitedText)
                         .font(sizing.isCompact ? .caption2 : .caption)
                         .foregroundColor(.secondary)
@@ -199,36 +207,27 @@ struct VisitedRegionCard: View {
 
             // Main content with photo on the right
             HStack(alignment: .top, spacing: sizing.isCompact ? 8 : 16) {
-                // Left side - region name and details
                 VStack(alignment: .leading, spacing: sizing.contentSpacing) {
-                    // Region name as the "value"
-                    VStack(alignment: .leading, spacing: sizing.isCompact ? 2 : 4) {
-                        if !sizing.isCompact {
-                            Text("Region")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        HStack(spacing: 6) {
-                            if let flag = FormatUtils.flagEmoji(for: detail.regionCode, recordType: detail.recordType) {
-                                Text(flag)
-                                    .font(.system(size: sizing.isCompact ? 18 : 24))
+                    // Repeat visits ("3 visits · last Aug 2026")
+                    if let visitsText {
+                        VStack(alignment: .leading, spacing: 2) {
+                            if !sizing.isCompact {
+                                Text("Visits")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
-                            Text(detail.locationName ?? "Unknown")
-                                .font(.system(size: sizing.isCompact ? 20 : 28, weight: .bold, design: .default))
-                                .foregroundColor(FormatUtils.colorForRecordType(detail.recordType))
-                                .minimumScaleFactor(0.7)
-                                .lineLimit(2)
+                            Text(visitsText)
+                                .font(sizing.isCompact ? .caption2 : .subheadline)
                         }
                     }
 
-                    // Repeat visits ("3 visits · last Aug 2026")
-                    if !sizing.isCompact, let visitsText {
+                    if !sizing.isCompact, let fromHomeText {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Visits")
+                            Text("From Home")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text(visitsText)
-                                .font(.subheadline)
+                            Text(fromHomeText)
+                                .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
@@ -259,13 +258,6 @@ struct VisitedRegionCard: View {
                 .fill(Color(UIColor.secondarySystemBackground))
         )
         .padding(.horizontal, sizing.horizontalPadding)
-        .onAppear {
-            if detail.photoAssetIdentifier != nil || detail.photoData != nil {
-                debugLog("📸 Region card '\(detail.locationName ?? "Unknown")' has photo - localId: \(detail.photoAssetIdentifier ?? "nil"), cloudId: \(detail.photoCloudIdentifier ?? "nil")")
-            } else {
-                debugLog("📸 Region card '\(detail.locationName ?? "Unknown")' has NO photo identifier")
-            }
-        }
     }
 
 }
@@ -301,7 +293,8 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
 
     @EnvironmentObject private var settings: SettingsManager
     @Environment(RegionsTabState.self) private var state
-    @Environment(\.layoutWidth) private var layoutWidth
+    @Environment(\.splitLayoutWidth) private var layoutWidth
+    @Environment(\.foldDivided) private var foldDivided
     @Environment(\.cardSizing) private var sizing
     @State private var currentCardIndex = 0
     @State private var selectedDetail: RecordDetail?
@@ -309,7 +302,6 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
     @State private var showWidgetViewSetter = false
     @State private var callout: UnvisitedCallout?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var detailExpanded = true
     @State private var cameraOverride: MKCoordinateRegion?
     @State private var distancesByCode: [String: Double] = [:]
 
@@ -417,6 +409,9 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
                     .padding(.top, 12)
                     .padding(.horizontal, 12)
             }
+            .mapCard()
+            .padding(.top, 12)
+            .minimalBackButton()
 
             // Cards, or the list of what is left
             if state.showNotYet {
@@ -448,7 +443,7 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
                 .frame(width: sizing.isCompact ? 360 : nil)
                 .frame(maxWidth: .infinity)
                 .frame(height: sizing.isCompact ? nil : cardTabViewHeight)
-                .padding(.vertical, 10)
+                .padding(.vertical, 12)
                 .navigationDestination(isPresented: $navigateToDetail) {
                     if let detail = selectedDetail {
                         RecordDetailView(record: detail)
@@ -482,15 +477,13 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
                 }
             }
             .navigationTitle("Regions")
-            .navigationSplitViewColumnWidth(SidebarWidth(minimum: 340, ideal: 380, maximum: 440))
+            .navigationSplitViewColumnWidth(SidebarWidth(minimum: 340, ideal: 380, maximum: 440), unlessFoldDivided: foldDivided)
         } detail: {
-            GeometryReader { geometry in
-                VStack(spacing: 0) {
-                    mapPane
-                    if !state.showNotYet, let region = focusedRegion {
-                        detailPanel(for: region, height: geometry.size.height * 0.4)
-                    }
-                }
+            if !state.showNotYet, let region = focusedRegion {
+                RecordDetailView(record: region, style: .column, map: AnyView(mapPane))
+                    .id(region.id)
+            } else {
+                mapPane
             }
         }
         .navigationSplitViewStyle(.balanced)
@@ -609,35 +602,6 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
             .onChange(of: currentCardIndex) { _, index in
                 if let id = regions[safe: index]?.id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
             }
-        }
-    }
-
-    /// The selected region's detail, collapsible so the map can take the column
-    @ViewBuilder
-    private func detailPanel(for region: RecordDetail, height: CGFloat) -> some View {
-        Divider()
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                detailExpanded.toggle()
-            }
-        } label: {
-            HStack {
-                Text(region.locationName ?? region.recordType)
-                    .font(.headline)
-                Spacer()
-                Image(systemName: detailExpanded ? "chevron.down" : "chevron.up")
-                    .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(detailExpanded ? "Hide region details" : "Show region details")
-        if detailExpanded {
-            RecordDetailView(record: region)
-                .id(region.id)
-                .frame(height: height)
         }
     }
 

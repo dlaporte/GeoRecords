@@ -32,8 +32,15 @@ enum LayoutWidth: Equatable {
     /// `windowWidth` nil means unmeasured (previews, a view outside the tab view):
     /// the size class alone decides
     init(horizontal: UserInterfaceSizeClass?, windowWidth: CGFloat?) {
+        self.init(horizontal: horizontal, windowWidth: windowWidth, foldDivided: false)
+    }
+
+    /// `foldDivided`: the iPhone Duo held upright and partially folded, like a book.
+    /// Its 669 pt display is too narrow to tile flat, but along the fold the system
+    /// shows a split view as two even pages, so the list-and-detail layouts come back
+    init(horizontal: UserInterfaceSizeClass?, windowWidth: CGFloat?, foldDivided: Bool) {
         let wideEnough = windowWidth.map { $0 >= Self.minimumRegularWidth } ?? true
-        self = horizontal == .regular && wideEnough ? .regular : .compact
+        self = horizontal == .regular && (wideEnough || foldDivided) ? .regular : .compact
     }
 }
 
@@ -42,11 +49,29 @@ extension EnvironmentValues {
     /// where nothing measured it
     @Entry var windowWidth: CGFloat? = nil
 
+    /// The scene window's height, measured alongside the width
+    @Entry var windowHeight: CGFloat? = nil
+
+    /// Whether the window is currently divided by an active fold (the Duo's book
+    /// pose); false on every other device and whenever the Duo is flat
+    @Entry var foldDivided: Bool = false
+
+    /// Whether the device has a hinge at all (the Duo), from the hinge API; false
+    /// before iOS 27.1 and on every other device
+    @Entry var deviceHasHinge: Bool = false
+
     /// Regular on iPad, iPhone Duo open in landscape and Max phones in landscape;
     /// compact elsewhere, including the Duo upright, one-third and two-thirds
     /// Split View and Slide Over. A sheet's own compact size class wins.
     var layoutWidth: LayoutWidth {
         LayoutWidth(horizontal: horizontalSizeClass, windowWidth: windowWidth)
+    }
+
+    /// `layoutWidth` plus the fold: the Records and Regions split views also tile in
+    /// the Duo's book pose. Stats, History and Settings keep `layoutWidth`, spanning
+    /// the crease as continuous content
+    var splitLayoutWidth: LayoutWidth {
+        LayoutWidth(horizontal: horizontalSizeClass, windowWidth: windowWidth, foldDivided: foldDivided)
     }
 
     /// Card metrics for this view's height class
@@ -152,8 +177,65 @@ struct SidebarWidth: Equatable {
 }
 
 extension View {
-    func navigationSplitViewColumnWidth(_ width: SidebarWidth) -> some View {
-        navigationSplitViewColumnWidth(min: width.minimum, ideal: width.ideal, max: width.maximum)
+    /// Applies the widths unless the window is divided by a fold: in the Duo's book
+    /// pose the system splits the columns evenly along the crease (334 pt pages), and
+    /// a 340 pt minimum would fight it
+    @ViewBuilder
+    func navigationSplitViewColumnWidth(_ width: SidebarWidth, unlessFoldDivided foldDivided: Bool = false) -> some View {
+        if foldDivided {
+            self
+        } else {
+            navigationSplitViewColumnWidth(min: width.minimum, ideal: width.ideal, max: width.maximum)
+        }
+    }
+}
+
+/// How a split view's detail column lays out the record below its heading and map
+enum DetailColumnStyle: Equatable {
+    /// The photo beside the detail cards (iPads in landscape)
+    case wide
+    /// The photo above the detail cards (iPad portrait, the Duo in landscape, a
+    /// book-pose page)
+    case stacked
+
+    /// Two columns of a 4:3 photo and readable rows need about this much
+    static let minimumWideWidth: CGFloat = 720
+    /// A panel shorter than this cannot show a photo and a row
+    static let minimumPanelHeight: CGFloat = 300
+
+    static func style(forColumnWidth width: CGFloat) -> DetailColumnStyle {
+        width >= minimumWideWidth ? .wide : .stacked
+    }
+
+    /// The panel's share of the height under the heading: 40% when the photo sits
+    /// beside the rows, 60% when it sits above them, never under 300 pt; the map
+    /// gets what remains
+    static func panelHeight(forColumnHeight height: CGFloat, style: DetailColumnStyle) -> CGFloat {
+        let share: CGFloat = style == .wide ? 0.4 : 0.6
+        return min(max(height * share, minimumPanelHeight), height)
+    }
+}
+
+/// Where a split view's detail column keeps share and delete: trailing, as a
+/// navigation bar normally does, except on the Duo in landscape, where the window
+/// has no top tab bar and its trailing edge sits against the display's clock and
+/// tab rail. Only a hinged device under 720 pt tall is that window; the book pose
+/// (951 tall) and every iPad stay trailing
+enum DetailActionsPlacement {
+    static func leading(hasHinge: Bool, windowHeight: CGFloat?) -> Bool {
+        guard hasHinge, let windowHeight else { return false }
+        return windowHeight < LayoutWidth.minimumRegularWidth
+    }
+}
+
+/// A place name that would wrap breaks after its first comma instead:
+/// "Shinjuku, Tokyo, Japan" becomes "Shinjuku," over "Tokyo, Japan"
+enum PlaceName {
+    static func lines(_ name: String) -> (first: String, rest: String)? {
+        guard let comma = name.firstIndex(of: ",") else { return nil }
+        let rest = name[name.index(after: comma)...].trimmingCharacters(in: .whitespaces)
+        guard !rest.isEmpty else { return nil }
+        return (String(name[...comma]), rest)
     }
 }
 
@@ -209,6 +291,55 @@ private struct SidebarSwipeDisabler: UIViewRepresentable {
                 responder = current.next
             }
         }
+    }
+}
+
+// MARK: - Map card
+
+extension View {
+    /// A tab screen's map strip as a rounded card inside the content margins, flush
+    /// with the picker above and the cards below (and clear of the Duo's tab rail,
+    /// which the safe area already excludes)
+    func mapCard() -> some View {
+        clipShape(RoundedRectangle(cornerRadius: 20))
+            .padding(.horizontal)
+    }
+}
+
+// MARK: - Minimal back button
+
+/// Pages pushed from this view show the back button as a chevron alone, which
+/// frees the title room on the folded Duo. SwiftUI has no modifier for it; UIKit's
+/// `backButtonDisplayMode` on the root's navigation item is what the pushed page reads
+struct MinimalBackButton: UIViewRepresentable {
+    func makeUIView(context: Context) -> Finder { Finder() }
+    func updateUIView(_ uiView: Finder, context: Context) {}
+
+    final class Finder: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil else { return }
+            minimize()
+            DispatchQueue.main.async { [weak self] in self?.minimize() }
+        }
+
+        private func minimize() {
+            var responder: UIResponder? = self
+            while let current = responder {
+                if let controller = current as? UIViewController, controller.navigationController != nil {
+                    controller.navigationItem.backButtonDisplayMode = .minimal
+                    return
+                }
+                responder = current.next
+            }
+        }
+    }
+}
+
+extension View {
+    /// Pages pushed from here get a chevron-only back button
+    func minimalBackButton() -> some View {
+        background(MinimalBackButton())
     }
 }
 

@@ -170,6 +170,7 @@ struct HistoryView: View {
                 Divider()
                 compactContent
             }
+            .minimalBackButton()
             .searchable(text: $state.searchText, prompt: "Type or place")
             .searchFocused($isSearchFocused)
             .navigationTitle("History (\(filteredEntries.count))")

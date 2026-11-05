@@ -3,15 +3,31 @@ import CoreLocation
 import MapKit
 import PhotosUI
 
+/// How a record's detail is hosted
+enum DetailStyle: Equatable {
+    /// A pushed page (iPhone, the Duo folded or upright, History's push): the photo
+    /// or the map first, then the header row and the cards
+    case page
+    /// A split view's detail column (iPad, the Duo in landscape or book pose): the
+    /// header row as the heading, the tab's overview map, then the panel
+    case column
+}
+
 /// Shared content view for displaying record details
-/// Used by both RecordDetailView and HistoryDetailView
+/// Used by RecordDetailView (pages and columns) and HistoryDetailView
 struct DetailContentView: View {
     let record: RecordDetail
     let onSaveNotes: (String?) -> Void
     let onSaveLocationName: (String?) -> Void
     var onSavePhoto: ((PHAsset) -> Void)? = nil
+    /// A pushed page, or a split view's detail column (with the tab's overview map)
+    var style: DetailStyle = .page
+    /// The overview map a column shows between its heading and the panel
+    var map: AnyView? = nil
 
     @EnvironmentObject var settings: SettingsManager
+    @State private var contentSize: CGSize = .zero
+    @State private var headingHeight: CGFloat = 0
 
     @State private var isEditingNotes = false
     @State private var notesText: String = ""
@@ -48,21 +64,12 @@ struct DetailContentView: View {
         record.timeFrame.abbreviation
     }
 
-    private var timeFrameLabel: String {
-        record.timeFrame.recordLabel
-    }
-
     private var formattedDate: String {
         fullWeekdayDateFormatter.string(from: record.timestamp)
     }
 
     private var formattedTime: String {
         time12Formatter.string(from: record.timestamp)
-    }
-
-    private var formattedDateAdded: String? {
-        guard let dateAdded = record.dateAdded else { return nil }
-        return fullWeekdayDateFormatter.string(from: dateAdded)
     }
 
     private var sourceDisplayName: String? {
@@ -114,57 +121,296 @@ struct DetailContentView: View {
     // MARK: - Body
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                // Hero Section
-                heroSection
-
-                // Photo or Map
-                mediaSection
-
-                // Details Card
-                detailsCard
-
-                // Location Card
-                locationCard
-
-                // Notes Card
-                notesCard
+        content
+            .background(Color(UIColor.systemGroupedBackground))
+            .onAppear {
+                notesText = record.notes ?? ""
+                locationNameText = record.locationName ?? ""
+                displayedLocationName = record.locationName
             }
-            .padding()
-        }
-        .background(Color(UIColor.systemGroupedBackground))
-        .onAppear {
-            notesText = record.notes ?? ""
-            locationNameText = record.locationName ?? ""
-            displayedLocationName = record.locationName
-        }
-        .task {
-            beatPreviousText = RecordCaption.progressionDetail(
-                current: record,
-                previous: RecordHistoryManager.shared.previousRecord(before: record),
-                unitSystem: settings.unitSystem
-            )
-            await loadPhoto()
-            await prioritizeGeocoding()
-        }
-        .fullScreenCover(isPresented: $showFullScreenPhoto) {
-            if let image = loadedPhoto {
-                FullScreenPhotoView(image: image, isPresented: $showFullScreenPhoto)
+            .task {
+                beatPreviousText = RecordCaption.progressionDetail(
+                    current: record,
+                    previous: RecordHistoryManager.shared.previousRecord(before: record),
+                    unitSystem: settings.unitSystem
+                )
+                await loadPhoto()
+                await prioritizeGeocoding()
             }
-        }
-        .toolbar {
-            // Merges with each host's own toolbar (Records pager, Maps, History)
-            if !isRegionRecord {
-                ToolbarItem(placement: .primaryAction) {
-                    ShareLink(
-                        item: RecordShareItem(record: record, unitSystem: settings.unitSystem,
-                                              homeCoordinate: settings.homeCoordinate),
-                        preview: SharePreview("\(record.recordType) record", image: Image(systemName: recordIcon))
-                    ) {
-                        Image(systemName: "square.and.arrow.up")
+            .fullScreenCover(isPresented: $showFullScreenPhoto) {
+                if let image = loadedPhoto {
+                    FullScreenPhotoView(image: image, isPresented: $showFullScreenPhoto)
+                }
+            }
+            .sheet(isPresented: $isEditingLocationName) {
+                LocationNameEditor(
+                    locationName: $locationNameText,
+                    onSave: {
+                        let trimmedName = locationNameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let newName = trimmedName.isEmpty ? nil : trimmedName
+                        displayedLocationName = newName
+                        onSaveLocationName(newName)
+                        isEditingLocationName = false
+                    },
+                    onCancel: {
+                        isEditingLocationName = false
+                    }
+                )
+                .presentationDetents([.height(200)])
+            }
+            .onChange(of: selectedPhotoItem) { _, newItem in
+                handlePhotoSelection(newItem)
+            }
+            .toolbar {
+                // A page shares from its own bar; a column's host places share and
+                // delete together (RecordDetailView)
+                if style == .page, !isRegionRecord {
+                    ToolbarItem(placement: .primaryAction) {
+                        RecordShareLink(record: record)
                     }
                 }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch style {
+        case .page:
+            // The photo (or the map) first, then the facts; the tab behind holds the
+            // overview map, so none follows the rows. The scroll view takes the room it
+            // is offered whatever its content, so measuring it is safe
+            ScrollView {
+                VStack(spacing: 16) {
+                    photoSlot(.fitWidth(maxHeight: contentSize.height * 0.55), orMap: true)
+                    headerRow(.page)
+                    detailsCard
+                    locationCard
+                    notesCard
+                }
+                .padding()
+            }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { contentSize = $0 }
+        case .column:
+            // A GeometryReader's size never depends on its children: dividing the
+            // column from a measurement of the stack itself fed the stack's own
+            // overflow back into the division and never settled
+            GeometryReader { geometry in
+                columnLayout(in: geometry.size)
+            }
+        }
+    }
+
+    // MARK: - A split view's detail column
+
+    /// Heading, the overview map and the panel: the photo beside the cards where the
+    /// column is wide enough, above them where it is not (DetailColumnStyle)
+    private func columnLayout(in size: CGSize) -> some View {
+        let columnStyle = DetailColumnStyle.style(forColumnWidth: size.width)
+        let below = max(0, size.height - headingHeight - 3 * 16 - 8)
+        let panelHeight = DetailColumnStyle.panelHeight(forColumnHeight: below, style: columnStyle)
+        let mapHeight = max(0, below - panelHeight)
+        return VStack(spacing: 16) {
+            headerRow(.heading)
+                .padding(.horizontal)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headingHeight = $0 }
+            if let map {
+                map
+                    .frame(height: mapHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .padding(.horizontal)
+            }
+            Group {
+                if columnStyle == .wide {
+                    widePanel(width: size.width)
+                } else {
+                    stackedPanel
+                }
+            }
+            .frame(height: panelHeight)
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 16)
+    }
+
+    private func widePanel(width: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            if showsPhotoSlot {
+                photoSlot(.fitHeight(maxWidth: width * 0.56), orMap: false)
+            }
+            ScrollView {
+                VStack(spacing: 16) {
+                    detailsCard
+                    locationCard
+                    notesCard
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private var stackedPanel: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                if showsPhotoSlot {
+                    photoSlot(.fitWidth(maxHeight: nil), orMap: false)
+                }
+                detailsCard
+                locationCard
+                notesCard
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    // MARK: - Header row
+
+    private enum HeadingProminence {
+        case page, heading
+    }
+
+    /// Icon, the value or region name, the place or first visit beneath, the timeframe
+    /// badge trailing. As `.heading` it is the column's title, at large-title size
+    private func headerRow(_ prominence: HeadingProminence) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: recordIcon)
+                .font(.system(size: prominence == .heading ? 34 : 30))
+                .foregroundColor(iconColor)
+                .frame(width: 44)
+
+            VStack(alignment: .leading, spacing: 3) {
+                // As the heading, the sidebar's large title exactly (34 pt bold), so the
+                // two columns' titles share a baseline
+                Text(isRegionRecord ? (displayedLocationName ?? record.recordType) : record.formattedValue(unitSystem: settings.unitSystem))
+                    .font(prominence == .heading ? .largeTitle.bold() : .system(size: 30, weight: .bold))
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
+                if isRegionRecord {
+                    Text("First visited \(record.timestamp.formatted(.dateTime.month(.wide).day().year()))")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                } else {
+                    Button(action: {
+                        locationNameText = displayedLocationName ?? ""
+                        isEditingLocationName = true
+                    }) {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            if let name = displayedLocationName, !name.isEmpty, name != unknownLocationString {
+                                PlaceNameText(name: name)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text("Add location name")
+                                    .font(.subheadline)
+                                    .foregroundColor(.blue)
+                            }
+                            Image(systemName: "pencil")
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(spacing: 4) {
+                Text(timeFrameAbbrev)
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(timeFrameColor))
+                Text(record.timeFrame.rawValue)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Photo slot
+
+    /// Whether the panel reserves a photo slot: a photo exists, is loading, or is
+    /// missing from the library (the slot then offers to pick one)
+    private var showsPhotoSlot: Bool {
+        loadedPhoto != nil || hasPhoto
+    }
+
+    /// The photo at its own aspect ratio, inside the content margins with the card
+    /// radius; while it loads, or when it is missing from the library, a 4:3
+    /// placeholder of the same width. With no photo at all a page shows the map
+    /// instead, and a column shows nothing (its overview map is already there)
+    @ViewBuilder
+    private func photoSlot(_ fit: PhotoFit, orMap: Bool) -> some View {
+        if let image = loadedPhoto {
+            RecordPhotoView(image: image, fit: fit, canChange: onSavePhoto != nil,
+                            selection: $selectedPhotoItem, showFullScreen: $showFullScreenPhoto)
+        } else if hasPhoto && !photoNotAvailable {
+            photoPlaceholder(fit) {
+                ProgressView()
+            }
+        } else if photoNotAvailable {
+            photoPlaceholder(fit) {
+                VStack(spacing: 8) {
+                    Image(systemName: "photo")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("Photo not in library")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    if onSavePhoto != nil {
+                        // photoLibrary: .shared() is what makes itemIdentifier non-nil;
+                        // without it handlePhotoSelection can never persist the choice
+                        PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
+                            Label("Select Photo", systemImage: "photo.badge.plus")
+                                .font(.subheadline)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(8)
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+            }
+        } else if orMap {
+            mapCard
+        }
+    }
+
+    private func photoPlaceholder<Content: View>(_ fit: PhotoFit, @ViewBuilder content: () -> Content) -> some View {
+        RoundedRectangle(cornerRadius: 16)
+            .fill(Color(UIColor.secondarySystemGroupedBackground))
+            .aspectRatio(4 / 3, contentMode: .fit)
+            .frame(maxWidth: fit.maxWidth, maxHeight: fit.maxHeight)
+            .overlay(content())
+    }
+
+    /// The record's spot, where a page has no photo to show; carries the add-photo button
+    private var mapCard: some View {
+        ZStack(alignment: .topTrailing) {
+            Map(position: .constant(mapPosition)) {
+                Marker(record.recordType, coordinate: record.coordinate)
+                    .tint(iconColor)
+            }
+            .aspectRatio(4 / 3, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+            )
+            .allowsHitTesting(false)
+
+            if onSavePhoto != nil {
+                PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
+                    Image(systemName: "photo.badge.plus")
+                        .font(.caption)
+                        .padding(8)
+                        .background(.ultraThinMaterial)
+                        .cornerRadius(8)
+                }
+                .padding(8)
             }
         }
     }
@@ -264,222 +510,6 @@ struct DetailContentView: View {
         }
     }
 
-    // MARK: - Hero Section
-
-    private var heroSection: some View {
-        VStack(spacing: 12) {
-            // Icon and timeframe badge
-            HStack(alignment: .top) {
-                Image(systemName: recordIcon)
-                    .font(.system(size: 44))
-                    .foregroundColor(iconColor)
-
-                Spacer()
-
-                // Timeframe badge
-                VStack(spacing: 4) {
-                    Text(timeFrameAbbrev)
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                        .frame(width: 32, height: 32)
-                        .background(Circle().fill(timeFrameColor))
-
-                    Text(timeFrameLabel)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            // Value or Region Name (large)
-            VStack(spacing: 4) {
-                if isRegionRecord {
-                    // For region records, show location name as large text
-                    Text(displayedLocationName ?? record.recordType)
-                        .font(.system(size: 42, weight: .bold, design: .rounded))
-                        .foregroundColor(.primary)
-                        .minimumScaleFactor(0.5)
-                        .lineLimit(1)
-
-                    // Date underneath
-                    Text(record.timestamp, style: .date)
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                } else {
-                    // For extreme records, show value as large text
-                    Text(record.formattedValue(unitSystem: settings.unitSystem))
-                        .font(.system(size: 42, weight: .bold, design: .rounded))
-                        .foregroundColor(.primary)
-                        .minimumScaleFactor(0.5)
-                        .lineLimit(1)
-
-                    // Location name with edit button
-                    Button(action: {
-                        locationNameText = displayedLocationName ?? ""
-                        isEditingLocationName = true
-                    }) {
-                        HStack(spacing: 4) {
-                            if let name = displayedLocationName, !name.isEmpty, name != unknownLocationString {
-                                Text(name)
-                                    .font(.headline)
-                                    .foregroundColor(.secondary)
-                                    .multilineTextAlignment(.center)
-                            } else {
-                                Text("Add location name")
-                                    .font(.subheadline)
-                                    .foregroundColor(.blue)
-                            }
-                            Image(systemName: "pencil")
-                                .font(.caption)
-                                .foregroundColor(.blue)
-                        }
-                    }
-                }
-            }
-        }
-        .padding()
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(UIColor.secondarySystemGroupedBackground))
-        )
-        .sheet(isPresented: $isEditingLocationName) {
-            LocationNameEditor(
-                locationName: $locationNameText,
-                onSave: {
-                    let trimmedName = locationNameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let newName = trimmedName.isEmpty ? nil : trimmedName
-                    displayedLocationName = newName
-                    onSaveLocationName(newName)
-                    isEditingLocationName = false
-                },
-                onCancel: {
-                    isEditingLocationName = false
-                }
-            )
-            .presentationDetents([.height(200)])
-        }
-    }
-
-    // MARK: - Media Section
-
-    private var mediaSection: some View {
-        Group {
-            if let image = loadedPhoto {
-                // Photo loaded successfully
-                ZStack(alignment: .topTrailing) {
-                    Button(action: { showFullScreenPhoto = true }) {
-                        Image(uiImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(height: 220)
-                            .clipped()
-                            .cornerRadius(16)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16)
-                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-
-                    // Photo action buttons
-                    HStack(spacing: 8) {
-                        // Change photo button (left)
-                        if onSavePhoto != nil {
-                            PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
-                                Image(systemName: "photo.badge.arrow.down")
-                                    .font(.caption)
-                                    .padding(8)
-                                    .background(.ultraThinMaterial)
-                                    .cornerRadius(8)
-                            }
-                        }
-
-                        // Full screen button (right)
-                        Button(action: { showFullScreenPhoto = true }) {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.caption)
-                                .padding(8)
-                                .background(.ultraThinMaterial)
-                                .cornerRadius(8)
-                        }
-                    }
-                    .padding(8)
-                }
-            } else if hasPhoto && !photoNotAvailable {
-                // Photo is loading
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color(UIColor.secondarySystemGroupedBackground))
-                    .frame(height: 220)
-                    .overlay(
-                        ProgressView()
-                    )
-            } else if photoNotAvailable {
-                // Photo reference exists but photo not found in library
-                ZStack {
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color(UIColor.secondarySystemGroupedBackground))
-                        .frame(height: 180)
-                        .overlay(
-                            VStack(spacing: 8) {
-                                Image(systemName: "photo")
-                                    .font(.largeTitle)
-                                    .foregroundColor(.secondary)
-                                Text("Photo not in library")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-
-                                // Add photo button
-                                if onSavePhoto != nil {
-                                    // photoLibrary: .shared() is what makes itemIdentifier non-nil;
-                                    // without it handlePhotoSelection can never persist the choice
-                                    PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
-                                        Label("Select Photo", systemImage: "photo.badge.plus")
-                                            .font(.subheadline)
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 8)
-                                            .background(Color.blue)
-                                            .foregroundColor(.white)
-                                            .cornerRadius(8)
-                                    }
-                                    .padding(.top, 4)
-                                }
-                            }
-                        )
-                }
-            } else {
-                // No photo - show map with option to add photo
-                ZStack(alignment: .topTrailing) {
-                    Map(position: .constant(mapPosition)) {
-                        Marker(record.recordType, coordinate: record.coordinate)
-                            .tint(iconColor)
-                    }
-                    .frame(height: 180)
-                    .cornerRadius(16)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                    )
-                    .allowsHitTesting(false)
-
-                    // Add photo button
-                    if onSavePhoto != nil {
-                        PhotosPicker(selection: $selectedPhotoItem, matching: .images, photoLibrary: .shared()) {
-                            Image(systemName: "photo.badge.plus")
-                                .font(.caption)
-                                .padding(8)
-                                .background(.ultraThinMaterial)
-                                .cornerRadius(8)
-                        }
-                        .padding(8)
-                    }
-                }
-            }
-        }
-        .onChange(of: selectedPhotoItem) { _, newItem in
-            handlePhotoSelection(newItem)
-        }
-    }
-
     /// Handle photo selection from picker
     private func handlePhotoSelection(_ item: PhotosPickerItem?) {
         guard let item = item else { return }
@@ -554,12 +584,9 @@ struct DetailContentView: View {
 
     private var detailsCard: some View {
         VStack(spacing: 0) {
-            DetailRow(
-                icon: "calendar",
-                iconColor: .red,
-                label: "Date",
-                value: formattedDate
-            )
+            DetailRow(icon: "calendar", iconColor: .red, label: "Date") {
+                AdaptiveDateText(date: record.timestamp)
+            }
 
             Divider().padding(.leading, 44)
 
@@ -614,15 +641,12 @@ struct DetailContentView: View {
                 )
             }
 
-            if let dateAdded = formattedDateAdded {
+            if let dateAdded = record.dateAdded {
                 Divider().padding(.leading, 44)
 
-                DetailRow(
-                    icon: "plus.circle",
-                    iconColor: .gray,
-                    label: "Added on",
-                    value: dateAdded
-                )
+                DetailRow(icon: "plus.circle", iconColor: .gray, label: "Added on") {
+                    AdaptiveDateText(date: dateAdded)
+                }
             }
 
             if let source = sourceDisplayName {
@@ -855,11 +879,11 @@ struct DetailContentView: View {
 
 // MARK: - Detail Row
 
-private struct DetailRow: View {
+private struct DetailRow<Value: View>: View {
     let icon: String
     let iconColor: Color
     let label: String
-    let value: String
+    @ViewBuilder let value: () -> Value
 
     var body: some View {
         HStack(spacing: 12) {
@@ -874,7 +898,7 @@ private struct DetailRow: View {
 
             Spacer()
 
-            Text(value)
+            value()
                 .font(.subheadline)
                 .fontWeight(.medium)
                 .foregroundColor(.primary)
@@ -882,6 +906,64 @@ private struct DetailRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+    }
+}
+
+extension DetailRow where Value == Text {
+    init(icon: String, iconColor: Color, label: String, value: String) {
+        self.init(icon: icon, iconColor: iconColor, label: label) { Text(value) }
+    }
+}
+
+/// The long date where it fits on one line, the abbreviated one where it would wrap
+struct AdaptiveDateText: View {
+    let date: Date
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            Text(fullWeekdayDateFormatter.string(from: date))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            Text(mediumDateFormatter.string(from: date))
+                .lineLimit(1)
+        }
+    }
+}
+
+/// A place name on one line where it fits, else broken after its first comma
+struct PlaceNameText: View {
+    let name: String
+
+    var body: some View {
+        if let lines = PlaceName.lines(name) {
+            ViewThatFits(in: .horizontal) {
+                Text(name)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(lines.first)
+                    Text(lines.rest)
+                }
+            }
+        } else {
+            Text(name)
+        }
+    }
+}
+
+/// The record's share sheet item, placed by its host
+struct RecordShareLink: View {
+    let record: RecordDetail
+    @EnvironmentObject var settings: SettingsManager
+
+    var body: some View {
+        ShareLink(
+            item: RecordShareItem(record: record, unitSystem: settings.unitSystem,
+                                  homeCoordinate: settings.homeCoordinate),
+            preview: SharePreview("\(record.recordType) record", image: Image(systemName: FormatUtils.iconForRecordType(record.recordType)))
+        ) {
+            Image(systemName: "square.and.arrow.up")
+        }
     }
 }
 

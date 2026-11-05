@@ -156,13 +156,8 @@ struct RecordDetailPager: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 0) {
-                    Text(currentRecord?.recordType ?? "Detail")
-                        .font(.headline)
-                    Text("\(currentIndex + 1) of \(records.count)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+                Text(currentRecord?.recordType ?? "Detail")
+                    .font(.headline)
             }
             ToolbarItem(placement: .destructiveAction) {
                 Button(role: .destructive) {
@@ -239,26 +234,51 @@ private struct RecordDetailContent: View {
 
 struct RecordDetailView: View {
     let record: RecordDetail
+    /// A pushed page, or a split view's detail column with the tab's overview map
+    var style: DetailStyle = .page
+    var map: AnyView? = nil
     @EnvironmentObject var settings: SettingsManager
     @EnvironmentObject var recordManager: RecordManager
     @Environment(\.dismiss) var dismiss
+    @Environment(\.deviceHasHinge) private var deviceHasHinge
+    @Environment(\.windowHeight) private var windowHeight
 
     @State private var showDeleteAlert = false
+
+    private var isRegionRecord: Bool {
+        RecordType.from(string: record.recordType)?.isRegionVisit ?? false
+    }
+
+    private var pageTitle: String {
+        isRegionRecord ? (record.locationName ?? record.recordType) : record.recordType
+    }
 
     var body: some View {
         DetailContentView(
             record: record,
             onSaveNotes: saveNotes,
             onSaveLocationName: saveLocationName,
-            onSavePhoto: savePhoto
+            onSavePhoto: savePhoto,
+            style: style,
+            map: map
         )
-        .navigationTitle(record.locationName ?? record.recordType)
+        // A page names the record in its bar, the header row below carries the value
+        // and place; a column's heading is the header row itself and the bar keeps
+        // only the buttons
+        .navigationTitle(style == .page ? pageTitle : "")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .destructiveAction) {
-                Button(role: .destructive) {
-                    showDeleteAlert = true
-                } label: {
-                    Label("Delete", systemImage: "trash")
+            if style == .page {
+                ToolbarItem(placement: .destructiveAction) {
+                    deleteButton
+                }
+            } else {
+                let leading = DetailActionsPlacement.leading(hasHinge: deviceHasHinge, windowHeight: windowHeight)
+                ToolbarItemGroup(placement: leading ? .topBarLeading : .topBarTrailing) {
+                    if !isRegionRecord {
+                        RecordShareLink(record: record)
+                    }
+                    deleteButton
                 }
             }
         }
@@ -269,6 +289,14 @@ struct RecordDetailView: View {
             }
         } message: {
             Text(RecordDeleteCopy.message(recordType: record.recordType))
+        }
+    }
+
+    private var deleteButton: some View {
+        Button(role: .destructive) {
+            showDeleteAlert = true
+        } label: {
+            Label("Delete", systemImage: "trash")
         }
     }
 
@@ -290,6 +318,8 @@ struct RecordDetailView: View {
 
     private func deleteRecord() {
         deleteRecordFromStorage(record, recordManager: recordManager)
-        dismiss()
+        if style == .page {
+            dismiss()
+        }
     }
 }

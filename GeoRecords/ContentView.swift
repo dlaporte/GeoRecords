@@ -137,8 +137,9 @@ struct ContentView: View {
 
     // MARK: - View Components
 
-    /// The scene window's width, for LayoutWidth (see AdaptiveLayout.swift)
-    @State private var windowWidth: CGFloat?
+    /// The scene window's size and fold state, for LayoutWidth (see AdaptiveLayout.swift)
+    @State private var windowSize: WindowMeasure = WindowMeasure()
+    @State private var deviceHasHinge = false
 
     private var mainTabContent: some View {
         VStack(spacing: 0) {
@@ -152,9 +153,14 @@ struct ContentView: View {
                 // The tab view fills the scene, so its width is the window's: under
                 // 720 pt the tabs use their phone layouts (the Duo upright is regular
                 // width at 669 and its split views cannot tile). Updates live on fold.
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+                .onGeometryChange(for: WindowMeasure.self) { WindowMeasure($0) } action: { windowSize = $0 }
+                .observingHinge($deviceHasHinge)
         }
-        .environment(\.windowWidth, windowWidth)  // the covers and sheets below inherit it too
+        // The covers and sheets below inherit these too
+        .environment(\.windowWidth, windowSize.width)
+        .environment(\.windowHeight, windowSize.height)
+        .environment(\.foldDivided, windowSize.foldDivided)
+        .environment(\.deviceHasHinge, deviceHasHinge)
         .onAppear(perform: handleOnAppear)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             locationManager.updateHealthStatus()
@@ -935,6 +941,42 @@ private struct ContentViewAlertsModifier: ViewModifier {
             return "This backup contains \(contentsString) from \(info.deviceName), exported on \(dateString).\n\nThis will replace all existing records and settings."
         } else {
             return "Restore from this backup file? This will replace all existing data."
+        }
+    }
+}
+
+// MARK: - Window measurement
+
+/// What ContentView reads off the tab view's geometry: the window's size and, on the
+/// iPhone Duo held like a book, whether an active fold divides it (iOS 27.1's
+/// reserved regions; false before that and on every other device)
+struct WindowMeasure: Equatable {
+    var width: CGFloat?
+    var height: CGFloat?
+    var foldDivided = false
+
+    init() {}
+
+    init(_ proxy: GeometryProxy) {
+        width = proxy.size.width
+        height = proxy.size.height
+        if #available(iOS 27.1, *) {
+            foldDivided = proxy.reservedRegions(kind: .division).contains { $0.isActive }
+        }
+    }
+}
+
+private extension View {
+    /// Records whether the device has a hinge at all; the hinge API reports a nil
+    /// hinge where there is none, and does not exist before iOS 27.1
+    @ViewBuilder
+    func observingHinge(_ hasHinge: Binding<Bool>) -> some View {
+        if #available(iOS 27.1, *) {
+            onHingeChange { _, context in
+                hasHinge.wrappedValue = context.hinge != nil
+            }
+        } else {
+            self
         }
     }
 }

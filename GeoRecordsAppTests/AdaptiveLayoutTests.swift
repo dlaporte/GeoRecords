@@ -44,6 +44,70 @@ struct AdaptiveLayoutTests {
         #expect(LayoutWidth(horizontal: .regular) == LayoutWidth(horizontal: .regular, windowWidth: nil))
     }
 
+    // The Duo held upright and partially folded (the book pose): the system shows a
+    // split view as two even pages along the fold, so the split layouts come back at
+    // 669 pt; flat, the same width stays compact. The fold never helps a compact size class
+    @Test func theFoldBringsTheSplitLayoutsBack() async throws {
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 669, foldDivided: true) == .regular)
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 669, foldDivided: false) == .compact)
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 868, foldDivided: false) == .regular)
+        #expect(LayoutWidth(horizontal: .compact, windowWidth: 669, foldDivided: true) == .compact)
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 669) == LayoutWidth(horizontal: .regular, windowWidth: 669, foldDivided: false))
+    }
+
+    // A detail column puts the photo beside the rows only where both fit: iPads in
+    // landscape. iPad portrait, the Duo in landscape and a book-pose page stack them
+    @Test func detailColumnsStackBelowSevenHundredTwentyPoints() async throws {
+        #expect(DetailColumnStyle.style(forColumnWidth: 334) == .stacked)   // a Duo book-pose page
+        #expect(DetailColumnStyle.style(forColumnWidth: 488) == .stacked)   // Duo landscape
+        #expect(DetailColumnStyle.style(forColumnWidth: 652) == .stacked)   // iPad 13" portrait
+        #expect(DetailColumnStyle.style(forColumnWidth: 719) == .stacked)
+        #expect(DetailColumnStyle.style(forColumnWidth: 720) == .wide)
+        #expect(DetailColumnStyle.style(forColumnWidth: 867) == .wide)      // iPad 11" landscape
+        #expect(DetailColumnStyle.style(forColumnWidth: 996) == .wide)      // iPad 13" landscape
+    }
+
+    // Beside the rows the panel takes 40% and the map the rest; above them 60%; never
+    // under 300 pt, which the Duo's short landscape column only just affords
+    @Test func thePanelTakesItsShareOfTheColumn() async throws {
+        #expect(DetailColumnStyle.panelHeight(forColumnHeight: 800, style: .wide) == 320)
+        #expect(DetailColumnStyle.panelHeight(forColumnHeight: 673, style: .wide) == 300)      // 40% would be 269
+        #expect(abs(DetailColumnStyle.panelHeight(forColumnHeight: 1144, style: .stacked) - 686.4) < 0.01)
+        #expect(abs(DetailColumnStyle.panelHeight(forColumnHeight: 523, style: .stacked) - 313.8) < 0.01)
+        #expect(DetailColumnStyle.panelHeight(forColumnHeight: 400, style: .stacked) == 300)   // 60% would be 240
+        #expect(DetailColumnStyle.panelHeight(forColumnHeight: 200, style: .stacked) == 200)   // never more than there is
+        #expect(DetailColumnStyle.minimumPanelHeight == 300)
+    }
+
+    // Share and delete lead only on the Duo in landscape (a hinged device, window under
+    // 720 pt tall): the iPad's top tab bar owns the leading area, and the book pose is tall
+    @Test func actionsLeadOnlyOnTheDuoInLandscape() async throws {
+        #expect(DetailActionsPlacement.leading(hasHinge: true, windowHeight: 669))
+        #expect(!DetailActionsPlacement.leading(hasHinge: true, windowHeight: 951))   // the book pose
+        #expect(!DetailActionsPlacement.leading(hasHinge: false, windowHeight: 600))  // a Stage Manager window
+        #expect(!DetailActionsPlacement.leading(hasHinge: false, windowHeight: 744))  // iPad mini landscape
+        #expect(!DetailActionsPlacement.leading(hasHinge: true, windowHeight: nil))
+    }
+
+    // A place name breaks after its first comma where it would wrap
+    @Test func placeNamesBreakAfterTheFirstComma() async throws {
+        let polynesia = PlaceName.lines("French Polynesia, French Polynesia")
+        #expect(polynesia?.first == "French Polynesia,")
+        #expect(polynesia?.rest == "French Polynesia")
+        let shinjuku = PlaceName.lines("Shinjuku, Tokyo, Japan")
+        #expect(shinjuku?.first == "Shinjuku,")
+        #expect(shinjuku?.rest == "Tokyo, Japan")
+        #expect(PlaceName.lines("Tromsø") == nil)
+        #expect(PlaceName.lines("Oops,") == nil)
+        #expect(PlaceName.lines("Oops, ") == nil)
+    }
+
+    // Cards sit on the same 16 pt margin as the picker, map and detail rows
+    @Test func cardsShareTheContentMargin() async throws {
+        #expect(CardSizing(vertical: .regular).horizontalPadding == 16)
+        #expect(CardSizing(vertical: .compact).horizontalPadding == 16)
+    }
+
     @Test func statsCardsTileOnlyInRegularWidth() async throws {
         #expect(StatsGrid.columns(for: .compact).count == 1)
         let regular = StatsGrid.columns(for: .regular)

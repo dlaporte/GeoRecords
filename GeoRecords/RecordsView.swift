@@ -75,7 +75,8 @@ struct RecordsView: View {
             }
     }
 
-    @Environment(\.layoutWidth) private var layoutWidth
+    @Environment(\.splitLayoutWidth) private var layoutWidth
+    @Environment(\.foldDivided) private var foldDivided
     @Environment(\.cardSizing) private var sizing
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
@@ -173,21 +174,26 @@ struct RecordsView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 timeFramePicker
-                    .padding()
+                    .padding(.horizontal)
+                    .padding(.top)
+                    .padding(.bottom, 12)
 
                 if allRecords.isEmpty {
                     emptyState
                 } else if sizing.isCompact {
                     HStack(spacing: 0) {
                         recordsMap
+                            .mapCard()
                         cardCarousel
                             .frame(width: 360)
                     }
                 } else {
                     recordsMap
+                        .mapCard()
                     cardCarousel
                 }
             }
+            .minimalBackButton()
             .navigationTitle("Records")
             .toolbar { syncToolbar }
             .navigationDestination(isPresented: $navigateToDetail) {
@@ -211,17 +217,11 @@ struct RecordsView: View {
             }
             .navigationTitle("Records")
             .toolbar { syncToolbar }
-            .navigationSplitViewColumnWidth(SidebarWidth(minimum: 340, ideal: 380, maximum: 440))
+            .navigationSplitViewColumnWidth(SidebarWidth(minimum: 340, ideal: 380, maximum: 440), unlessFoldDivided: foldDivided)
         } detail: {
             if let record = focusedRecord {
-                GeometryReader { geometry in
-                    VStack(spacing: 0) {
-                        recordsMap
-                            .frame(height: geometry.size.height * 0.45)
-                        RecordDetailView(record: record)
-                            .id(record.id)
-                    }
-                }
+                RecordDetailView(record: record, style: .column, map: AnyView(recordsMap))
+                    .id(record.id)
             } else {
                 ContentUnavailableView("No Record Selected", systemImage: "location.north", description: Text("Choose a record from the list."))
             }
@@ -341,7 +341,7 @@ struct RecordsView: View {
         .contentMargins(0, for: .scrollContent)
         .frame(maxWidth: .infinity)
         .frame(height: cardTabViewHeight)
-        .padding(.vertical, 10)
+        .padding(.vertical, 12)
         .onChange(of: currentRecordIndex) { _, newIndex in
             // Update map when swiping to new record, and keep the matching
             // marker highlighted (no loop: marker-tap and swipe both converge

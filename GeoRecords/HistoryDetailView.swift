@@ -227,6 +227,7 @@ struct HistoryDetailView: View {
             }
         }
         .navigationTitle(entry.recordType ?? "Detail")
+        .navigationBarTitleDisplayMode(.inline)  // the page's photo leads; the bar only names the record
         .toolbar {
             ToolbarItem(placement: .destructiveAction) {
                 Button(role: .destructive) {

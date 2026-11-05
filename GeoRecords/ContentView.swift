@@ -137,6 +137,9 @@ struct ContentView: View {
 
     // MARK: - View Components
 
+    /// The scene window's width, for LayoutWidth (see AdaptiveLayout.swift)
+    @State private var windowWidth: CGFloat?
+
     private var mainTabContent: some View {
         VStack(spacing: 0) {
             LocationHealthBanner(isDismissed: $locationManager.healthBannerDismissed, selectedTab: selectedTab)
@@ -146,7 +149,12 @@ struct ContentView: View {
                 // holding objects from the destroyed store would crash on render.
                 // selectedTab lives above this subtree, so the active tab persists.
                 .id(persistenceController.storeGeneration)
+                // The tab view fills the scene, so its width is the window's: under
+                // 720 pt the tabs use their phone layouts (the Duo upright is regular
+                // width at 669 and its split views cannot tile). Updates live on fold.
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
         }
+        .environment(\.windowWidth, windowWidth)  // the covers and sheets below inherit it too
         .onAppear(perform: handleOnAppear)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
             locationManager.updateHealthStatus()

@@ -179,28 +179,26 @@ struct HistoryView: View {
     /// iPad, iPhone Duo open, Max phones in landscape: the list beside the
     /// selected entry's detail, with previous/next in the detail toolbar
     private var regularLayout: some View {
-        GeometryReader { window in
-            @Bindable var state = state
-            return NavigationSplitView(columnVisibility: $columnVisibility) {
-                VStack(spacing: 0) {
-                    filterControls
-                    Divider()
-                    regularContent
-                }
-                .searchable(text: $state.searchText, prompt: "Type or place")
-                .searchFocused($isSearchFocused)
-                .navigationTitle("History (\(filteredEntries.count))")
-                .navigationSplitViewColumnWidth(SidebarWidth.forWindow(width: window.size.width, roomy: SidebarWidth(minimum: 380, ideal: 440, maximum: 540)))
-            } detail: {
-                if let entry = focusedEntry {
-                    HistoryDetailPane(entries: filteredEntries, selectedID: $state.selectedEntryID, current: entry)
-                        .id(entry.objectID)
-                } else {
-                    ContentUnavailableView("No Record Selected", systemImage: "clock", description: Text("Choose a record from the list."))
-                }
+        @Bindable var state = state
+        return NavigationSplitView(columnVisibility: $columnVisibility) {
+            VStack(spacing: 0) {
+                filterControls
+                Divider()
+                regularContent
             }
-            .navigationSplitViewStyle(.balanced)
+            .searchable(text: $state.searchText, prompt: "Type or place")
+            .searchFocused($isSearchFocused)
+            .navigationTitle("History (\(filteredEntries.count))")
+            .navigationSplitViewColumnWidth(SidebarWidth(minimum: 380, ideal: 440, maximum: 540))
+        } detail: {
+            if let entry = focusedEntry {
+                HistoryDetailPane(entries: filteredEntries, selectedID: $state.selectedEntryID, current: entry)
+                    .id(entry.objectID)
+            } else {
+                ContentUnavailableView("No Record Selected", systemImage: "clock", description: Text("Choose a record from the list."))
+            }
         }
+        .navigationSplitViewStyle(.balanced)
     }
 
     /// Selection with a default: the first entry stands in for "nothing chosen yet"

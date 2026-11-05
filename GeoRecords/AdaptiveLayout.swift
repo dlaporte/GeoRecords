@@ -4,9 +4,11 @@
 //
 //  Layout follows size classes, never the main screen (Apple's guidance for
 //  iPad multitasking and iPhone Duo, whose inner display is regular/regular in
-//  every pose and resizes the app live on fold). Both values are computed from
-//  the view's own environment, so a sheet or a Split View window gets its own
-//  answer and nothing is cached from a screen that may be gone.
+//  every pose and resizes the app live on fold), plus the window's width: the
+//  Duo upright is regular at 669 pt, too narrow for a split view to tile. Both
+//  values are computed from the view's own environment, so a sheet or a Split
+//  View window gets its own answer and nothing is cached from a screen that may
+//  be gone.
 //
 
 import SwiftUI
@@ -16,16 +18,35 @@ enum LayoutWidth: Equatable {
     case compact
     case regular
 
+    /// Below this a regular-width window still gets the phone layouts: the Duo's
+    /// inner display upright (669) and an iPad in two-thirds Split View (694) draw
+    /// a split view's sidebar as a drawer over the detail instead of tiling, and
+    /// the phone cards truncate inside it. The iPad mini (744) is the narrowest
+    /// window known to tile.
+    static let minimumRegularWidth: CGFloat = 720
+
     init(horizontal: UserInterfaceSizeClass?) {
-        self = horizontal == .regular ? .regular : .compact
+        self.init(horizontal: horizontal, windowWidth: nil)
+    }
+
+    /// `windowWidth` nil means unmeasured (previews, a view outside the tab view):
+    /// the size class alone decides
+    init(horizontal: UserInterfaceSizeClass?, windowWidth: CGFloat?) {
+        let wideEnough = windowWidth.map { $0 >= Self.minimumRegularWidth } ?? true
+        self = horizontal == .regular && wideEnough ? .regular : .compact
     }
 }
 
 extension EnvironmentValues {
-    /// Regular on iPad, iPhone Duo open and Max phones in landscape; compact
-    /// elsewhere, including one-third Split View and Slide Over
+    /// The scene window's width, measured by ContentView on the tab view; nil
+    /// where nothing measured it
+    @Entry var windowWidth: CGFloat? = nil
+
+    /// Regular on iPad, iPhone Duo open in landscape and Max phones in landscape;
+    /// compact elsewhere, including the Duo upright, one-third and two-thirds
+    /// Split View and Slide Over. A sheet's own compact size class wins.
     var layoutWidth: LayoutWidth {
-        LayoutWidth(horizontal: horizontalSizeClass)
+        LayoutWidth(horizontal: horizontalSizeClass, windowWidth: windowWidth)
     }
 
     /// Card metrics for this view's height class
@@ -121,21 +142,13 @@ struct FlowingCardGrid: Layout {
     }
 }
 
-/// Sidebar column widths for a NavigationSplitView. Under 720 pt (iPhone Duo inner
-/// display 669, iPad two-thirds Split View 694) a 380 pt sidebar leaves too little
-/// for the detail and iOS overlays the sidebar instead of tiling; 300 pt leaves at
-/// least 369 pt, which is known to tile (an iPad mini tiles with 364).
+/// Sidebar column widths for a NavigationSplitView. Only windows of at least
+/// `LayoutWidth.minimumRegularWidth` show one, so 380 pt always leaves the detail
+/// at least 340 pt (an iPad mini tiles with 364); narrower windows are compact.
 struct SidebarWidth: Equatable {
     let minimum: CGFloat
     let ideal: CGFloat
     let maximum: CGFloat
-
-    static let narrowWindow: CGFloat = 720
-    static let narrow = SidebarWidth(minimum: 280, ideal: 300, maximum: 320)
-
-    static func forWindow(width: CGFloat, roomy: SidebarWidth) -> SidebarWidth {
-        width < narrowWindow ? narrow : roomy
-    }
 }
 
 extension View {
@@ -228,6 +241,7 @@ extension View {
 struct SizeClassBadge: View {
     @Environment(\.horizontalSizeClass) private var horizontal
     @Environment(\.verticalSizeClass) private var vertical
+    @Environment(\.layoutWidth) private var layoutWidth
 
     static var isEnabled: Bool {
         ProcessInfo.processInfo.environment["GEORECORDS_SHOW_SIZE_CLASS"] == "1"
@@ -235,7 +249,7 @@ struct SizeClassBadge: View {
 
     var body: some View {
         GeometryReader { geometry in
-            Text("h:\(name(horizontal)) v:\(name(vertical)) \(Int(geometry.size.width))×\(Int(geometry.size.height))")
+            Text("h:\(name(horizontal)) v:\(name(vertical)) \(Int(geometry.size.width))×\(Int(geometry.size.height)) layout:\(layoutWidth == .regular ? "R" : "C")")
                 .font(.caption2.monospaced())
                 .padding(4)
                 .background(Color.yellow.opacity(0.85))

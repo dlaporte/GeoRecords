@@ -26,17 +26,22 @@ struct AdaptiveLayoutTests {
         #expect(CardSizing(vertical: .compact).iconSize == 32)
     }
 
-    // A 380 pt sidebar on the Duo's 669 pt inner display leaves 289 pt for the detail
-    // and iOS overlays the sidebar instead of tiling; the iPad mini (744) tiles with 364
-    @Test func sidebarNarrowsBelow720Points() async throws {
-        let roomy = SidebarWidth(minimum: 340, ideal: 380, maximum: 440)
-        #expect(SidebarWidth.forWindow(width: 834, roomy: roomy) == roomy)   // iPad Pro 11" portrait
-        #expect(SidebarWidth.forWindow(width: 744, roomy: roomy) == roomy)   // iPad mini portrait
-        #expect(SidebarWidth.forWindow(width: 720, roomy: roomy) == roomy)
-        #expect(SidebarWidth.forWindow(width: 719, roomy: roomy) == .narrow)
-        #expect(SidebarWidth.forWindow(width: 694, roomy: roomy) == .narrow) // iPad two-thirds Split View
-        #expect(SidebarWidth.forWindow(width: 669, roomy: roomy) == .narrow) // iPhone Duo inner display
-        #expect(SidebarWidth.narrow == SidebarWidth(minimum: 280, ideal: 300, maximum: 320))
+    // The Duo's inner display upright (669 pt) is regular width but its split views
+    // cannot tile: iOS draws the sidebar as a drawer over the detail. Under 720 pt the
+    // phone layouts are used instead; the iPad mini (744) is the narrowest that tiles
+    @Test func regularLayoutsNeedSevenHundredTwentyPoints() async throws {
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 669) == .compact)   // iPhone Duo inner display, upright
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 694) == .compact)   // iPad two-thirds Split View
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 719) == .compact)
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 720) == .regular)
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 744) == .regular)   // iPad mini portrait
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 834) == .regular)   // iPad Pro 11" portrait
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 868) == .regular)   // iPhone Duo inner display, landscape
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: 1194) == .regular)  // iPad Pro 11" landscape
+        #expect(LayoutWidth(horizontal: .regular, windowWidth: nil) == .regular)   // unmeasured: the size class alone
+        #expect(LayoutWidth(horizontal: .compact, windowWidth: 1194) == .compact)  // a compact size class always wins
+        #expect(LayoutWidth.minimumRegularWidth == 720)
+        #expect(LayoutWidth(horizontal: .regular) == LayoutWidth(horizontal: .regular, windowWidth: nil))
     }
 
     @Test func statsCardsTileOnlyInRegularWidth() async throws {

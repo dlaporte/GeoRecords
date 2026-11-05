@@ -148,10 +148,10 @@ struct StatisticsView: View {
     /// One column on iPhone; as many 360-pt cards as fit on iPad and iPhone Duo open
     private var cardColumns: [GridItem] { StatsGrid.columns(for: layoutWidth) }
     /// The scroll view's width, for how many card columns fit
-    @State private var windowWidth: CGFloat = 0
+    @State private var contentWidth: CGFloat = 0
     /// Two or more card columns fit: one grid for every card, no section headers
     private var cardsTile: Bool {
-        layoutWidth == .regular && FlowingCardGrid().columnCount(for: windowWidth) > 1
+        layoutWidth == .regular && FlowingCardGrid().columnCount(for: contentWidth) > 1
     }
     @State private var availableYears: [Int] = []
     @State private var availableMonths: [MonthSelection] = []
@@ -387,7 +387,7 @@ struct StatisticsView: View {
                 }
                 .padding(.vertical)
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             .navigationTitle("Statistics")
             .onAppear {
                 // Clean up old daily records (keeps current + previous month)

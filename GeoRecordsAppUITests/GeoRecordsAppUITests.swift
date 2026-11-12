@@ -131,7 +131,8 @@ final class GeoRecordsUITests: XCTestCase {
         openFirstCard(app); snap(app, "08b-region-opened"); goBack(app)
         if app.buttons["Show regions not yet visited"].waitForExistence(timeout: 3) {
             app.buttons["Show regions not yet visited"].tap(); sleep(3); snap(app, "09-regions-not-yet")
-            app.buttons["Show visited"].tap(); sleep(1)
+            app.buttons["Show visited regions"].tap(); sleep(2); snap(app, "09b-regions-visited")
+            app.buttons["Show region cards"].tap(); sleep(1)
         }
         tap(app, "Continents"); sleep(4); snap(app, "10-regions-continents")
         swipeCards(app); sleep(4); snap(app, "10b-regions-continents-second")
@@ -139,6 +140,11 @@ final class GeoRecordsUITests: XCTestCase {
         tap(app, "Countries"); sleep(4); snap(app, "11-regions-countries")
 
         selectTab(app, "History"); sleep(3); snap(app, "12-history")
+        if app.buttons["Filters"].waitForExistence(timeout: 3) {
+            app.buttons["Filters"].tap(); sleep(2); snap(app, "12b-history-filters")
+            tap(app, "Furthest North"); sleep(1); tap(app, "Done"); sleep(2); snap(app, "12c-history-filtered")
+            tap(app, "Clear"); sleep(1)
+        }
         selectTab(app, "Settings"); sleep(2); snap(app, "13-settings")
         app.swipeUp(); sleep(1); snap(app, "14-settings-scrolled")
     }
@@ -152,10 +158,11 @@ final class GeoRecordsUITests: XCTestCase {
         sleep(3)
     }
 
-    /// Pops a pushed page, if one is up (the back button is a bare chevron, still
-    /// labelled Back); on an iPad nothing was pushed
+    /// Pops a pushed page, if one is up: the chevron-only back button carries the
+    /// identifier BackButton on iOS 26 and later and the label Back before; on an
+    /// iPad nothing was pushed
     private func goBack(_ app: XCUIApplication) {
-        let back = app.navigationBars.buttons["Back"]
+        let back = app.buttons.matching(NSPredicate(format: "identifier == 'BackButton' OR label == 'Back'")).firstMatch
         if back.waitForExistence(timeout: 2) {
             back.tap()
             sleep(2)

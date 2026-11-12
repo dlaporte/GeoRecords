@@ -105,8 +105,7 @@ struct SimulatorSeed {
 /// A 4:3 stand-in photo: a sky-to-sea gradient with the place name, 1600 × 1200
 enum SeedPhoto {
     @MainActor
-    static func jpeg(titled title: String) -> Data? {
-        let size = CGSize(width: 1600, height: 1200)
+    static func jpeg(titled title: String, size: CGSize = CGSize(width: 1600, height: 1200)) -> Data? {
         let image = UIGraphicsImageRenderer(size: size).image { context in
             let colors = [UIColor(red: 0.85, green: 0.75, blue: 0.54, alpha: 1).cgColor,
                           UIColor(red: 0.54, green: 0.48, blue: 0.38, alpha: 1).cgColor,

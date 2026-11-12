@@ -85,3 +85,30 @@ enum HistorySourceFilter: Hashable {
         }
     }
 }
+
+/// One active History filter, shown as a chip under the title; search is not one
+/// (the field shows it) and the defaults never are
+enum HistoryFilterChip: Hashable {
+    case type(String)
+    case source(HistorySourceFilter)
+    case timeFrame(String)
+    case includeHome
+
+    static func active(typeFilter: String, source: HistorySourceFilter, timeFrameFilter: String, includeHome: Bool) -> [HistoryFilterChip] {
+        var chips: [HistoryFilterChip] = []
+        if typeFilter != "All Types" { chips.append(.type(typeFilter)) }
+        if source != .all { chips.append(.source(source)) }
+        if timeFrameFilter != "All Timeframes" { chips.append(.timeFrame(timeFrameFilter)) }
+        if includeHome { chips.append(.includeHome) }
+        return chips
+    }
+
+    var label: String {
+        switch self {
+        case .type(let type): return type
+        case .source(let source): return source.title
+        case .timeFrame(let frame): return frame
+        case .includeHome: return "Home"
+        }
+    }
+}

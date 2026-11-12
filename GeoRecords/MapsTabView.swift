@@ -413,8 +413,9 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
             .padding(.top, 12)
             .minimalBackButton()
 
-            // Cards, or the list of what is left
-            if state.showNotYet {
+            // Cards, the list of what is left, or the visited list
+            switch state.listMode {
+            case .notYet:
                 NotYetList(regions: notYetRegions, distances: distancesByCode, unitSystem: settings.unitSystem) { region in
                     cameraOverride = notYetKind.camera(for: region.code, defaultRegion: defaultCamera)
                     showCallout(for: region)
@@ -422,11 +423,18 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
                 .frame(width: sizing.isCompact ? 360 : nil)
                 .frame(height: sizing.isCompact ? nil : cardTabViewHeight)
                 .padding(.vertical, 10)
-            } else if regions.isEmpty {
+            case .visited:
+                VisitedList(regions: regions, selectedID: focusedRegion?.id) { index in
+                    selectRegion(at: index, open: true)
+                }
+                .frame(width: sizing.isCompact ? 360 : nil)
+                .frame(height: sizing.isCompact ? nil : cardTabViewHeight)
+                .padding(.vertical, 10)
+            case .cards where regions.isEmpty:
                 Spacer()
                 emptyState()
                 Spacer()
-            } else {
+            case .cards:
                 TabView(selection: $currentCardIndex) {
                     ForEach(Array(regions.enumerated()), id: \.element.id) { index, detail in
                         VisitedRegionCard(detail: detail)
@@ -444,12 +452,24 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
                 .frame(maxWidth: .infinity)
                 .frame(height: sizing.isCompact ? nil : cardTabViewHeight)
                 .padding(.vertical, 12)
-                .navigationDestination(isPresented: $navigateToDetail) {
-                    if let detail = selectedDetail {
-                        RecordDetailView(record: detail)
-                    }
-                }
             }
+        }
+        .navigationDestination(isPresented: $navigateToDetail) {
+            if let detail = selectedDetail {
+                RecordDetailView(record: detail)
+            }
+        }
+    }
+
+    /// A row of the Visited list: the carousel and the map follow it; a phone also
+    /// opens the region, as tapping its card does
+    private func selectRegion(at index: Int, open: Bool) {
+        callout = nil
+        cameraOverride = nil
+        currentCardIndex = index
+        if open, let detail = regions[safe: index] {
+            selectedDetail = detail
+            navigateToDetail = true
         }
     }
 
@@ -463,16 +483,21 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
                 statsHeader
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
-                if state.showNotYet {
+                switch state.listMode {
+                case .notYet:
                     NotYetList(regions: notYetRegions, distances: distancesByCode, unitSystem: settings.unitSystem) { region in
                         cameraOverride = notYetKind.camera(for: region.code, defaultRegion: defaultCamera)
                         showCallout(for: region)
                     }
-                } else if regions.isEmpty {
+                case .visited:
+                    VisitedList(regions: regions, selectedID: focusedRegion?.id) { index in
+                        selectRegion(at: index, open: false)
+                    }
+                case .cards where regions.isEmpty:
                     Spacer()
                     emptyState()
                     Spacer()
-                } else {
+                case .cards:
                     regionList
                 }
             }
@@ -527,35 +552,37 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
             }
     }
 
-    /// "14 of 50 states visited", the Not-yet toggle and the widget button
+    /// "14 of 50 states visited" (or what the list up says), the pill that cycles
+    /// cards → not yet → visited, and the widget button
     private var statsHeader: some View {
         HStack {
             Image(systemName: statsIcon)
                 .foregroundColor(statsIconColor)
-            Text(state.showNotYet ? "\(notYetRegions.count) to go" : statsText)
+            Text(headerText)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
             Spacer()
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    state.showNotYet.toggle()
+                    state.listMode = state.listMode.next
                 }
                 if !state.showNotYet {
                     cameraOverride = nil
                     callout = nil
                 }
             } label: {
-                Label("Not yet", systemImage: "list.bullet")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundColor(state.showNotYet ? .white : .secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(state.showNotYet ? Color.accentColor : Color(UIColor.tertiarySystemFill)))
+                Group {
+                    if state.listMode == .visited {
+                        Label("Visited", systemImage: "checkmark")
+                    } else {
+                        Label("Not yet", systemImage: "list.bullet")
+                    }
+                }
+                .capsulePill(on: state.listMode != .cards)
             }
             .buttonStyle(.plain)
             .hoverEffect(.highlight)
-            .accessibilityLabel(state.showNotYet ? "Show visited" : "Show regions not yet visited")
+            .accessibilityLabel(pillAccessibilityLabel)
             Button {
                 showWidgetViewSetter = true
             } label: {
@@ -565,6 +592,23 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
             }
             .hoverEffect(.highlight)
             .accessibilityLabel("Widget map view")
+        }
+    }
+
+    private var headerText: String {
+        switch state.listMode {
+        case .cards: return statsText
+        case .notYet: return "\(notYetRegions.count) to go"
+        case .visited: return "\(regions.count) visited"
+        }
+    }
+
+    /// The pill names what the next tap shows
+    private var pillAccessibilityLabel: String {
+        switch state.listMode {
+        case .cards: return "Show regions not yet visited"
+        case .notYet: return "Show visited regions"
+        case .visited: return "Show region cards"
         }
     }
 
@@ -650,6 +694,66 @@ private struct NotYetList: View {
                     }
                 }
                 .buttonStyle(.plain)
+            }
+            .listStyle(.plain)
+        }
+    }
+}
+
+// MARK: - Visited List
+
+/// The visited regions as a dense list, in the cards' order: a row selects the
+/// region (and opens it on a phone)
+private struct VisitedList: View {
+    let regions: [RecordDetail]
+    let selectedID: UUID?
+    let onSelect: (Int) -> Void
+    @ObservedObject private var regionManager = RegionTrackingManager.shared
+
+    private func visitsText(_ detail: RecordDetail) -> String? {
+        guard let code = detail.regionCode, let type = RecordType.from(string: detail.recordType) else { return nil }
+        let summary = regionManager.visitSummary(code: code, type: type)
+        return VisitLog.text(count: summary.count, last: summary.last)
+    }
+
+    var body: some View {
+        if regions.isEmpty {
+            ContentUnavailableView("No regions yet", systemImage: "map",
+                                   description: Text("Visited regions appear here."))
+        } else {
+            List(Array(regions.enumerated()), id: \.element.id) { index, detail in
+                Button {
+                    onSelect(index)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: FormatUtils.iconForRecordType(detail.recordType))
+                            .foregroundColor(FormatUtils.colorForRecordType(detail.recordType))
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                if let flag = FormatUtils.flagEmoji(for: detail.regionCode, recordType: detail.recordType) {
+                                    Text(flag)
+                                }
+                                Text(detail.locationName ?? "Unknown")
+                                    .foregroundColor(.primary)
+                                    .lineLimit(1)
+                            }
+                            Text("First visited \(detail.timestamp.formatted(.dateTime.month(.abbreviated).year()))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        if let visits = visitsText(detail) {
+                            Text(visits)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(selectedID == detail.id ? Color.accentColor.opacity(0.12) : Color.clear)
+                .accessibilityAddTraits(selectedID == detail.id ? .isSelected : [])
             }
             .listStyle(.plain)
         }
@@ -1165,7 +1269,7 @@ struct RegionMapView: UIViewRepresentable {
 // MARK: - Styled Segmented Picker
 
 /// Generic styled segmented picker that matches the Records page styling
-private struct StyledSegmentedPicker<T: Hashable>: View {
+struct StyledSegmentedPicker<T: Hashable>: View {
     @Binding var selection: T
     let options: [T]
     let label: (T) -> String

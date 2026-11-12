@@ -36,6 +36,23 @@ struct CardSizing {
 
 /// Displays a photo thumbnail for a record, with multiple fallback loading strategies
 /// Used by both RecordsView and MapsTabView
+// MARK: - Capsule pill
+
+/// The capsule the Regions tab's "Not yet" button wears, shared by the History
+/// filter chips and the filter panel's pills: caption text in a tertiary fill,
+/// white on the accent colour when on
+extension View {
+    func capsulePill(on: Bool, roomy: Bool = false) -> some View {
+        self
+            .font(roomy ? .subheadline : .caption)
+            .fontWeight(.medium)
+            .foregroundColor(on ? .white : .secondary)
+            .padding(.horizontal, roomy ? 12 : 8)
+            .padding(.vertical, roomy ? 7 : 4)
+            .background(Capsule().fill(on ? Color.accentColor : Color(UIColor.tertiarySystemFill)))
+    }
+}
+
 struct RecordPhotoThumbnail: View {
     let recordId: UUID
     let photoAssetIdentifier: String?

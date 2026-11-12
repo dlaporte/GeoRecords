@@ -209,10 +209,64 @@ enum DetailColumnStyle: Equatable {
 
     /// The panel's share of the height under the heading: 40% when the photo sits
     /// beside the rows, 60% when it sits above them, never under 300 pt; the map
-    /// gets what remains
-    static func panelHeight(forColumnHeight height: CGFloat, style: DetailColumnStyle) -> CGFloat {
+    /// gets what remains. A measured content height shorter than that share takes
+    /// only what it needs (a region without a photo: two cards), the map the rest
+    static func panelHeight(forColumnHeight height: CGFloat, style: DetailColumnStyle, contentHeight: CGFloat? = nil) -> CGFloat {
         let share: CGFloat = style == .wide ? 0.4 : 0.6
-        return min(max(height * share, minimumPanelHeight), height)
+        let cap = min(max(height * share, minimumPanelHeight), height)
+        guard let contentHeight, contentHeight > 0 else { return cap }
+        return min(contentHeight, cap)
+    }
+}
+
+/// Capsule pills wrapping onto as many rows as they need, left-aligned (the
+/// History filter panel's type and source choices)
+struct PillFlow: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let rows = rows(width: width, subviews: subviews)
+        let height = rows.reduce(0) { $0 + $1.height } + CGFloat(max(0, rows.count - 1)) * spacing
+        let widest = rows.map(\.width).max() ?? 0
+        return CGSize(width: width.isFinite ? width : widest, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(width: bounds.width, subviews: subviews) {
+            var x = bounds.minX
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+                x += size.width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private struct Row {
+        var indices: [Int] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func rows(width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(.unspecified)
+            let needed = row.indices.isEmpty ? size.width : row.width + spacing + size.width
+            if !row.indices.isEmpty && needed > width {
+                rows.append(row)
+                row = Row()
+            }
+            row.indices.append(index)
+            row.width = row.indices.count == 1 ? size.width : row.width + spacing + size.width
+            row.height = max(row.height, size.height)
+        }
+        if !row.indices.isEmpty { rows.append(row) }
+        return rows
     }
 }
 

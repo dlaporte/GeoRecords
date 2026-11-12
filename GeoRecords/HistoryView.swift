@@ -126,7 +126,14 @@ struct HistoryView: View {
 
     @Environment(\.layoutWidth) private var layoutWidth
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var showFilters = false
     @FocusState private var isSearchFocused: Bool
+
+    /// The filters set in the panel, as the chips under the title show them
+    private var activeChips: [HistoryFilterChip] {
+        HistoryFilterChip.active(typeFilter: state.typeFilter, source: state.source,
+                                 timeFrameFilter: state.timeFrameFilter, includeHome: state.includeHome)
+    }
 
     var body: some View {
         @Bindable var state = state
@@ -149,6 +156,12 @@ struct HistoryView: View {
         } message: { entry in
             Text(RecordDeleteCopy.message(recordType: entry.recordType))
         }
+        // Region types have no timeframe variations
+        .onChange(of: state.typeFilter) { _, newValue in
+            if isRegionType(newValue) {
+                state.timeFrameFilter = "All Timeframes"
+            }
+        }
         // ⌘F focuses the search field with a hardware keyboard
         .background {
             Button("") { isSearchFocused = true }
@@ -161,19 +174,22 @@ struct HistoryView: View {
 
     // MARK: - Layouts
 
-    /// iPhone: filters above a list whose rows push the detail pager
+    /// iPhone: the active-filter chips above a list whose rows push the detail pager
     private var compactLayout: some View {
         @Bindable var state = state
         return NavigationStack {
             VStack(spacing: 0) {
-                filterControls
-                Divider()
+                filterRow(withPill: false)
                 compactContent
             }
             .minimalBackButton()
             .searchable(text: $state.searchText, prompt: "Type or place")
             .searchFocused($isSearchFocused)
+            .minimizedSearch()
             .navigationTitle("History (\(filteredEntries.count))")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { filterButton }
+            }
         }
     }
 
@@ -183,8 +199,7 @@ struct HistoryView: View {
         @Bindable var state = state
         return NavigationSplitView(columnVisibility: $columnVisibility) {
             VStack(spacing: 0) {
-                filterControls
-                Divider()
+                filterRow(withPill: true)
                 regularContent
             }
             .searchable(text: $state.searchText, prompt: "Type or place")
@@ -220,59 +235,94 @@ struct HistoryView: View {
         return entries.first
     }
 
-    private var filterControls: some View {
-        @Bindable var state = state
-        return Group {
-            // Filter controls
-            VStack(spacing: 12) {
-                // Type and source (the two short menus share a row)
-                HStack(spacing: 12) {
-                    FilterMenu(title: state.typeFilter) {
-                        Picker("Type", selection: $state.typeFilter) {
-                            ForEach(availableRecordTypes, id: \.self) { type in
-                                Text(type).tag(type)
-                            }
-                        }
-                    }
-                    .onChange(of: state.typeFilter) { _, newValue in
-                        // Reset to All Timeframes when selecting a region type
-                        if isRegionType(newValue) {
-                            state.timeFrameFilter = "All Timeframes"
-                        }
-                    }
+    // MARK: - Filters
 
-                    FilterMenu(title: state.source.title) {
-                        Picker("Source", selection: $state.source) {
-                            ForEach(HistorySourceFilter.menuOrder, id: \.self) { source in
-                                Text(source.title).tag(source)
-                            }
-                        }
-                    }
-                }
+    /// The filter panel: a sheet on a phone, a popover on its trigger on an iPad or
+    /// the Duo in landscape
+    private var filterPanel: some View {
+        HistoryFilterPanel(state: state, types: availableRecordTypes, timeFrames: availableTimeFrames, isRegionType: isRegionType)
+            .presentationCompactAdaptation(.sheet)
+            .presentationDetents([.fraction(0.72), .large])
+    }
 
-                // Timeframe (disabled for region types, which have none) and the
-                // at-home rows, normally hidden
-                HStack(spacing: 12) {
-                    FilterMenu(title: state.timeFrameFilter) {
-                        Picker("Time Frame", selection: $state.timeFrameFilter) {
-                            ForEach(availableTimeFrames, id: \.self) { frame in
-                                Text(frame).tag(frame)
-                            }
-                        }
-                    }
-                    .disabled(isRegionTypeSelected)
-                    .opacity(isRegionTypeSelected ? 0.5 : 1.0)
-
-                    Toggle("Include home", isOn: $state.includeHome)
-                        .toggleStyle(.switch)
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 12)
-            .background(Color(UIColor.systemBackground))
+    /// A phone's trigger, in the bar: filled while a filter is set
+    private var filterButton: some View {
+        Button {
+            showFilters = true
+        } label: {
+            Image(systemName: activeChips.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
+        .accessibilityLabel("Filters")
+        .popover(isPresented: $showFilters) { filterPanel }
+    }
+
+    /// A split layout's trigger, a pill leading the chips row: the iPad's floating
+    /// tab pill sits over the sidebar's trailing bar items, so a bar button there
+    /// is covered
+    private var filterPill: some View {
+        Button {
+            showFilters = true
+        } label: {
+            Label("Filters", systemImage: "line.3.horizontal.decrease")
+                .capsulePill(on: !activeChips.isEmpty)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Filters")
+        .popover(isPresented: $showFilters) { filterPanel }
+    }
+
+    /// Under the title: the pill (split layouts) and one capsule per active filter,
+    /// each clearing itself; on a phone nothing at all when no filter is set
+    @ViewBuilder private func filterRow(withPill: Bool) -> some View {
+        let chips = activeChips
+        if withPill || !chips.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    if withPill {
+                        filterPill
+                    }
+                    ForEach(chips, id: \.self) { chip in
+                        Button {
+                            clear(chip)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(chip.label)
+                                Image(systemName: "xmark")
+                                    .font(.caption2)
+                            }
+                            .capsulePill(on: true)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear \(chip.label) filter")
+                    }
+                    if !chips.isEmpty {
+                        Button("Clear") {
+                            clearFilters()
+                        }
+                        .font(.subheadline)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
+    private func clear(_ chip: HistoryFilterChip) {
+        switch chip {
+        case .type: state.typeFilter = "All Types"
+        case .source: state.source = .all
+        case .timeFrame: state.timeFrameFilter = "All Timeframes"
+        case .includeHome: state.includeHome = false
+        }
+    }
+
+    /// Back to the defaults; the search text stays, its field shows it
+    private func clearFilters() {
+        state.typeFilter = "All Types"
+        state.source = .all
+        state.timeFrameFilter = "All Timeframes"
+        state.includeHome = false
     }
 
     private var compactContent: some View {
@@ -412,28 +462,14 @@ struct HistoryView: View {
     }
 }
 
-// MARK: - Filter Menu
-
-/// A menu picker whose label is the current choice on one line. A plain
-/// `.pickerStyle(.menu)` sizes itself for its longest option and wraps the label
-/// when it shares a row.
-private struct FilterMenu<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        Menu {
-            content()
-        } label: {
-            HStack(spacing: 4) {
-                Text(title)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2)
-            }
+private extension View {
+    /// iOS 26: the search field collapses to a magnifier in the bar until tapped
+    @ViewBuilder func minimizedSearch() -> some View {
+        if #available(iOS 26, *) {
+            self.searchToolbarBehavior(.minimize)
+        } else {
+            self
         }
-        .frame(maxWidth: .infinity)
     }
 }
 

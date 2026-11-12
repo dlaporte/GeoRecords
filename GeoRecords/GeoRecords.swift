@@ -95,6 +95,11 @@ struct GeoRecords: App {
 
     init() {
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+
+        // The page dots under the Records and Regions cards (and the setup wizard's)
+        // follow the label colour: the default light grey vanished on a light card
+        UIPageControl.appearance().currentPageIndicatorTintColor = .label
+        UIPageControl.appearance().pageIndicatorTintColor = UIColor.label.withAlphaComponent(0.3)
         // Don't request notification permissions here - wait for user to approve in setup wizard
 
         // Schedule summary notifications

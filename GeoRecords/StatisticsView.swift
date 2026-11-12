@@ -139,6 +139,15 @@ private func shouldShowXAxisLabel(for value: AxisValue, dataCount: Int, timeFram
     return true
 }
 
+/// The two directions of a chart card share a hue: South and West are North and
+/// East mixed toward black. A solid shade stays legible on a white card, where the
+/// 50% opacity it replaces washed out to pastel; over black it reads as before
+enum StatsPalette {
+    static func counterpart(of color: Color) -> Color {
+        color.mix(with: .black, by: 0.4)
+    }
+}
+
 struct StatisticsView: View {
     @EnvironmentObject var settings: SettingsManager
     @EnvironmentObject var deepLinkManager: DeepLinkManager
@@ -243,7 +252,7 @@ struct StatisticsView: View {
                 summary: currentNSSummary,
                 unit: settings.unitSystem.distanceUnit,
                 positiveColor: .blue,
-                negativeColor: .blue.opacity(0.5),
+                negativeColor: StatsPalette.counterpart(of: .blue),
                 positiveLabel: "N",
                 negativeLabel: "S",
                 data: chartDataForNS,
@@ -261,7 +270,7 @@ struct StatisticsView: View {
                 summary: currentEWSummary,
                 unit: settings.unitSystem.distanceUnit,
                 positiveColor: .orange,
-                negativeColor: .orange.opacity(0.5),
+                negativeColor: StatsPalette.counterpart(of: .orange),
                 positiveLabel: "E",
                 negativeLabel: "W",
                 data: chartDataForEW,
@@ -1182,7 +1191,7 @@ struct StatChartCard: View {
                     // Show value for the dragged period
                     HStack {
                         HStack(spacing: 6) {
-                            Circle().fill(color).frame(width: 6, height: 6)
+                            Circle().fill(color).frame(width: 8, height: 8)
                             Text(locationText(for: recordCache[point.label]))
                                 .font(.subheadline)
                                 .fontWeight(.medium)
@@ -1199,7 +1208,7 @@ struct StatChartCard: View {
                     // Default summary row
                     HStack {
                         HStack(spacing: 6) {
-                            Circle().fill(color).frame(width: 6, height: 6)
+                            Circle().fill(color).frame(width: 8, height: 8)
                             Text(summary.locationName ?? "—")
                                 .font(.subheadline)
                                 .fontWeight(.medium)
@@ -1532,7 +1541,7 @@ struct BidirectionalStatChartCard: View {
                         // Positive direction row (N or E)
                         HStack {
                             HStack(spacing: 6) {
-                                Circle().fill(positiveColor).frame(width: 6, height: 6)
+                                Circle().fill(positiveColor).frame(width: 8, height: 8)
                                 Text(validPos ? locationText(for: posRecord) : "—")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
@@ -1548,7 +1557,7 @@ struct BidirectionalStatChartCard: View {
                         // Negative direction row (S or W) - display as positive
                         HStack {
                             HStack(spacing: 6) {
-                                Circle().fill(negativeColor).frame(width: 6, height: 6)
+                                Circle().fill(negativeColor).frame(width: 8, height: 8)
                                 Text(validNeg ? locationText(for: negRecord) : "—")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
@@ -1568,7 +1577,7 @@ struct BidirectionalStatChartCard: View {
                         // Positive direction row (N or E)
                         HStack {
                             HStack(spacing: 6) {
-                                Circle().fill(positiveColor).frame(width: 6, height: 6)
+                                Circle().fill(positiveColor).frame(width: 8, height: 8)
                                 Text(summary.positiveLocationName ?? "—")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
@@ -1584,7 +1593,7 @@ struct BidirectionalStatChartCard: View {
                         // Negative direction row (S or W)
                         HStack {
                             HStack(spacing: 6) {
-                                Circle().fill(negativeColor).frame(width: 6, height: 6)
+                                Circle().fill(negativeColor).frame(width: 8, height: 8)
                                 Text(summary.negativeLocationName ?? "—")
                                     .font(.subheadline)
                                     .fontWeight(.medium)

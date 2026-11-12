@@ -81,6 +81,41 @@ struct AdaptiveLayoutTests {
 
     // Share and delete lead only on the Duo in landscape (a hinged device, window under
     // 720 pt tall): the iPad's top tab bar owns the leading area, and the book pose is tall
+    // A stacked panel takes only what its content needs when that is less than its
+    // share (a region without a photo: two cards), and the map gets the rest
+    @Test func thePanelShrinksToShortContent() async throws {
+        let share = DetailColumnStyle.panelHeight(forColumnHeight: 541, style: .stacked)
+        #expect(DetailColumnStyle.panelHeight(forColumnHeight: 541, style: .stacked, contentHeight: 285) == 285)
+        #expect(DetailColumnStyle.panelHeight(forColumnHeight: 541, style: .stacked, contentHeight: 700) == share)
+        #expect(DetailColumnStyle.panelHeight(forColumnHeight: 541, style: .stacked, contentHeight: nil) == share)
+        #expect(DetailColumnStyle.panelHeight(forColumnHeight: 541, style: .stacked, contentHeight: 0) == share)
+        #expect(DetailColumnStyle.panelHeight(forColumnHeight: 400, style: .stacked, contentHeight: 285) == 285)  // under the 300 floor
+    }
+
+    // Photos keep their own ratio when landscape and are cropped to 4:3 when taller
+    @Test func photosAreNeverTallerThanFourByThree() async throws {
+        let fourByThree = PhotoFit.tallestAspect
+        #expect(abs(fourByThree - 4.0 / 3.0) < 0.0001)
+        #expect(PhotoFit.displayAspect(forImageSize: CGSize(width: 1200, height: 1600)) == fourByThree)
+        #expect(PhotoFit.displayAspect(forImageSize: CGSize(width: 1600, height: 1200)) == fourByThree)
+        #expect(PhotoFit.displayAspect(forImageSize: CGSize(width: 2400, height: 800)) == 3)
+        #expect(PhotoFit.displayAspect(forImageSize: .zero) == fourByThree)
+    }
+
+    @Test func theRegionsPillCycles() async throws {
+        #expect(RegionListMode.cards.next == .notYet)
+        #expect(RegionListMode.notYet.next == .visited)
+        #expect(RegionListMode.visited.next == .cards)
+    }
+
+    // The chips under History's title name only the filters that are set
+    @Test func historyChipsListOnlyActiveFilters() async throws {
+        #expect(HistoryFilterChip.active(typeFilter: "All Types", source: .all, timeFrameFilter: "All Timeframes", includeHome: false).isEmpty)
+        let chips = HistoryFilterChip.active(typeFilter: "Furthest North", source: .source(.photo), timeFrameFilter: "Yearly", includeHome: true)
+        #expect(chips == [.type("Furthest North"), .source(.source(.photo)), .timeFrame("Yearly"), .includeHome])
+        #expect(chips.map(\.label) == ["Furthest North", "Photo Library", "Yearly", "Home"])
+    }
+
     @Test func actionsLeadOnlyOnTheDuoInLandscape() async throws {
         #expect(DetailActionsPlacement.leading(hasHinge: true, windowHeight: 669))
         #expect(!DetailActionsPlacement.leading(hasHinge: true, windowHeight: 951))   // the book pose

@@ -28,6 +28,8 @@ struct DetailContentView: View {
     @EnvironmentObject var settings: SettingsManager
     @State private var contentSize: CGSize = .zero
     @State private var headingHeight: CGFloat = 0
+    /// The stacked panel's content height, so a short panel takes only what it needs
+    @State private var panelContentHeight: CGFloat?
 
     @State private var isEditingNotes = false
     @State private var notesText: String = ""
@@ -193,9 +195,14 @@ struct DetailContentView: View {
         case .column:
             // A GeometryReader's size never depends on its children: dividing the
             // column from a measurement of the stack itself fed the stack's own
-            // overflow back into the division and never settled
-            GeometryReader { geometry in
-                columnLayout(in: geometry.size)
+            // overflow back into the division and never settled. The outer reader
+            // knows the bottom inset the inner one gives up, so the panel can run
+            // under it and its content scroll clear of it
+            GeometryReader { outer in
+                GeometryReader { geometry in
+                    columnLayout(in: geometry.size, bottomInset: outer.safeAreaInsets.bottom)
+                }
+                .ignoresSafeArea(.container, edges: .bottom)
             }
         }
     }
@@ -204,10 +211,14 @@ struct DetailContentView: View {
 
     /// Heading, the overview map and the panel: the photo beside the cards where the
     /// column is wide enough, above them where it is not (DetailColumnStyle)
-    private func columnLayout(in size: CGSize) -> some View {
+    /// `size` includes the bottom safe-area inset; the panel extends under it and
+    /// its content scrolls clear of it, so a cut-off photo or card reads as scrolling
+    /// content rather than a box stopping above a gap
+    private func columnLayout(in size: CGSize, bottomInset: CGFloat) -> some View {
         let columnStyle = DetailColumnStyle.style(forColumnWidth: size.width)
-        let below = max(0, size.height - headingHeight - 3 * 16 - 8)
-        let panelHeight = DetailColumnStyle.panelHeight(forColumnHeight: below, style: columnStyle)
+        let below = max(0, size.height - bottomInset - headingHeight - 2 * 16 - 8)
+        let panelHeight = DetailColumnStyle.panelHeight(forColumnHeight: below, style: columnStyle,
+                                                        contentHeight: columnStyle == .stacked ? panelContentHeight : nil)
         let mapHeight = max(0, below - panelHeight)
         return VStack(spacing: 16) {
             headerRow(.heading)
@@ -221,21 +232,21 @@ struct DetailContentView: View {
             }
             Group {
                 if columnStyle == .wide {
-                    widePanel(width: size.width)
+                    widePanel(width: size.width, bottomInset: bottomInset)
                 } else {
-                    stackedPanel
+                    stackedPanel(bottomInset: bottomInset)
                 }
             }
-            .frame(height: panelHeight)
+            .frame(height: panelHeight + bottomInset)
         }
         .padding(.top, 8)
-        .padding(.bottom, 16)
     }
 
-    private func widePanel(width: CGFloat) -> some View {
+    private func widePanel(width: CGFloat, bottomInset: CGFloat) -> some View {
         HStack(alignment: .top, spacing: 16) {
             if showsPhotoSlot {
                 photoSlot(.fitHeight(maxWidth: width * 0.56), orMap: false)
+                    .padding(.bottom, bottomInset)
             }
             ScrollView {
                 VStack(spacing: 16) {
@@ -243,12 +254,16 @@ struct DetailContentView: View {
                     locationCard
                     notesCard
                 }
+                .padding(.bottom, 16)
             }
+            .contentMargins(.bottom, bottomInset, for: .scrollContent)
         }
         .padding(.horizontal)
     }
 
-    private var stackedPanel: some View {
+    /// The content's height depends on the column's width alone (the photo keeps
+    /// its ratio, uncapped), so measuring it to size the panel cannot loop
+    private func stackedPanel(bottomInset: CGFloat) -> some View {
         ScrollView {
             VStack(spacing: 16) {
                 if showsPhotoSlot {
@@ -259,7 +274,10 @@ struct DetailContentView: View {
                 notesCard
             }
             .padding(.horizontal)
+            .padding(.bottom, 16)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelContentHeight = $0 }
         }
+        .contentMargins(.bottom, bottomInset, for: .scrollContent)
     }
 
     // MARK: - Header row
@@ -271,7 +289,10 @@ struct DetailContentView: View {
     /// Icon, the value or region name, the place or first visit beneath, the timeframe
     /// badge trailing. As `.heading` it is the column's title, at large-title size
     private func headerRow(_ prominence: HeadingProminence) -> some View {
-        HStack(alignment: .center, spacing: 14) {
+        // The badge is pinned to the row's top with a fixed width, so neither a
+        // wider label ("Monthly") nor a two-line place name moves its circle
+        HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
             Image(systemName: recordIcon)
                 .font(.system(size: prominence == .heading ? 34 : 30))
                 .foregroundColor(iconColor)
@@ -311,6 +332,7 @@ struct DetailContentView: View {
                     .buttonStyle(.plain)
                 }
             }
+            }
 
             Spacer(minLength: 8)
 
@@ -323,7 +345,11 @@ struct DetailContentView: View {
                 Text(record.timeFrame.rawValue)
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
             }
+            .frame(width: 44)
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
     }
@@ -383,8 +409,8 @@ struct DetailContentView: View {
         RoundedRectangle(cornerRadius: 16)
             .fill(Color(UIColor.secondarySystemGroupedBackground))
             .aspectRatio(4 / 3, contentMode: .fit)
-            .frame(maxWidth: fit.maxWidth, maxHeight: fit.maxHeight)
             .overlay(content())
+            .frame(maxWidth: fit.maxWidth, maxHeight: fit.maxHeight, alignment: .topLeading)
     }
 
     /// The record's spot, where a page has no photo to show; carries the add-photo button

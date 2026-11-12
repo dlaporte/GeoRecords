@@ -14,7 +14,7 @@ import SwiftUI
 extension XCTestCase {
     /// Hosts the view in a window of the given size and attaches its render
     @MainActor
-    func attach<V: View>(_ view: V, size: CGSize, name: String) {
+    func attach<V: View>(_ view: V, size: CGSize, name: String, settle: TimeInterval = 0) {
         let host = UIHostingController(rootView: view)
         host.safeAreaRegions = []  // the window sits under the status bar; the page would lose 59 pt
         let window = UIWindow(frame: CGRect(origin: .zero, size: size))
@@ -22,6 +22,11 @@ extension XCTestCase {
         window.isHidden = false
         host.view.frame = window.bounds
         host.view.layoutIfNeeded()
+        if settle > 0 {
+            // Let `.task` work land (a photo decoded from the record's data) before drawing
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: settle))
+            host.view.layoutIfNeeded()
+        }
         let image = UIGraphicsImageRenderer(size: size).image { _ in
             host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
         }

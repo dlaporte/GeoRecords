@@ -49,48 +49,6 @@ extension View {
     }
 }
 
-// MARK: - Styled pulldown
-
-/// A pulldown dressed like `StyledSegmentedPicker`: the current value and a chevron
-/// on the grey rounded rectangle, a checkmarked system menu beneath. The History
-/// filter panel uses it where the options are too many for segments
-struct StyledPulldown<T: Hashable>: View {
-    let title: String
-    @Binding var selection: T
-    let options: [T]
-    let label: (T) -> String
-
-    var body: some View {
-        Menu {
-            Picker("", selection: $selection) {
-                ForEach(options, id: \.self) { option in
-                    Text(label(option)).tag(option)
-                }
-            }
-        } label: {
-            HStack {
-                Text(label(selection))
-                    .font(.subheadline)
-                    .foregroundColor(.primary)
-                Spacer()
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity)
-            .background(Color(UIColor.systemGray5))
-            .cornerRadius(8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .accessibilityLabel(title)
-        .accessibilityValue(label(selection))
-    }
-}
-
 // MARK: - Record Photo Thumbnail
 
 /// Displays a photo thumbnail for a record, with multiple fallback loading strategies

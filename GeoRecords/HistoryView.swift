@@ -126,7 +126,6 @@ struct HistoryView: View {
 
     @Environment(\.layoutWidth) private var layoutWidth
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var showFilters = false
     @FocusState private var isSearchFocused: Bool
 
     /// The filters set in the panel, as the chips under the title show them
@@ -238,38 +237,81 @@ struct HistoryView: View {
 
     // MARK: - Filters
 
-    /// The filter panel: a sheet on a phone, a popover on its trigger on an iPad or
-    /// the Duo in landscape
-    private var filterPanel: some View {
-        HistoryFilterPanel(state: state, types: availableRecordTypes, timeFrames: availableTimeFrames, isRegionType: isRegionType)
-            .presentationCompactAdaptation(.sheet)
-            .presentationDetents([.height(370), .large])
+    /// The filters live in the Filters button's system menu (David's option B, every
+    /// layout): the type, source and time frame as submenus that show their value,
+    /// the at-home switch as a check row, and Clear Filters. Changes apply at once;
+    /// the chips under the title show what is set.
+    @ViewBuilder private var filterMenuItems: some View {
+        @Bindable var state = state
+        // Each filter is a submenu whose row shows the current value as its subtitle;
+        // a bare Picker inside a Menu floods the menu with every option
+        Menu {
+            Picker("Type", selection: $state.typeFilter) {
+                ForEach(availableRecordTypes, id: \.self) { type in
+                    Text(type == "All Types" ? "All types" : type).tag(type)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Text("Type")
+            Text(state.typeFilter == "All Types" ? "All types" : state.typeFilter)
+        }
+        Menu {
+            Picker("Source", selection: $state.source) {
+                ForEach(HistorySourceFilter.menuOrder, id: \.self) { source in
+                    Text(source.title).tag(source)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Text("Source")
+            Text(state.source.title)
+        }
+        // Region visits have no timeframe variations
+        Menu {
+            Picker("Time Frame", selection: $state.timeFrameFilter) {
+                ForEach(availableTimeFrames, id: \.self) { frame in
+                    Text(frame == "All Timeframes" ? "All" : frame).tag(frame)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Text("Time Frame")
+            Text(state.timeFrameFilter == "All Timeframes" ? "All" : state.timeFrameFilter)
+        }
+        .disabled(isRegionType(state.typeFilter))
+        Divider()
+        Toggle("Include records set at home", systemImage: "house", isOn: $state.includeHome)
+        Divider()
+        Button("Clear Filters", role: .destructive) {
+            clearFilters()
+        }
+        .disabled(activeChips.isEmpty)
     }
 
     /// A phone's trigger, in the bar: filled while a filter is set
     private var filterButton: some View {
-        Button {
-            showFilters = true
+        Menu {
+            filterMenuItems
         } label: {
             Image(systemName: activeChips.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
         .accessibilityLabel("Filters")
-        .popover(isPresented: $showFilters) { filterPanel }
     }
 
     /// A split layout's trigger, a pill leading the chips row: the iPad's floating
     /// tab pill sits over the sidebar's trailing bar items, so a bar button there
     /// is covered
     private var filterPill: some View {
-        Button {
-            showFilters = true
+        Menu {
+            filterMenuItems
         } label: {
             Label("Filters", systemImage: "line.3.horizontal.decrease")
                 .capsulePill(on: !activeChips.isEmpty)
         }
         .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .accessibilityLabel("Filters")
-        .popover(isPresented: $showFilters) { filterPanel }
     }
 
     /// Under the title: the pill (split layouts) and one capsule per active filter,

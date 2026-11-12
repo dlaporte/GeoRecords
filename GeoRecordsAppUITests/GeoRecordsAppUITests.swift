@@ -210,10 +210,17 @@ final class GeoRecordsUITests: XCTestCase {
 
         selectTab(app, "History"); sleep(3); snap(app, "12-history")
         if app.buttons["Filters"].waitForExistence(timeout: 3) {
+            // The menu rows carry their value as a subtitle, so match the title's start
+            let typeRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Type'")).firstMatch
             app.buttons["Filters"].tap(); sleep(2); snap(app, "12b-history-filters")
-            tap(app, "Type"); sleep(1); snap(app, "12b2-history-type-menu")
-            tap(app, "Furthest North"); sleep(1); tap(app, "Done"); sleep(2); snap(app, "12c-history-filtered")
-            tap(app, "Clear"); sleep(1)
+            typeRow.tap(); sleep(1); snap(app, "12b2-history-type-menu")
+            tap(app, "Furthest North"); sleep(2); snap(app, "12c-history-filtered")
+            // Reopened: the row shows the value, Clear Filters is enabled
+            app.buttons["Filters"].tap(); sleep(2); snap(app, "12d-history-menu-set")
+            typeRow.tap(); sleep(1); tap(app, "New State"); sleep(2)
+            // A region type greys the Time Frame row
+            app.buttons["Filters"].tap(); sleep(2); snap(app, "12e-history-region-type")
+            tap(app, "Clear Filters"); sleep(2)
         }
         selectTab(app, "Settings"); sleep(2); snap(app, "13-settings")
         app.swipeUp(); sleep(1); snap(app, "14-settings-scrolled")

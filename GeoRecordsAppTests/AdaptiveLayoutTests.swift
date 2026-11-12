@@ -102,12 +102,6 @@ struct AdaptiveLayoutTests {
         #expect(PhotoFit.displayAspect(forImageSize: .zero) == fourByThree)
     }
 
-    @Test func theRegionsPillCycles() async throws {
-        #expect(RegionListMode.cards.next == .notYet)
-        #expect(RegionListMode.notYet.next == .visited)
-        #expect(RegionListMode.visited.next == .cards)
-    }
-
     // The chips under History's title name only the filters that are set
     @Test func historyChipsListOnlyActiveFilters() async throws {
         #expect(HistoryFilterChip.active(typeFilter: "All Types", source: .all, timeFrameFilter: "All Timeframes", includeHome: false).isEmpty)

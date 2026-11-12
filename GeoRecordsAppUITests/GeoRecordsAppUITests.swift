@@ -198,11 +198,9 @@ final class GeoRecordsUITests: XCTestCase {
 
         selectTab(app, "Regions"); sleep(4); snap(app, "08-regions-states")
         openFirstCard(app); snap(app, "08b-region-opened"); goBack(app)
-        if app.buttons["Show regions not yet visited"].waitForExistence(timeout: 3) {
-            app.buttons["Show regions not yet visited"].tap(); sleep(3); snap(app, "09-regions-not-yet")
-            app.buttons["Show visited regions"].tap(); sleep(2); snap(app, "09b-regions-visited")
-            app.buttons["Show region cards"].tap(); sleep(1)
-        }
+        // A tap on an unvisited state (Utah sits right of the framed Nevada) shows the callout
+        app.maps.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.82, dy: 0.55)).tap(); sleep(2)
+        snap(app, "08c-regions-callout")
         tap(app, "Continents"); sleep(4); snap(app, "10-regions-continents")
         swipeCards(app); sleep(4); snap(app, "10b-regions-continents-second")
         swipeCards(app); sleep(4); snap(app, "10c-regions-continents-third")
@@ -224,6 +222,21 @@ final class GeoRecordsUITests: XCTestCase {
         }
         selectTab(app, "Settings"); sleep(2); snap(app, "13-settings")
         app.swipeUp(); sleep(1); snap(app, "14-settings-scrolled")
+
+        // Display → List: Records and Regions as rows beside the map, then back to Cards
+        app.swipeDown(); sleep(1)
+        let listChoice = app.segmentedControls.buttons["List"]
+        if listChoice.waitForExistence(timeout: 3) {
+            listChoice.tap(); sleep(1)
+            selectTab(app, "Records"); tap(app, "Lifetime"); sleep(3); snap(app, "15-records-list")
+            // A row opens the record on a phone (selects it on an iPad); back, it is the
+            // tinted row and the map frames it
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Furthest South'")).firstMatch.tap(); sleep(2)
+            goBack(app); sleep(1); snap(app, "15b-records-list-selected")
+            selectTab(app, "Regions"); tap(app, "States"); sleep(3); snap(app, "16-regions-list")
+            selectTab(app, "Settings"); sleep(2)
+            app.segmentedControls.buttons["Cards"].tap(); sleep(1)
+        }
     }
 
     /// Taps the card under the map: on a phone it pushes the record's page, on an

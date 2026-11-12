@@ -184,13 +184,13 @@ struct RecordsView: View {
                     HStack(spacing: 0) {
                         recordsMap
                             .mapCard()
-                        cardCarousel
+                        cardSlot
                             .frame(width: 360)
                     }
                 } else {
                     recordsMap
                         .mapCard()
-                    cardCarousel
+                    cardSlot
                 }
             }
             .minimalBackButton()
@@ -211,6 +211,10 @@ struct RecordsView: View {
                     .padding()
                 if allRecords.isEmpty {
                     emptyState
+                } else if settings.listLayout == .list {
+                    RecordList(records: allRecords, selectedID: focusedRecord?.id, unitSystem: settings.unitSystem) { index in
+                        state.selectedRecordID = allRecords[index].id
+                    }
                 } else {
                     recordList
                 }
@@ -321,6 +325,23 @@ struct RecordsView: View {
             if state.selectedRecordID != newId {
                 state.selectedRecordID = newId
             }
+        }
+    }
+
+    /// Under (or beside) the map on a phone: the swipeable cards, or the list when
+    /// Settings says List; a row frames the record on the map and opens it
+    @ViewBuilder private var cardSlot: some View {
+        if settings.listLayout == .list {
+            RecordList(records: allRecords, selectedID: focusedRecord?.id, unitSystem: settings.unitSystem) { index in
+                // The hoisted selection moves the marker and the map (see onChange above)
+                state.selectedRecordID = allRecords[index].id
+                selectedRecordIndex = index
+                navigateToDetail = true
+            }
+            .frame(height: sizing.isCompact ? nil : cardTabViewHeight)
+            .padding(.vertical, 10)
+        } else {
+            cardCarousel
         }
     }
 
@@ -634,6 +655,49 @@ private struct RecordValueDisplay: View {
 // MARK: - Record Photo Thumbnail
 
 // MARK: - Record Card View
+
+/// The records as a dense list, in the cards' order: icon, type and value, the place
+/// and date beneath. A row selects the record (and opens it on a phone). No
+/// thumbnail and no progression caption: those stay on the card and the detail page
+private struct RecordList: View {
+    let records: [RecordDetail]
+    let selectedID: UUID?
+    let unitSystem: UnitSystem
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        List(Array(records.enumerated()), id: \.element.id) { index, record in
+            Button {
+                onSelect(index)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: FormatUtils.iconForRecordType(record.recordType))
+                        .foregroundColor(FormatUtils.colorForRecordType(record.recordType))
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(record.recordType)
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                        Text("\(record.locationName ?? "Unknown") · \(record.timestamp.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text(FormatUtils.formatValue(value: record.value, recordType: record.recordType, unitSystem: unitSystem))
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(FormatUtils.colorForRecordType(record.recordType))
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
+            .listRowBackground(selectedID == record.id ? Color.accentColor.opacity(0.12) : Color.clear)
+            .accessibilityAddTraits(selectedID == record.id ? .isSelected : [])
+        }
+        .listStyle(.plain)
+    }
+}
 
 struct RecordCardView: View {
     let record: RecordDetail

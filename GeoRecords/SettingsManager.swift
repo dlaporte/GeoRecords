@@ -78,6 +78,8 @@ class SettingsManager: ObservableObject, SettingsManaging {
     @Published var homeCoordinate: CLLocationCoordinate2D?
     @Published var homeLocationName: String?
     @Published var unitSystem: UnitSystem
+    /// Cards or a list on the Records and Regions tabs; device-local, like hasCompletedSetup
+    @Published var listLayout: ListLayout
 
     // Wizard preferences - tracks which records user has chosen to skip
     // Keys are in format "timeFrame_recordType" e.g., "allTime_Furthest Up", "2024_Furthest North"
@@ -200,6 +202,7 @@ class SettingsManager: ObservableObject, SettingsManaging {
         // hasCompletedSetup is device-local only (not synced to iCloud)
         // Each device needs its own setup/restore flow
         self.hasCompletedSetup = defaults.object(forKey: UserDefaultsKey.hasCompletedSetup.rawValue) as? Bool ?? Self.defaultHasCompletedSetup
+        self.listLayout = defaults.string(forKey: UserDefaultsKey.listLayout.rawValue).flatMap(ListLayout.init(rawValue:)) ?? .cards
 
         // Load notification settings (migrate old setting if needed)
         if let oldNotifySetting = defaults.object(forKey: UserDefaultsKey.notifyOnNewRecord.rawValue) as? Bool {
@@ -432,6 +435,7 @@ class SettingsManager: ObservableObject, SettingsManaging {
         let defaults = UserDefaults(suiteName: "group.com.georecords.shared") ?? UserDefaults.standard
 
         defaults.set(hasCompletedSetup, forKey: UserDefaultsKey.hasCompletedSetup.rawValue)
+        defaults.set(listLayout.rawValue, forKey: UserDefaultsKey.listLayout.rawValue)
         defaults.set(notifyOnMonthlyRecords, forKey: UserDefaultsKey.notifyOnMonthlyRecords.rawValue)
         defaults.set(notifyOnYearlyRecords, forKey: UserDefaultsKey.notifyOnYearlyRecords.rawValue)
         defaults.set(notifyOnAllTimeRecords, forKey: UserDefaultsKey.notifyOnAllTimeRecords.rawValue)

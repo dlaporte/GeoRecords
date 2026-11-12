@@ -2,8 +2,9 @@
 //  NotYetRegions.swift
 //  GeoRecords
 //
-//  The "Not yet" side of the Regions tab: which regions remain, how far away
-//  they are, and the callout shown for a tapped unvisited region.
+//  The unvisited side of the Regions tab: the region kinds' polygons and cameras,
+//  the nearest-border distance from home, and the callout shown for a tapped
+//  unvisited region ("Idaho · not yet · ~250 mi away").
 //
 
 import Foundation
@@ -42,24 +43,6 @@ enum NotYetKind {
             return RegionOverlayCache.shared.cameraRegion(for: code, defaultRegion: defaultRegion)
         }
     }
-}
-
-enum NotYetSet {
-    /// Regions in `all` not yet visited, in `all`'s order
-    static func remaining(all: [NotYetRegion], visitedCodes: Set<String>) -> [NotYetRegion] {
-        all.filter { !visitedCodes.contains($0.code) }
-    }
-
-    /// The 50 states (DC and territories never count toward "of 50")
-    static let allStates: [NotYetRegion] = usStateNames
-        .filter { !usTerritoryCodes.contains($0.key) }
-        .map { NotYetRegion(code: "US-\($0.key)", name: $0.value) }
-        .sorted { $0.name < $1.name }
-
-    /// The 195 behind "of 195"
-    static let allCountries: [NotYetRegion] = unMemberAndObserverCountries.map { NotYetRegion(code: $0.code, name: $0.name) }
-
-    static let allContinents: [NotYetRegion] = Continent.allCases.map { NotYetRegion(code: $0.rawValue, name: $0.rawValue) }
 }
 
 enum RegionDistance {

@@ -5,6 +5,13 @@ import CoreLocation
 
 // MARK: - Shared Models
 
+/// How the Records and Regions tabs show their entries: swipeable cards, or a list
+/// beside the map (Settings → Display; kept per device)
+enum ListLayout: String, CaseIterable {
+    case cards
+    case list
+}
+
 /// Unit system for displaying values
 enum UnitSystem: String, Codable {
     case metric
@@ -305,6 +312,9 @@ enum UserDefaultsKey: String {
 
     // Units
     case unitSystem
+
+    // Display: records and regions as cards or as a list (device-local)
+    case listLayout
 
     // Wizard preferences
     case skippedWizardRecords  // Set of record keys that user chose to skip

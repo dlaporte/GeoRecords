@@ -27,29 +27,11 @@ final class RecordsTabState {
     }
 }
 
-/// What the Regions tab lists under the map (or in its sidebar): the region cards,
-/// the regions still unvisited, or the visited regions as a dense list
-enum RegionListMode: Equatable {
-    case cards, notYet, visited
-
-    /// The pill cycles cards → not yet → visited → cards
-    var next: RegionListMode {
-        switch self {
-        case .cards: return .notYet
-        case .notYet: return .visited
-        case .visited: return .cards
-        }
-    }
-}
-
 @Observable
 final class RegionsTabState {
     var mapType: MapsTabView.MapType = .states
     /// Region code of the selected card in the current map type (nil = first card)
     var selectedRegionCode: String?
-    var listMode: RegionListMode = .cards
-    /// The map draws the unvisited regions only while their list is up
-    var showNotYet: Bool { listMode == .notYet }
 
     /// "states" / "countries" / "continents" from a deep link; anything else is ignored
     func apply(section: String) {

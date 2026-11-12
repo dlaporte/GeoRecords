@@ -106,6 +106,18 @@ struct SettingsView: View {
                     }
                 }
 
+                // MARK: - Display Section
+                Section(header: Text("Display"), footer: Text("List shows records and regions as rows beside the map; Cards shows one at a time.")) {
+                    Picker("Records and regions", selection: $settings.listLayout) {
+                        Text("Cards").tag(ListLayout.cards)
+                        Text("List").tag(ListLayout.list)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: settings.listLayout) { _, _ in
+                        settings.saveSettings()
+                    }
+                }
+
                 // MARK: - Units Section
                 Section(header: Text("Units")) {
                     Picker("Units", selection: $settings.unitSystem) {

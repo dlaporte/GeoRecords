@@ -101,6 +101,50 @@ final class GeoRecordsUITests: XCTestCase {
         }
     }
 
+    /// History's search field sits under the title; opening it and dismissing it
+    /// without submitting, with nothing typed and then with text, must leave no
+    /// keyboard and no active search, with the field still there. A minimized field
+    /// (searchToolbarBehavior .minimize) reopened itself after its Close button on
+    /// iOS 27.0–27.2 (Apple forum thread 845737), and iOS 27's default drawer hides
+    /// the field until the list is pulled down, which is why History pins it
+    @MainActor
+    func testHistorySearchCloses() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["GEORECORDS_SHOW_SIZE_CLASS"] = "1"
+        app.launch()
+        sleep(3)
+        selectTab(app, "History"); sleep(2)
+        dismissLocationBanner(app)
+        snap(app, "S-history-idle")
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 3), "no search field under the History title")
+        // The field's own Cancel (iOS 18) or X (iOS 26+), inside the navigation bar
+        let dismiss = app.navigationBars.buttons.matching(NSPredicate(format: "label == 'Cancel' OR label == 'Close'")).firstMatch
+        for text in ["", "Bell"] {
+            field.tap()
+            sleep(1)
+            if !text.isEmpty { app.typeText(text); sleep(1) }
+            XCTAssertTrue(dismiss.waitForExistence(timeout: 3), "no Cancel or Close button beside the search field (typed '\(text)')")
+            dismiss.tap()
+            sleep(4)
+            snap(app, text.isEmpty ? "S-search-closed-empty" : "S-search-closed-typed")
+            XCTAssertEqual(app.keyboards.count, 0, "the keyboard is still up after dismissing the search (typed '\(text)')")
+            XCTAssertFalse(dismiss.exists, "the search is still active after dismissing it (typed '\(text)')")
+            XCTAssertTrue(field.exists, "the search field is gone after dismissing the search (typed '\(text)')")
+        }
+    }
+
+    /// A simulator without Always location permission shows the "Location Disabled"
+    /// or "Location Issue" banner (with a Fix button) over every screen; its Close
+    /// button is labelled like a search field's. Grant the permission to avoid it:
+    /// xcrun simctl privacy <udid> grant location-always org.davidlaporte.GeoRecords
+    private func dismissLocationBanner(_ app: XCUIApplication) {
+        if app.buttons["Fix"].waitForExistence(timeout: 2) {
+            let close = app.buttons.matching(identifier: "xmark").firstMatch
+            if close.exists { close.tap(); sleep(1) }
+        }
+    }
+
     /// Taps through a system permission alert (location, notifications) if one is up
     private func dismissSystemAlert() {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
@@ -137,6 +181,8 @@ final class GeoRecordsUITests: XCTestCase {
         // since the screen's middle can be a record's photo (tapping it opens the viewer)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.04)).tap()
         sleep(1)
+        dismissLocationBanner(app)
+        sleep(1)
         snap(app, "01-records-lifetime")
         openFirstCard(app); snap(app, "01b-record-opened"); goBack(app)
 
@@ -165,6 +211,7 @@ final class GeoRecordsUITests: XCTestCase {
         selectTab(app, "History"); sleep(3); snap(app, "12-history")
         if app.buttons["Filters"].waitForExistence(timeout: 3) {
             app.buttons["Filters"].tap(); sleep(2); snap(app, "12b-history-filters")
+            tap(app, "Type"); sleep(1); snap(app, "12b2-history-type-menu")
             tap(app, "Furthest North"); sleep(1); tap(app, "Done"); sleep(2); snap(app, "12c-history-filtered")
             tap(app, "Clear"); sleep(1)
         }
@@ -195,12 +242,13 @@ final class GeoRecordsUITests: XCTestCase {
     /// Selects a tab wherever the platform draws it: the iPhone tab bar, the iPad top
     /// tab bar or sidebar, or the iPhone Duo inner display's vertical rail
     private func selectTab(_ app: XCUIApplication, _ name: String) {
-        let inTabBar = app.tabBars.buttons[name]
+        // firstMatch: iPadOS 27 exposes each top-bar tab twice
+        let inTabBar = app.tabBars.buttons[name].firstMatch
         if inTabBar.waitForExistence(timeout: 2) {
             inTabBar.tap()
             return
         }
-        let anywhere = app.buttons[name]
+        let anywhere = app.buttons[name].firstMatch
         if anywhere.waitForExistence(timeout: 2) {
             anywhere.tap()
             return

@@ -183,9 +183,10 @@ struct HistoryView: View {
                 compactContent
             }
             .minimalBackButton()
-            .searchable(text: $state.searchText, prompt: "Type or place")
+            // Always under the title: iOS 27's default hides the field until the list
+            // is pulled down, which reads as no search at all
+            .searchable(text: $state.searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Type or place")
             .searchFocused($isSearchFocused)
-            .minimizedSearch()
             .navigationTitle("History (\(filteredEntries.count))")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { filterButton }
@@ -242,7 +243,7 @@ struct HistoryView: View {
     private var filterPanel: some View {
         HistoryFilterPanel(state: state, types: availableRecordTypes, timeFrames: availableTimeFrames, isRegionType: isRegionType)
             .presentationCompactAdaptation(.sheet)
-            .presentationDetents([.fraction(0.72), .large])
+            .presentationDetents([.height(370), .large])
     }
 
     /// A phone's trigger, in the bar: filled while a filter is set
@@ -458,17 +459,6 @@ struct HistoryView: View {
                     .listStyle(.plain)
                 }
             }
-        }
-    }
-}
-
-private extension View {
-    /// iOS 26: the search field collapses to a magnifier in the bar until tapped
-    @ViewBuilder func minimizedSearch() -> some View {
-        if #available(iOS 26, *) {
-            self.searchToolbarBehavior(.minimize)
-        } else {
-            self
         }
     }
 }

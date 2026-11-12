@@ -32,27 +32,69 @@ struct CardSizing {
     var contentSpacing: CGFloat { isCompact ? 6 : 12 }
 }
 
-// MARK: - Record Photo Thumbnail
-
-/// Displays a photo thumbnail for a record, with multiple fallback loading strategies
-/// Used by both RecordsView and MapsTabView
 // MARK: - Capsule pill
 
 /// The capsule the Regions tab's "Not yet" button wears, shared by the History
-/// filter chips and the filter panel's pills: caption text in a tertiary fill,
-/// white on the accent colour when on
+/// "Filters" pill and its filter chips: caption text in a tertiary fill, white on
+/// the accent colour when on
 extension View {
-    func capsulePill(on: Bool, roomy: Bool = false) -> some View {
+    func capsulePill(on: Bool) -> some View {
         self
-            .font(roomy ? .subheadline : .caption)
+            .font(.caption)
             .fontWeight(.medium)
             .foregroundColor(on ? .white : .secondary)
-            .padding(.horizontal, roomy ? 12 : 8)
-            .padding(.vertical, roomy ? 7 : 4)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
             .background(Capsule().fill(on ? Color.accentColor : Color(UIColor.tertiarySystemFill)))
     }
 }
 
+// MARK: - Styled pulldown
+
+/// A pulldown dressed like `StyledSegmentedPicker`: the current value and a chevron
+/// on the grey rounded rectangle, a checkmarked system menu beneath. The History
+/// filter panel uses it where the options are too many for segments
+struct StyledPulldown<T: Hashable>: View {
+    let title: String
+    @Binding var selection: T
+    let options: [T]
+    let label: (T) -> String
+
+    var body: some View {
+        Menu {
+            Picker("", selection: $selection) {
+                ForEach(options, id: \.self) { option in
+                    Text(label(option)).tag(option)
+                }
+            }
+        } label: {
+            HStack {
+                Text(label(selection))
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(Color(UIColor.systemGray5))
+            .cornerRadius(8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .accessibilityLabel(title)
+        .accessibilityValue(label(selection))
+    }
+}
+
+// MARK: - Record Photo Thumbnail
+
+/// Displays a photo thumbnail for a record, with multiple fallback loading strategies
+/// Used by both RecordsView and MapsTabView
 struct RecordPhotoThumbnail: View {
     let recordId: UUID
     let photoAssetIdentifier: String?

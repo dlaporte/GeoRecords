@@ -2,10 +2,11 @@
 //  HistoryFilterPanel.swift
 //  GeoRecords
 //
-//  The History filters behind the bar's filter button: a half-height sheet on a
-//  phone, a popover on wide layouts. The type and the source are capsule pills, the
-//  time frame the segmented control the Regions tab uses, the at-home rows a
-//  switch. Changes apply live behind the panel; Reset restores the defaults.
+//  The History filters behind the bar's filter button: a sheet on a phone, a
+//  popover on wide layouts. The type and the source are pulldowns and the time
+//  frame the segmented control, all in the Regions tab's grey rounded style; the
+//  at-home rows a switch. Changes apply live behind the panel; Reset restores the
+//  defaults.
 //
 
 import SwiftUI
@@ -45,21 +46,13 @@ struct HistoryFilterPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     section("Type") {
-                        PillFlow {
-                            ForEach(types, id: \.self) { type in
-                                pill(type == "All Types" ? "All types" : type, on: state.typeFilter == type) {
-                                    state.typeFilter = type
-                                }
-                            }
+                        StyledPulldown(title: "Type", selection: $state.typeFilter, options: types) {
+                            $0 == "All Types" ? "All types" : $0
                         }
                     }
                     section("Source") {
-                        PillFlow {
-                            ForEach(HistorySourceFilter.menuOrder, id: \.self) { source in
-                                pill(source == .all ? "All sources" : source.title, on: state.source == source) {
-                                    state.source = source
-                                }
-                            }
+                        StyledPulldown(title: "Source", selection: $state.source, options: HistorySourceFilter.menuOrder) {
+                            $0 == .all ? "All sources" : $0.title
                         }
                     }
                     section("Time frame") {
@@ -81,7 +74,7 @@ struct HistoryFilterPanel: View {
             }
         }
         .background(Color(UIColor.systemGroupedBackground))
-        .frame(idealWidth: 360, idealHeight: 560)
+        .frame(idealWidth: 360, idealHeight: 400)
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -93,15 +86,6 @@ struct HistoryFilterPanel: View {
                 .textCase(.uppercase)
             content()
         }
-    }
-
-    private func pill(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .capsulePill(on: on, roomy: true)
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(on ? .isSelected : [])
     }
 
     private func reset() {

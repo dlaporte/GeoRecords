@@ -52,23 +52,29 @@ struct RecordPhotoView: View {
 
     var body: some View {
         // The box is sized by its aspect ratio inside the room offered; the clip,
-        // the border and the buttons then follow the box, and the room stays invisible
-        Color.clear
-            .aspectRatio(PhotoFit.displayAspect(forImageSize: image.size), contentMode: .fit)
-            .overlay {
-                Button(action: { showFullScreen = true }) {
+        // the border and the buttons then follow the box, and the room stays invisible.
+        // A cropped photo overflows the box: clipping hides the overflow but does
+        // not stop taps on it, so the image takes none and the box is the target
+        Button(action: { showFullScreen = true }) {
+            Color.clear
+                .aspectRatio(PhotoFit.displayAspect(forImageSize: image.size), contentMode: .fit)
+                .overlay {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
+                        .allowsHitTesting(false)
                 }
-                .buttonStyle(.plain)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
-            )
-            .overlay(alignment: .topTrailing) {
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .contentShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Photo")
+        .accessibilityHint("Opens the photo full screen")
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+        )
+        .overlay(alignment: .topTrailing) {
                 HStack(spacing: 8) {
                     if canChange {
                         PhotosPicker(selection: $selection, matching: .images, photoLibrary: .shared()) {
@@ -88,7 +94,7 @@ struct RecordPhotoView: View {
                     }
                 }
                 .padding(8)
-            }
-            .frame(maxWidth: fit.maxWidth, maxHeight: fit.maxHeight, alignment: .topLeading)
+        }
+        .frame(maxWidth: fit.maxWidth, maxHeight: fit.maxHeight, alignment: .topLeading)
     }
 }

@@ -32,7 +32,7 @@ struct SimulatorSeed {
         // new-record prompt would), so the screens show the photo path, not the
         // map fallback; Furthest South stays photo-less for the map slot
         func place(_ type: RecordType, _ timeFrame: TimeFrame, _ value: Double?, lat: Double, lon: Double,
-                   _ name: String, _ date: Date, altitude: Double = 0, photo: Bool = false) {
+                   _ name: String, _ date: Date, altitude: Double = 0, photo: Bool = false, portrait: Bool = false) {
             let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
             let stored: Double
             switch type {
@@ -45,12 +45,12 @@ struct SimulatorSeed {
             let row = insertRow(context, type: type.rawValue, timeFrame: timeFrame.rawValue, value: stored,
                                 lat: lat, lon: lon, timestamp: date, locationName: name)
             row.altitude = altitude
-            if photo { row.photoData = SeedPhoto.jpeg(titled: name) }
+            if photo { row.photoData = SeedPhoto.jpeg(titled: name, size: portrait ? CGSize(width: 1200, height: 1600) : CGSize(width: 1600, height: 1200)) }
         }
 
         // Lifetime records with a previous one each (progression rows)
         place(.north, .allTime, nil, lat: 64.1466, lon: -21.9426, "Reykjavík, Iceland", noon(2023, 8, 10))
-        place(.north, .allTime, nil, lat: 69.6492, lon: 18.9553, "Tromsø, Norway", noon(2024, 6, 3), photo: true)
+        place(.north, .allTime, nil, lat: 69.6492, lon: 18.9553, "Tromsø, Norway", noon(2024, 6, 3), photo: true, portrait: true)
         place(.south, .allTime, nil, lat: 21.1619, lon: -86.8515, "Cancún, Mexico", noon(2022, 5, 1))
         place(.south, .allTime, nil, lat: -34.6037, lon: -58.3816, "Buenos Aires, Argentina", noon(2025, 2, 14))
         place(.east, .allTime, nil, lat: 69.6492, lon: 18.9553, "Tromsø, Norway", noon(2024, 6, 3), photo: true)

@@ -62,6 +62,29 @@ final class GeoRecordsUITests: XCTestCase {
     /// (SingleColumnTab); a drag from the leading edge must not reveal the empty
     /// sidebar. Captures before and after the drag, for eyeballing on the iPad.
     @MainActor
+    /// A portrait photo is drawn cropped to 4:3; the hidden overflow must not take
+    /// taps meant for the value and the rows beneath it (the seeded Furthest North
+    /// record carries a 1200×1600 photo)
+    func testPortraitPhotoKeepsTapsInItsBox() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["GEORECORDS_SHOW_SIZE_CLASS"] = "1"
+        app.launch()
+        sleep(3)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.04)).tap()
+        sleep(1)
+        openFirstCard(app)
+        let value = app.staticTexts["69.6492° N"]
+        XCTAssertTrue(value.waitForExistence(timeout: 5), "the Furthest North page did not open")
+        value.tap()
+        XCTAssertFalse(app.buttons["Close photo"].waitForExistence(timeout: 2),
+                       "tapping the value under the photo opened the full-screen viewer")
+        app.buttons["Photo"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Close photo"].waitForExistence(timeout: 3), "tapping the photo did not open the viewer")
+        app.buttons["Close photo"].tap()
+        sleep(1)
+        goBack(app)
+    }
+
     func testSingleColumnTabsIgnoreEdgeSwipe() throws {
         let app = XCUIApplication()
         app.launchEnvironment["GEORECORDS_SHOW_SIZE_CLASS"] = "1"

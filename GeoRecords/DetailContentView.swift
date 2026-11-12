@@ -1041,6 +1041,7 @@ private struct FullScreenPhotoView: View {
                     .font(.system(size: 32))
                     .foregroundColor(.white.opacity(0.8))
             }
+            .accessibilityLabel("Close photo")
             .padding(20),
             alignment: .topTrailing
         )

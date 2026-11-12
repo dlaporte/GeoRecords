@@ -222,9 +222,10 @@ final class GeoRecordsUITests: XCTestCase {
         }
         selectTab(app, "Settings"); sleep(2); snap(app, "13-settings")
         app.swipeUp(); sleep(1); snap(app, "14-settings-scrolled")
+        app.swipeUp(); sleep(1); snap(app, "14b-settings-bottom")
 
         // Display → List: Records and Regions as rows beside the map, then back to Cards
-        app.swipeDown(); sleep(1)
+        app.swipeDown(); sleep(1); app.swipeDown(); sleep(1)
         let listChoice = app.segmentedControls.buttons["List"]
         if listChoice.waitForExistence(timeout: 3) {
             listChoice.tap(); sleep(1)

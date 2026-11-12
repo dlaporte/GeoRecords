@@ -415,7 +415,7 @@ struct SettingsView: View {
                         .foregroundColor(.secondary)
                 }
 
-                // MARK: - Import Records Section
+                // MARK: - Add Records Section (blue actions: each creates records)
                 Section {
                     Button(action: {
                         showManualImport = true
@@ -440,18 +440,15 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                } header: {
+                    Text("Add Records")
+                } footer: {
+                    Text("Import records from your photo library, or add one by hand.")
+                }
 
-                    Button(action: {
-                        showImportFilePicker = true
-                    }) {
-                        HStack {
-                            Label("Import Backup", systemImage: "square.and.arrow.down")
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
+                // MARK: - Backup Section (rows in the label colour with tinted icons, like
+                // the snapshots link: each opens something)
+                Section {
                     Button(action: {
                         Task {
                             isExporting = true
@@ -465,7 +462,11 @@ struct SettingsView: View {
                         }
                     }) {
                         HStack {
-                            Label("Export Backup", systemImage: "square.and.arrow.up")
+                            Label {
+                                Text("Export Backup").foregroundColor(.primary)
+                            } icon: {
+                                Image(systemName: "square.and.arrow.up")
+                            }
                             Spacer()
                             if isExporting {
                                 ProgressView()
@@ -479,15 +480,31 @@ struct SettingsView: View {
                     }
                     .disabled(isExporting)
 
+                    Button(action: {
+                        showImportFilePicker = true
+                    }) {
+                        HStack {
+                            Label {
+                                Text("Import Backup").foregroundColor(.primary)
+                            } icon: {
+                                Image(systemName: "square.and.arrow.down")
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
                     NavigationLink {
                         SafetySnapshotsView()
                     } label: {
                         Label("Automatic Snapshots", systemImage: "clock.arrow.circlepath")
                     }
                 } header: {
-                    Text("Backup & Data")
+                    Text("Backup")
                 } footer: {
-                    Text("Import records from your photo library, a backup file, or add them manually. Exports save to a backup file; photos are stored as references to your Photos library. A safety snapshot is also saved automatically before any destructive operation — see Automatic Snapshots.")
+                    Text("Exports save to a backup file; photos are stored as references to your Photos library. A snapshot is saved automatically before any destructive operation.")
                 }
 
                 // MARK: - Danger Zone (kept as its own section so the destructive

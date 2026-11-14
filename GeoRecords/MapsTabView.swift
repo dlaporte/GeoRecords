@@ -806,7 +806,6 @@ struct ContinentsMapView: View {
     }
 
     var body: some View {
-        let visitedCodes = Set(visitedContinentsSet.map(\.rawValue))
         RegionCardsMapView(
             sidebarHeader: sidebarHeader,
             regions: sortedContinents,

@@ -52,8 +52,10 @@ extension EnvironmentValues {
     /// The scene window's height, measured alongside the width
     @Entry var windowHeight: CGFloat? = nil
 
-    /// The window's top safe-area inset outside any navigation bar (see WindowMeasure)
-    @Entry var windowTopInset: CGFloat = 0
+    /// A split view's detail column: its top safe-area inset while the sidebar is
+    /// shown (the bar's share of the top, or nothing where the bar collapses), kept
+    /// by the host so the column can hold that position when the sidebar hides
+    @Entry var detailBaseTopInset: CGFloat = 0
 
     /// Whether the window is currently divided by an active fold (the Duo's book
     /// pose); false on every other device and whenever the Duo is flat
@@ -234,6 +236,26 @@ enum DetailActionsPlacement {
     static func leading(hasHinge: Bool, windowHeight: CGFloat?) -> Bool {
         guard hasHinge, let windowHeight else { return false }
         return windowHeight < LayoutWidth.minimumRegularWidth
+    }
+}
+
+/// On the Duo in landscape the system's clock-and-rail column leaves 12 pt of its
+/// own before the rail pill, so the app's 16 pt trailing margin read as 28 against
+/// 16 on the left. The tab content extends 12 pt past its trailing edge there, so
+/// the gap to the rail matches the leading margin. Same hinged short window as
+/// DetailActionsPlacement; other poses and devices are untouched
+struct DuoLandscapeTrailingTrim: ViewModifier {
+    @Environment(\.deviceHasHinge) private var deviceHasHinge
+    @Environment(\.windowHeight) private var windowHeight
+
+    func body(content: Content) -> some View {
+        content.padding(.trailing, DetailActionsPlacement.leading(hasHinge: deviceHasHinge, windowHeight: windowHeight) ? -12 : 0)
+    }
+}
+
+extension View {
+    func duoLandscapeTrailingTrim() -> some View {
+        modifier(DuoLandscapeTrailingTrim())
     }
 }
 

@@ -28,7 +28,7 @@ struct DetailContentView: View {
     @EnvironmentObject var settings: SettingsManager
     @Environment(\.deviceHasHinge) private var deviceHasHinge
     @Environment(\.windowHeight) private var windowHeight
-    @Environment(\.windowTopInset) private var windowTopInset
+    @Environment(\.detailBaseTopInset) private var detailBaseTopInset
     @Environment(\.sidebarCollapsed) private var sidebarCollapsed
     @State private var contentSize: CGSize = .zero
     @State private var headingHeight: CGFloat = 0
@@ -37,9 +37,9 @@ struct DetailContentView: View {
     /// clock-and-rail column, so with the sidebar shown the detail's bar is empty and
     /// collapses: the heading sits at the top. Hiding the sidebar puts its toggle in
     /// the bar, which comes back and pushes the heading down about 60 pt. Then the
-    /// column runs up under the bar again, keeping only the window's own top inset,
-    /// and the heading steps right of the toggle, so it keeps its place in both
-    /// states. Other devices keep a bar either way
+    /// column runs up under the bar again, padded by the top inset it had while the
+    /// sidebar showed (measured by the host), and the heading steps right of the
+    /// toggle, so it keeps its place in both states. Other devices keep a bar either way
     private var liftsUnderBar: Bool {
         sidebarCollapsed && DetailActionsPlacement.leading(hasHinge: deviceHasHinge, windowHeight: windowHeight)
     }
@@ -219,7 +219,7 @@ struct DetailContentView: View {
                 }
                 .ignoresSafeArea(.container, edges: .bottom)
             }
-            .padding(.top, liftsUnderBar ? windowTopInset : 0)
+            .padding(.top, liftsUnderBar ? detailBaseTopInset : 0)
             .ignoresSafeArea(.container, edges: liftsUnderBar ? .top : [])
         }
     }

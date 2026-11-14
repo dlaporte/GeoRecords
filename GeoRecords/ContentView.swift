@@ -159,7 +159,6 @@ struct ContentView: View {
         // The covers and sheets below inherit these too
         .environment(\.windowWidth, windowSize.width)
         .environment(\.windowHeight, windowSize.height)
-        .environment(\.windowTopInset, windowSize.topInset)
         .environment(\.foldDivided, windowSize.foldDivided)
         .environment(\.deviceHasHinge, deviceHasHinge)
         .onAppear(perform: handleOnAppear)
@@ -284,19 +283,19 @@ struct ContentView: View {
     private var tabView: some View {
         TabView(selection: $selectedTab) {
             Tab("Records", systemImage: "location.north.fill", value: 0) {
-                RecordsView()
+                RecordsView().duoLandscapeTrailingTrim()
             }
             Tab("Regions", systemImage: "map.fill", value: 1) {
-                MapsTabView()
+                MapsTabView().duoLandscapeTrailingTrim()
             }
             Tab("Stats", systemImage: "chart.bar.fill", value: 2) {
-                StatisticsView()
+                StatisticsView().duoLandscapeTrailingTrim()
             }
             Tab("History", systemImage: "clock", value: 3) {
-                HistoryView()
+                HistoryView().duoLandscapeTrailingTrim()
             }
             Tab("Settings", systemImage: "gear", value: 4) {
-                SettingsView()
+                SettingsView().duoLandscapeTrailingTrim()
             }
         }
         // Bottom tabs on iPhone, the system top tab bar on iPad and iPhone Duo open.
@@ -954,9 +953,6 @@ private struct ContentViewAlertsModifier: ViewModifier {
 struct WindowMeasure: Equatable {
     var width: CGFloat?
     var height: CGFloat?
-    /// The window's own top inset (status bar, or nothing in landscape), without any
-    /// navigation bar: what a column that runs under its bar pads back in
-    var topInset: CGFloat = 0
     var foldDivided = false
 
     init() {}
@@ -964,7 +960,6 @@ struct WindowMeasure: Equatable {
     init(_ proxy: GeometryProxy) {
         width = proxy.size.width
         height = proxy.size.height
-        topInset = proxy.safeAreaInsets.top
         if #available(iOS 27.1, *) {
             foldDivided = proxy.reservedRegions(kind: .division).contains { $0.isActive }
         }

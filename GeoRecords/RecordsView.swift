@@ -79,6 +79,8 @@ struct RecordsView: View {
     @Environment(\.foldDivided) private var foldDivided
     @Environment(\.cardSizing) private var sizing
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// The detail column's top inset while the sidebar shows (see detailBaseTopInset)
+    @State private var detailBaseTopInset: CGFloat = 0
 
     var body: some View {
         Group {
@@ -226,7 +228,11 @@ struct RecordsView: View {
             if let record = focusedRecord {
                 RecordDetailView(record: record, style: .column, map: AnyView(recordsMap))
                     .id(record.id)
+                    .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { inset in
+                        if columnVisibility != .detailOnly { detailBaseTopInset = inset }
+                    }
                     .environment(\.sidebarCollapsed, columnVisibility == .detailOnly)
+                    .environment(\.detailBaseTopInset, detailBaseTopInset)
             } else {
                 ContentUnavailableView("No Record Selected", systemImage: "location.north", description: Text("Choose a record from the list."))
             }

@@ -300,6 +300,8 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
     @State private var showWidgetViewSetter = false
     @State private var callout: UnvisitedCallout?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// The detail column's top inset while the sidebar shows (see detailBaseTopInset)
+    @State private var detailBaseTopInset: CGFloat = 0
 
     // Current region to display on map
     private var currentRegion: RecordDetail? {
@@ -468,7 +470,11 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
             if let region = focusedRegion {
                 RecordDetailView(record: region, style: .column, map: AnyView(mapPane))
                     .id(region.id)
+                    .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { inset in
+                        if columnVisibility != .detailOnly { detailBaseTopInset = inset }
+                    }
                     .environment(\.sidebarCollapsed, columnVisibility == .detailOnly)
+                    .environment(\.detailBaseTopInset, detailBaseTopInset)
             } else {
                 mapPane
             }

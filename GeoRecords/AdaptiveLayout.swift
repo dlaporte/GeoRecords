@@ -52,9 +52,16 @@ extension EnvironmentValues {
     /// The scene window's height, measured alongside the width
     @Entry var windowHeight: CGFloat? = nil
 
+    /// The window's top safe-area inset outside any navigation bar (see WindowMeasure)
+    @Entry var windowTopInset: CGFloat = 0
+
     /// Whether the window is currently divided by an active fold (the Duo's book
     /// pose); false on every other device and whenever the Duo is flat
     @Entry var foldDivided: Bool = false
+
+    /// Whether the split view's sidebar is hidden, so its toggle sits in the detail
+    /// column's bar (set by the Records and Regions split views on their detail)
+    @Entry var sidebarCollapsed: Bool = false
 
     /// Whether the device has a hinge at all (the Duo), from the hinge API; false
     /// before iOS 27.1 and on every other device

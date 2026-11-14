@@ -26,8 +26,23 @@ struct DetailContentView: View {
     var map: AnyView? = nil
 
     @EnvironmentObject var settings: SettingsManager
+    @Environment(\.deviceHasHinge) private var deviceHasHinge
+    @Environment(\.windowHeight) private var windowHeight
+    @Environment(\.windowTopInset) private var windowTopInset
+    @Environment(\.sidebarCollapsed) private var sidebarCollapsed
     @State private var contentSize: CGSize = .zero
     @State private var headingHeight: CGFloat = 0
+
+    /// On the Duo in landscape the system moves the bar's buttons into the display's
+    /// clock-and-rail column, so with the sidebar shown the detail's bar is empty and
+    /// collapses: the heading sits at the top. Hiding the sidebar puts its toggle in
+    /// the bar, which comes back and pushes the heading down about 60 pt. Then the
+    /// column runs up under the bar again, keeping only the window's own top inset,
+    /// and the heading steps right of the toggle, so it keeps its place in both
+    /// states. Other devices keep a bar either way
+    private var liftsUnderBar: Bool {
+        sidebarCollapsed && DetailActionsPlacement.leading(hasHinge: deviceHasHinge, windowHeight: windowHeight)
+    }
     /// The stacked panel's content height, so a short panel takes only what it needs
     @State private var panelContentHeight: CGFloat?
 
@@ -204,6 +219,8 @@ struct DetailContentView: View {
                 }
                 .ignoresSafeArea(.container, edges: .bottom)
             }
+            .padding(.top, liftsUnderBar ? windowTopInset : 0)
+            .ignoresSafeArea(.container, edges: liftsUnderBar ? .top : [])
         }
     }
 
@@ -223,6 +240,8 @@ struct DetailContentView: View {
         return VStack(spacing: 16) {
             headerRow(.heading)
                 .padding(.horizontal)
+                // Clear of the sidebar toggle (44 pt plus a gap) when the column runs under the bar
+                .padding(.leading, liftsUnderBar ? 60 : 0)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headingHeight = $0 }
             if let map {
                 map

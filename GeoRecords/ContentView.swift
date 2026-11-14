@@ -159,6 +159,7 @@ struct ContentView: View {
         // The covers and sheets below inherit these too
         .environment(\.windowWidth, windowSize.width)
         .environment(\.windowHeight, windowSize.height)
+        .environment(\.windowTopInset, windowSize.topInset)
         .environment(\.foldDivided, windowSize.foldDivided)
         .environment(\.deviceHasHinge, deviceHasHinge)
         .onAppear(perform: handleOnAppear)
@@ -953,6 +954,9 @@ private struct ContentViewAlertsModifier: ViewModifier {
 struct WindowMeasure: Equatable {
     var width: CGFloat?
     var height: CGFloat?
+    /// The window's own top inset (status bar, or nothing in landscape), without any
+    /// navigation bar: what a column that runs under its bar pads back in
+    var topInset: CGFloat = 0
     var foldDivided = false
 
     init() {}
@@ -960,6 +964,7 @@ struct WindowMeasure: Equatable {
     init(_ proxy: GeometryProxy) {
         width = proxy.size.width
         height = proxy.size.height
+        topInset = proxy.safeAreaInsets.top
         if #available(iOS 27.1, *) {
             foldDivided = proxy.reservedRegions(kind: .division).contains { $0.isActive }
         }

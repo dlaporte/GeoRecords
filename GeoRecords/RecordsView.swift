@@ -226,6 +226,7 @@ struct RecordsView: View {
             if let record = focusedRecord {
                 RecordDetailView(record: record, style: .column, map: AnyView(recordsMap))
                     .id(record.id)
+                    .environment(\.sidebarCollapsed, columnVisibility == .detailOnly)
             } else {
                 ContentUnavailableView("No Record Selected", systemImage: "location.north", description: Text("Choose a record from the list."))
             }

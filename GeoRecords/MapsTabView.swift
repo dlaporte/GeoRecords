@@ -468,6 +468,7 @@ private struct RegionCardsMapView<MapV: View, SheetV: View, EmptyV: View>: View 
             if let region = focusedRegion {
                 RecordDetailView(record: region, style: .column, map: AnyView(mapPane))
                     .id(region.id)
+                    .environment(\.sidebarCollapsed, columnVisibility == .detailOnly)
             } else {
                 mapPane
             }
